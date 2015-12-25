@@ -1,0 +1,204 @@
+<?php
+/**************************************************************************************************************
+
+    NAME
+        Http.phpclass
+
+    DESCRIPTION
+        Analyzes Http access log entries.
+
+    AUTHOR
+        Christian Vigh, 07/2015.
+
+    HISTORY
+    [Version : 1.0]    [Date : 2015/07/21]     [Author : CV]
+        Initial version.
+
+ **************************************************************************************************************/
+
+
+
+ /*==============================================================================================================
+
+    LocalHttpLog class -
+        Handles http access logfile entries.
+
+  ==============================================================================================================*/
+class  LocalHttpLog		extends  LocalLog
+   {
+	public		$Title		=  'http access' ;
+
+
+	// Kinds of http access entries - well, it only concerns http access requests
+	const		HTTP_NONE			=  0 ;
+	const		HTTP_REQUEST			=  1 ;
+
+
+	public function  __construct ( $string_store, $rsadmin ) 
+	   {
+		parent::__construct ( RsAdmin::LOGTYPE_HTTP, $string_store, $rsadmin ) ;
+	    }
+
+
+	/*--------------------------------------------------------------------------------------------------------------
+	 
+	    Parse -
+		Parse http log file entries, which must have the following columns :
+		- process id
+		- ip address
+		- remote system name
+		- remote user name
+		- Http request (sometimes, "-")
+		- Http response code
+		- Http response size
+		- Http response time, in microseconds
+		- Http referer
+		- User agent string
+
+	 *-------------------------------------------------------------------------------------------------------------*/
+	protected function  Parse ( $message, &$parsed_data, $string_store )
+	   {
+		$length		=  strlen ( $message ) ;
+		$parts		=  [] ;
+		$i		=  0 ;
+		$log_code	=  self::HTTP_REQUEST ;
+
+		
+		while  ( $i  <  $length )
+		   {
+			$ch	=  $message [$i] ;
+
+			// Skip spaces between fields
+			if  ( $ch  ==  ' ' )
+				$i ++ ;
+			// Process quoted values
+			else if  ( $ch  ==  '"' )
+			   {
+				$i ++ ;
+				$part	=  '' ;
+
+				while ( $i  <  $length )
+				   {
+					$ch	=  $message [$i] ;
+
+					switch  ( $ch )
+					   {
+						case	'\\' :
+							$part	.=  $ch ;
+							$i ++ ;
+
+							if  ( $i  <  $length )
+								$part	.=  $message [$i] ;
+
+							break ;
+
+						case	'"' :
+							$i ++ ;
+							break 2 ;
+
+						default :
+							$part .=  $ch ;
+					    }
+
+					$i ++ ;
+				    }
+
+				$parts []	=  $part ;
+			    }
+			// Unquoted values
+			else
+			   {
+				$index	=  strpos ( $message, ' ', $i ) ;
+
+				if  ( $index  ===  false )
+				   {
+					$parts []	=  substr ( $message, $i ) ;
+					break ;
+				    }
+				else
+				   {
+					$parts []	=  substr ( $message, $i, $index - $i ) ;
+					$i		=  $index ;
+				    }
+
+				$i ++ ;
+			    }
+		    }
+
+		// Check value count
+		$this -> ParseCheck ( $message, $parts, 10 ) ;
+
+		// Ip address
+		$ip_id					=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP, $parts [1] ) ;
+
+		// Remote system name
+		$system_id				=  $string_store -> Insert ( LogStringStore::LOGSTORE_HTTP_SYSTEM_NAME, $parts [2] ) ;
+
+		// Remote user name
+		$user_id				=  $string_store -> Insert ( LogStringStore::LOGSTORE_HTTP_USER_NAME, $parts [3] ) ;
+
+		// Http referer
+		$referer_id				=  $string_store -> Insert ( LogStringStore::LOGSTORE_HTTP_REFERER, $parts [8] ) ;
+
+		// User agent string
+		$user_agent_id				=  $string_store -> Insert ( LogStringStore::LOGSTORE_HTTP_USER_AGENT, $parts [9] ) ;
+
+		// Http request - Since hackers can use request strings containing white spaces, the string in split in the following way :
+		// - Characters before the first encountered space are the http request name
+		// - Characters after the last space are the HTTP version (eg, "HTTP/1.1")
+		// - Charaters between the first and last space are the requested url
+		$line	=  trim ( $parts [4] ) ;
+
+		$first_space	=  strpos ( $line, ' ' ) ;
+		$last_space	=  strrpos ( $line, ' ' ) ;
+
+		if  ( ! $first_space  ||  ! $last_space ) 
+		   {
+			$url_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_HTTP_NON_STANDARD_REQUEST_URL, $line ) ;
+			$request_id	=  0 ;
+			$http_version	=  0 ;
+		    }
+		else
+		   {
+			$request	=  substr ( $line, 0, $first_space ) ;
+			$version	=  substr ( $line, $last_space + 1 ) ;
+			$url		=  substr ( $line, $first_space + 1, $last_space - $first_space - 1 ) ;
+
+			if  ( ! preg_match ( '# ( (HTTP) | (RTSP) ) \s* / \s* (?P<major> \d+) \. (?P<minor> \d+) \s* #imsx', $version, $match ) )
+			   {
+				warning ( new \Thrak\System\ParseException ( "The following {$this -> Title} log entry message part could not be interpreted :\n\t$message" ) ) ;
+				$http_version		=  '' ;
+			    }
+			else
+				$http_version		=  ( ( ( integer ) $match [ 'major' ] )  <<  4 ) | ( ( integer ) $match [ 'minor' ] ) ;
+
+			$request_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_HTTP_REQUEST_NAME, $request ) ;
+			$url_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_HTTP_REQUEST_URL, $url ) ;
+		    }
+
+		// Message has been processed ; assign individual column values
+		$parsed_data	=
+		   [
+			'type'		=>  $log_code,
+			'pid'		=>  ( integer ) $parts [0],
+			'data'		=>  
+			   [
+				LogStringStore::LOGSTORE_IP			=>  $ip_id,
+				LogStringStore::LOGSTORE_HTTP_SYSTEM_NAME	=>  $system_id,
+				LogStringStore::LOGSTORE_HTTP_USER_NAME		=>  $user_id,
+				LogStringStore::LOGSTORE_HTTP_REQUEST_NAME	=>  $request_id,
+				LogStringStore::LOGSTORE_HTTP_REQUEST_URL	=>  $url_id,
+				LogStringStore::LOGSTORE_HTTP_VERSION		=>  $http_version,
+				LogStringStore::LOGSTORE_HTTP_RESPONSE_CODE	=>  ( integer ) $parts [5],
+				LogStringStore::LOGSTORE_HTTP_RESPONSE_SIZE	=>  ( integer ) $parts [6],
+				LogStringStore::LOGSTORE_HTTP_PROCESSING_TIME	=>  ( integer ) $parts [7],
+				LogStringStore::LOGSTORE_HTTP_REFERER		=>  $referer_id,
+				LogStringStore::LOGSTORE_HTTP_USER_AGENT	=>  $user_agent_id 
+			    ]
+		    ] ;
+
+		return ( true ) ;
+	    }
+    }
+
+

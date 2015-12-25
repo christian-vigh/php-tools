@@ -1,0 +1,373 @@
+#!/usr/bin/php
+<?php
+
+	//!phpcmd(Utilities, 2.0) : Lists PHP keywords.
+	/***************************************************************************************************
+
+	    NAME
+		phpkeywords.phs
+
+	    DESCRIPTION
+		Lists PHP keywords, constants, classes, etc.		
+
+	    AUTHOR
+	     	Christian Vigh, 10/2012.
+
+	    HISTORY
+	    [Version : 1.0]	[Date : 2012/10/01]	[Author : CV]
+	     	Initial version.
+
+	 ***************************************************************************************************/
+	require ( "tools.phpinclude" ) ;
+
+	require_once ( 'Processors/CL/CLParser.phpclass' ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Types\String ;
+	use  Thrak\IO\Path ;
+
+
+	/*===========================================================================================
+
+		Command-line definitions.
+
+	  ===========================================================================================*/
+	
+	// Options for the -list parameter
+	$LIST_CLASSES		=  0x0001 ;	
+	$LIST_INTERFACES	=  0x0002 ;
+	$LIST_TRAITS		=  0x0004 ;
+	$LIST_CLASS_VARIABLES	=  0x0008 ;
+	$LIST_CONSTANTS		=  0x0010 ;
+	$LIST_FUNCTIONS		=  0x0020 ;
+	$LIST_CLASS_METHODS	=  0x0040 ;
+	$LIST_KEYWORDS		=  0x0080 ;
+	$LIST_VARIABLES		=  0x0100 ;
+	$LIST_ALL		=  0xFFFF ;
+	
+	// PHP keywords & compile-time constants
+	$PHPKeywords		=  array
+	   (
+		"__halt_compiler", "abstract", "and", "array", "as", "break", "callable", "case", "catch", "class", "clone", "const", "continue", "declare",  
+		"default", "die", "do", "echo", "else", "elseif", "empty", "enddeclare", "endfor", "endforeach", "endif",  "endswitch", "endwhile", "eval",  
+		"exit", "extends", "final", "finally", "for", "foreach", "function", "global", "goto", "if", "implements", "include", "include_once",  
+		"instanceof", "insteadof", "interface", "isset", "list", "namespace", "new", "or", "print", "private", "protected", "public", "require",  
+		"require_once", "return", "static", "switch", "throw", "trait", "try", "unset", "use", "var", "while",  "xor",  "yield"
+	    ) ;
+	$PHPConstants		=  array
+	   (
+		"__CLASS__", "__DIR__", "__FILE__", "__FUNCTION__", "__LINE__", "__METHOD__", "__NAMESPACE__", "__TRAIT__"
+	    ) ;
+	    
+	
+	/*===========================================================================================
+
+		Command-line definitions.
+
+	  ===========================================================================================*/
+	$Definitions = <<<END
+<command name="phpkeywords" allow-files="false">
+	<usage>
+		Lists PHP keywords, functions, constants, classes and so on.
+	</usage>
+
+	<flag name="group, g">
+		Groups names on a single line. The -line_width options specifies the maximum line width.
+	</flag>
+	
+	<integer name="line_width, lw" default="80" min-value="20">
+		When the -group option has been specified, indicates the maximum line width.
+	</integer>
+	
+	<bitset name="list, l" value-text="option(s)" default="$LIST_ALL">
+		Display options.
+		
+		<constant name="all, a" value="$LIST_ALL">
+			Displays all data : classes, class methods, class variables, interfaces, traits, constants and functions.
+			This is the default option.
+		</constant>
+		
+		<constant name="classes, class, c" value="$LIST_CLASSES">
+			Displays class names.
+		</constant>
+		
+		<constant name="class_methods, class_method, cm" value="$LIST_CLASS_METHODS">
+			Displays class methods.
+		</constant>
+		
+		<constant name="class_variables, class_variable, cv" value="$LIST_CLASS_VARIABLES">
+			Displays class variables.
+		</constant>
+		
+		<constant name="constants, constant, const" value="$LIST_CONSTANTS">
+			Displays defined constants.
+		</constant>
+		
+		<constant name="functions, function, f" value="$LIST_FUNCTIONS">
+			Displays defined functions.
+		</constant>
+		
+		<constant name="interfaces, interface, i" value="$LIST_INTERFACES">
+			Displays declared interfaces.
+		</constant>
+		
+		<constant name="keywords, keyword, kw, k" value="$LIST_KEYWORDS">
+			Displays PHP keywords.
+		</constant>
+		
+		<constant name="traits, trait, t" value="$LIST_TRAITS">
+			Displays declared traits.
+		</constant>
+		
+		<constant name="variables, variable, v" value="$LIST_VARIABLES">
+			Displays defined variables.
+		</constant>
+	</bitset>
+	
+	<string name="list_separator, ls" default=", ">
+		Specifies the list separator to be used when the -group flag has been specified.
+	</string>
+	
+	<flag name="no_comment, nc">
+		When specified, no comment will be added to the output.
+	</flag>
+	
+	<flag name="quote, q">
+		When specified, output names are enclosed by doublequotes.
+	</flag>
+	
+	<flag name="sort, s">
+		Sorts results. No comments are added, and the whole string list is sorted.
+	</flag>
+</command>
+END;
+
+
+	/*===========================================================================================
+
+	    DoPrint -
+		Prints the collected definitions.
+
+	  ===========================================================================================*/
+	function  DoPrint ( $arrays )
+	   {
+		global	$LineWidth, $Group, $ListSeparator, $Quote, $NoComment ;
+		
+		$line	=  "" ;
+		
+		// Cycle through the various data to be printed
+		for  ( $i = 0 ; $i  <  count ( $arrays ) ; $i ++ )
+		   {
+			$array		=  $arrays [$i] ;
+
+			// Optional comment display
+			if  ( ! $NoComment )
+				output ( $array [ 'comment' ] ) ;
+				
+			// Print individual values
+			for  ( $j = 0 ; $j  < count ( $array [ 'values' ] ) ; $j ++ )
+			   {
+				$value	=  $array [ 'values' ] [$j] ;
+				
+				if  ( ! $value )
+					continue ;
+				
+				// Quote entry if needed
+				if  ( $Quote )
+					$value	=   '"' . $value . '"' ;
+					
+				// A flag indicating if elements are remaining
+				$remains	=  ( $j + 1  <  count ( $array [ 'values' ] )  ||  $i + 1  <  count ( $arrays ) ) ;
+					
+				// If grouping required, then catenate all values up to $LineWidth characters
+				if  ( $Group )
+				   {
+					if  ( strlen ( $line ) + strlen ( $ListSeparator ) + strlen ( $value )  >  $LineWidth )
+					   {
+						output ( $line ) ;
+						
+						$line	=  $value ;
+					    }
+					else if  ( $line ) 
+						$line  .=  $value ;
+					else
+						$line	=  $value ;
+						
+					if  ( $remains )
+						$line	.=  $ListSeparator ;
+				    }
+				// Otherwise simply output the value, one per line
+				else
+					output ( $value ) ;
+			    }
+		    }
+		    
+		// Print the potential remaining output line
+		if  ( $line )
+			output ( $line ) ;
+	    }
+	  
+	  
+	/*===========================================================================================
+
+		Main program.
+
+	  ===========================================================================================*/
+
+	// Get command-line parameters
+	$CL 		=  new CLParser ( $Definitions ) ;
+	$List		=  $CL -> list ;
+	$Group		=  $CL -> group ;
+	$LineWidth	=  $CL -> line_width ;
+	$ListSeparator	=  $CL -> list_separator ;
+	$Quote		=  $CL -> quote ;
+	$Sort		=  $CL -> sort ;
+	$NoComment	=  ( $Sort ) ?  true : $CL -> no_comment ;
+	
+	// Arrays to be printed
+	$Arrays		=  array ( ) ;
+	
+	if  ( $List [ 'flags' ] [ 'classes' ] )					// Classes
+	   {
+		$Arrays []	=  array
+		   (
+			'comment'	=>  '/* Declared classes */',
+			'values'	=>  $__THRAK_STDCLASSES__
+		    ) ;
+		    
+		foreach  ( $__THRAK_STDCLASSES__  as  $class )
+		   {
+			if  ( $List [ 'flags' ] [ 'class_methods' ] )
+			   {
+				$Arrays	[]	=  array
+				   (
+					'comment'	=>  "/* Methods for class : $class */",
+					'values'	=>  get_class_methods ( $class ) 
+				    ) ;
+			    }
+			    
+			if  ( $List [ 'flags' ] [ 'class_variables' ] )
+			   {
+				$Arrays	[]	=  array
+				   (
+					'comment'	=>  "/* Variables for class : $class */",
+					'values'	=>  get_class_vars ( $class ) 
+				    ) ;
+			    }
+		    }
+	    }
+
+	if  ( $List [ 'flags' ] [ 'interfaces' ] )				// Interfaces
+	   {
+		$Arrays []	=  array
+		   (
+			'comment'	=>  '/* Declared interfaces */',
+			'values'	=>  $__THRAK_STDINTERFACES__
+		    ) ;
+		    
+		foreach  ( $__THRAK_STDINTERFACES__  as  $class )
+		   {
+			if  ( $List [ 'flags' ] [ 'class_methods' ] )
+			   {
+				$Arrays	[]	=  array
+				   (
+					'comment'	=>  "/* Methods for interface : $class */",
+					'values'	=>  get_class_methods ( $class ) 
+				    ) ;
+			    }
+		    }
+	    }
+
+	if  ( $List [ 'flags' ] [ 'traits' ] )				// Traits
+	   {
+		$Arrays []	=  array
+		   (
+			'comment'	=>  '/* Declared traits */',
+			'values'	=>  $__THRAK_STDTRAITS__
+		    ) ;
+		    
+		foreach  ( $__THRAK_STDTRAITS__  as  $class )
+		   {
+			if  ( $List [ 'flags' ] [ 'class_methods' ] )
+			   {
+				$Arrays	[]	=  array
+				   (
+					'comment'	=>  "/* Methods for trait : $class */",
+					'values'	=>  get_class_methods ( $class ) 
+				    ) ;
+			    }
+		    }
+	    }
+
+	if  ( $List [ 'flags' ] [ 'functions' ] )			// Functions
+	   {
+		$Arrays []	=  array
+		   (
+			'comment'	=>  '/* Defined functions */',
+			'values'	=>  $__THRAK_STDFUNCTIONS__ [ 'internal' ] 
+		    ) ;
+	    }
+
+	if  ( $List [ 'flags' ] [ 'constants' ] )			// Constants
+	   {
+		$Arrays []	=  array
+		   (
+			'comment'	=>  '/* Defined constants */',
+			'values'	=>  array_merge ( array_keys ( $__THRAK_STDCONSTANTS__ ), $PHPConstants ) 
+		    ) ;
+	    }
+
+	if  ( $List [ 'flags' ] [ 'variables' ] )			// Variables
+	   {
+		$Arrays []	=  array
+		   (
+			'comment'	=>  '/* Defined variables */',
+			'values'	=>  array_keys ( $__THRAK_STDVARIABLES__ )
+		    ) ;
+	    }
+
+	if  ( $List [ 'flags' ] [ 'keywords' ] )			// Keywords
+	   {
+		$Arrays []	=  array
+		   (
+			'comment'	=>  '/* PHP keywords */',
+			'values'	=>  $PHPKeywords
+		    ) ;
+	    }
+
+	    
+	// Sort them
+	if  ( $Sort )
+	   {
+		$grouped	=  array ( ) ;
+		
+		foreach  ( $Arrays  as  $entry )
+			$grouped	=  array_merge ( $grouped, $entry [ 'values' ] ) ;
+			
+		sort ( $grouped ) ;
+		
+		$result		=  array ( ) ;
+		$last		=  null ;
+		
+		foreach  ( $grouped  as  $item )
+		   {
+			if  ( $item  &&  $item  !==  $last )
+			   {
+				$last		=  $item ;
+				$result []	=  $item ;
+			    }
+		    }
+		
+		$Arrays		=  array ( array ( 'comment' => '', 'values' => $result ) ) ;
+	    }
+	else
+	   {
+		foreach  ( $Arrays  as  &$array )
+		   {
+			sort ( $array [ 'values' ] ) ;
+		    }
+	    }	    
+	
+	    
+	// Then print them
+	DoPrint ( $Arrays ) ;

@@ -1,0 +1,126 @@
+<?php
+/**************************************************************************************************************
+
+    NAME
+        LogStringStore.phpclass
+
+    DESCRIPTION
+        Implements a string store for log data extraction.
+
+    AUTHOR
+        Christian Vigh, 07/2015.
+
+    HISTORY
+    [Version : 1.0]    [Date : 2015/07/19]     [Author : CV]
+        Initial version.
+
+ **************************************************************************************************************/
+use  Thrak\System\Object ;
+use  Thrak\Types\String ;
+use  Thrak\Database\Tables\StringStore ;
+use  Thrak\Reflection\ReflectionClass ;
+
+
+/*==============================================================================================================
+
+    LogStringStore class -
+        Implements a string store for log data extraction.
+
+  ==============================================================================================================*/
+class  LogStringStore		extends  StringStore 
+   {
+	// String store entry types
+	const	LOGSTORE_IP				=   1 ;			
+	const	LOGSTORE_HTTP_SYSTEM_NAME		=   2 ;
+	const	LOGSTORE_HTTP_USER_NAME			=   3 ;
+	const	LOGSTORE_HTTP_REQUEST_NAME		=   4 ;
+	const   LOGSTORE_HTTP_REQUEST_URL		=   5 ;
+	const	LOGSTORE_HTTP_REFERER			=   6 ;
+	const	LOGSTORE_HTTP_USER_AGENT		=   7 ;
+	const   LOGSTORE_PHP_ERROR_MESSAGE		=   8 ;
+	const   LOGSTORE_PHP_SOURCE_FILE		=   9 ;
+	const   LOGSTORE_HTTP_REQUEST_FILE		=  10 ;
+	const   LOGSTORE_HTTP_REQUEST_SCRIPT		=  11 ;
+	const	LOGSTORE_MESSAGE			=  12 ;
+	const	LOGSTORE_MODULE_NAME			=  13 ;
+	const   LOGSTORE_SMTP_STEP_NAME			=  14 ;
+	const   LOGSTORE_DOMAIN_NAME			=  15 ;
+	const   LOGSTORE_SERVER_NAME			=  16 ;
+	const   LOGSTORE_SMTP_SENDER			=  17 ;
+	const   LOGSTORE_SMTP_RECIPIENT			=  18 ;
+	const	LOGSTORE_SMTP_COMMAND			=  19 ;
+	const	LOGSTORE_USER_NAME			=  20 ;
+	const	LOGSTORE_GROUP_NAME			=  21 ;
+	const   LOGSTORE_DEVICE_NAME			=  22 ;
+	const   LOGSTORE_AUTH_COMMAND			=  23 ;
+	const	LOGSTORE_AUTH_VERSION			=  24 ;
+	const   LOGSTORE_HTTP_NON_STANDARD_REQUEST_URL	=  25 ;
+	const   LOGSTORE_SMTP_HELO_NAME			=  26 ;
+	const   LOGSTORE_SMTP_ORIGINAL_SENDER		=  27 ;
+	const   LOGSTORE_SMTP_ORIGINAL_RECIPIENT	=  28 ;
+	const	LOGSTORE_SMTP_METHOD			=  29 ;
+	const   LOGSTORE_COMPUTER_NAME			=  30 ;
+	const	LOGSTORE_PATH				=  31 ;
+
+
+	// Pseudo-string store entry types : the real value is not stored in a string store, but in the field
+	// that should reference a string store entry
+	const   LOGSTORE_HTTP_SEVERITY			=  0x8001 ;
+	const   LOGSTORE_PHP_SEVERITY			=  0x8002 ;
+	const   LOGSTORE_PHP_SOURCE_LINE		=  0x8003 ;
+	const	LOGSTORE_HTTP_VERSION			=  0x8004 ;
+	const   LOGSTORE_HTTP_RESPONSE_CODE		=  0x8005 ;
+	const	LOGSTORE_HTTP_RESPONSE_SIZE		=  0x8006 ;
+	const	LOGSTORE_HTTP_PROCESSING_TIME		=  0x8007 ;
+
+
+	/*--------------------------------------------------------------------------------------------------------------
+
+	    Constructor -
+		Builds a string store object for log data.
+	 
+	 *-------------------------------------------------------------------------------------------------------------*/
+	public function  __construct ( $table, $db )
+	   {
+		parent::__construct ( $table, 'String store for server log data', 2048, 64, $db ) ;
+	    }
+
+
+	/*--------------------------------------------------------------------------------------------------------------
+
+	    GetTypes -
+		Returns an associative array of string store constant values and constant names/labels
+	 
+	 *-------------------------------------------------------------------------------------------------------------*/
+	public static function  GetTypes ( )
+	   {
+		$class		=  new ReflectionClass ( get_called_class ( ) ) ;
+		$constants	=  $class -> getConstants ( 'LOGSTORE_*', true ) ;
+		$temp_result	=  [] ;
+
+		foreach  ( $constants  as  $value => $name )
+		   {
+			$label			=  strtolower ( substr ( $name, 9 ) ) ;
+			$label			=  ucfirst ( implode ( ' ', explode ( '_', $label ) ) ) ;
+
+			$temp_result [ $value ]	=  [ 'name' => $name, 'label' => $label, 'value' => $value ] ;
+		    }
+
+		usort 
+		   ( 
+			$temp_result, 
+			function  ( $a, $b )
+			   {
+				return ( strcasecmp ( $a [ 'label' ], $b [ 'label' ] ) ) ;
+			    }
+
+		    ) ;
+
+		$result		=  [] ;
+
+		foreach  ( $temp_result  as  $entry )
+			$result [ $entry [ 'value' ] ]	=  $entry ;
+
+		return ( $result ) ;
+	    }
+    }

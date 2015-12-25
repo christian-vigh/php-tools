@@ -1,0 +1,4 @@
+<?php
+	$content	=  trim ( file_get_contents ( "http://www.wuthering-bytes.com/tools/myip.php" ) ) ;
+	echo ( "$content\n" ) ;
+?>

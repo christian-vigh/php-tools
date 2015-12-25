@@ -1,0 +1,548 @@
+<?php
+	//!phpcmd(Administration, 2.0, production) : Remote OVH servers administration of iptables.
+	/***************************************************************************************************
+
+	    NAME
+		rsiptables.phs
+
+	    DESCRIPTION
+		Remote administration of iptables.
+
+	    AUTHOR
+	     	Christian Vigh, 05/2015.
+
+	    HISTORY
+	    [Version : 1.0]	[Date : 2015/05/18]	[Author : CV]
+	     	Initial version.
+
+	    [Version : 1.0.1]	[Date : 2015/06/01]	[Author : CV]
+		. Changed the get_iptables_data() function to process only the INPUT chain.
+		. Changed the SaveBlockedIps() function to include a final statistics report after saving.
+
+	    [Version : 2.0]	[Date : 2015/08/16]	[Author : CV]
+		. Completely rewrote the utility :
+			. No more .csv file is needed, everything goes through a mysql database, with a
+			  server_iptables tables
+			. Everything is managed locally. Remote iptables output is no more analyzed.
+
+	    [Version : 2.0.1]	[Date : 2015/11/29]	[Author : CV]
+		. Added the -list_configured_servers option.
+
+	 ***************************************************************************************************/
+	require ( "tools.phpinclude" ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Types\String ;
+	use  Thrak\Types\ArrayHelpers ;
+	use  Thrak\IO\Path ;
+	use  Thrak\IO\AsciiReport ;
+	use  Thrak\Processors\IniFile ;
+	use  Thrak\Processors\Csv ;
+	use  Thrak\Processors\CsvOptions ;
+	use  Thrak\IO\Console ;
+	use  Thrak\Database\BufferedInsert ;
+
+	
+	require ( "RsAdmin.phpclass" ) ;
+
+	/*==================================================================================================
+
+		Command line parameters.
+
+	  ==================================================================================================*/
+	$Definitions = <<<END
+<command name="rsiptables" allow-files="false">
+
+	<usage>
+		Administrates the iptables of remote hosted servers.
+	</usage>
+
+	<ip-address name="block_ips, block_ip, bi" arguments="1..*">
+		Blocks the specified ip addresses on the servers provided through the -servers option.
+	</ip-address>
+	
+	<file name="configuration_file, cf" disposition="existing" default="thraktools://Data/rsadmin.ini">
+		Hosted servers parameters file.
+	</file>
+	
+	<flag name="list_configured_servers, lcs">
+		Lists the servers configured for this command.
+	</flag>
+	
+	<flag name="list_servers, ls">
+		Lists the number of blocked ips per server.
+	</flag>
+
+	<flag name="merge_blocked_ips, merge_blocked_ip, mbi">
+		Issues iptables commands so that all the specified servers have the same blocked ip
+		(ie, INPUT chain and DROP target).
+	</flag>
+	
+	<string name="servers, server, s" default="*" arguments="0..*">
+		Server name(s) on which iptables management is to be operated.
+		Wildcard characters are authorized, and search is performed on every server alias.
+	</string>
+
+	<ip-address name="unblock_ips, unblock_ip, ui" arguments="1..*">
+		Unblocks the specified ip addresses on the servers provided through the -servers option.
+	</ip-address>
+	
+</command>
+END;
+
+	/**************************************************************************************************************
+	 **************************************************************************************************************
+	 **************************************************************************************************************
+	 ******                                                                                                  ******
+	 ******                                                                                                  ******
+	 ******                                      HELPER FUNCTIONS                                            ******
+	 ******                                                                                                  ******
+	 ******                                                                                                  ******
+	 **************************************************************************************************************
+	 **************************************************************************************************************
+	 **************************************************************************************************************/
+
+	/*==============================================================================================================
+	
+	    add_iptables_entry -
+	        Adds an iptables entry into the local database.
+	
+	  ==============================================================================================================*/
+	function  add_iptables_entry ( $host, $source, $chain = 'INPUT', $policy = 'ACCEPT', $target = 'DROP' )
+	   {
+		global		$Database ;
+
+		$iptables	=  RsAdmin::TABLE_SERVER_IPTABLES ;
+		$server_table	=  RsAdmin::TABLE_SERVERS ;
+
+		$Database -> SetSimpleQuery ( "SELECT ser_id FROM $server_table WHERE ser_name = '$host'" ) ;
+		$host_id	=  $Database -> LoadValue ( ) ;
+
+		$query		=  "
+					INSERT INTO $iptables
+					SET
+						seri_server_id	=  $host_id,
+						seri_chain	=  '$chain',
+						seri_policy	=  '$policy',
+						seri_target	=  '$target',
+						seri_source	=  '$source'
+				   " ;
+		
+		$Database -> Execute ( $query ) ;
+	    }
+
+
+	/*==============================================================================================================
+	
+	    delete_iptables_entry -
+	        Removes an iptables entry for the specified host in the local database.
+	
+	  ==============================================================================================================*/
+	function  delete_iptables_entry ( $host, $ip )
+	   {
+		global		$Database ;
+
+		$iptables	=  RsAdmin::TABLE_SERVER_IPTABLES ;
+		$server_table	=  RsAdmin::TABLE_SERVERS ;
+		$query		=  "
+					DELETE $iptables
+					FROM $iptables
+					LEFT JOIN $server_table ON
+						ser_id = seri_server_id 
+					WHERE
+						ser_name	=  '$host' AND
+						seri_source	=  '$ip' 
+				   " ;
+
+		$Database -> Execute ( $query ) ;
+	    }
+
+
+	/*==============================================================================================================
+	
+	    execute_command -
+	        Executes a command on the specified server.
+	
+	  ==============================================================================================================*/
+	function  execute_command ( $host, $command, &$output = null )
+	   {
+		global		$RsAdmin ;
+		
+		
+		$server		=  $RsAdmin -> FindServer ( $host ) ;
+		
+		if  ( ! $server -> IsConnected ( ) ) 
+			$server -> Connect ( false, true, true ) ;
+		
+		$status		=  $server -> Execute ( $command, $output ) ;
+		
+		return ( $status ) ;
+	    }
+
+
+	/*==============================================================================================================
+	
+	    get_empty_iptables_rules -
+	        Returns a valid empty iptables ruleset.
+	
+	  ==============================================================================================================*/
+	function  get_empty_iptables_rules ( )
+	   {
+		$text	=  <<<END
+# Generated by iptables-save v1.4.14 on Sun Aug 16 22:33:33 2015
+*nat
+:PREROUTING ACCEPT [9367:325060]
+:POSTROUTING ACCEPT [1627:122502]
+:OUTPUT ACCEPT [1627:122502]
+COMMIT
+# Completed on Sun Aug 16 22:33:33 2015
+# Generated by iptables-save v1.4.14 on Sun Aug 16 22:33:33 2015
+*mangle
+:PREROUTING ACCEPT [19434:1850061]
+:INPUT ACCEPT [19434:1850061]
+:FORWARD ACCEPT [0:0]
+:OUTPUT ACCEPT [20404:3521221]
+:POSTROUTING ACCEPT [20404:3521221]
+COMMIT
+# Completed on Sun Aug 16 22:33:33 2015
+# Generated by iptables-save v1.4.14 on Sun Aug 16 22:33:33 2015
+*filter
+:INPUT ACCEPT [19434:1850061]
+:FORWARD ACCEPT [0:0]
+:OUTPUT ACCEPT [20404:3521221]
+COMMIT
+# Completed on Sun Aug 16 22:33:33 2015
+END;
+
+		return ( $text ) ;
+	    }
+	
+
+	/*==============================================================================================================
+	
+	    get_iptables_data -
+	        Retrieves iptables data for the specified host.
+	
+	  ==============================================================================================================*/
+	function  get_iptables_data ( $host )
+	   {
+		global		$Database ;
+
+		$iptables	=  RsAdmin::TABLE_SERVER_IPTABLES ;
+		$servers	=  RsAdmin::TABLE_SERVERS ;
+		$query		=  "
+					SELECT 
+						$servers. ser_id		AS 'host_id',
+						$servers. ser_name		AS 'host',
+						$iptables. seri_chain		AS 'chain',
+						$iptables. seri_policy		AS 'policy',
+						$iptables. seri_target		AS 'target',
+						$iptables. seri_source		AS 'source'
+					FROM $iptables
+					LEFT JOIN $servers ON
+						$servers. ser_id = $iptables. seri_server_id
+					WHERE
+						seri_chain	=  'INPUT' AND
+						seri_policy	=  'ACCEPT' AND
+						seri_target	=  'DROP' AND
+						ser_name	=  '$host'
+					ORDER BY seri_source			
+				   " ;
+		$Database -> SetSimpleQuery ( $query ) ;
+		$rows		=  $Database -> LoadRows ( ) ;
+		$data		=  [] ;
+
+		foreach ( $rows  as  $row )
+			$data [ $row [ 'source' ] ]	=  $row ;
+
+		return ( $data ) ;
+	    }
+
+
+	/**************************************************************************************************************
+	 **************************************************************************************************************
+	 **************************************************************************************************************
+	 ******                                                                                                  ******
+	 ******                                                                                                  ******
+	 ******                                 PARAMETER HANDLING FUNCTIONS                                     ******
+	 ******                                                                                                  ******
+	 ******                                                                                                  ******
+	 **************************************************************************************************************
+	 **************************************************************************************************************
+	 **************************************************************************************************************/
+
+	/*==============================================================================================================
+	
+	    ListServers -
+	        Lists blocked ips count per server.
+	
+	  ==============================================================================================================*/
+	function  ListServers ( )
+	   {
+		global		$Database ;
+
+		$iptables	=  RsAdmin::TABLE_SERVER_IPTABLES ;
+		$server_table	=  RsAdmin::TABLE_SERVERS ;
+		$query		=  "
+					SELECT 
+						ser_name AS 'name', 
+						COUNT(*) AS 'count'
+					FROM $server_table
+					INNER JOIN $iptables ON
+						ser_id = seri_server_id
+					GROUP BY ser_name
+					ORDER BY ser_name
+
+				   " ;
+		
+		$Database -> SetSimpleQuery ( $query ) ;
+		$rows		=  $Database -> LoadRows ( ) ;
+
+		$report		=  new AsciiReport
+		   (
+			[ 'member' => 'name'	, 'title' => 'Server'					],
+			[ 'member' => 'count'	, 'title' => 'Blocked ips'	, 'align' => 'right'	]
+		    ) ;
+
+		echo $report -> Generate ( $rows ) ;
+		echo $report -> Summary ( 'server' ) ;
+	    }
+
+
+	/*==============================================================================================================
+	
+	    MergeBlockedIps -
+	        Ensures that all the specified servers have the same list of blocked ip addresses.
+	
+	  ==============================================================================================================*/
+	function  MergeBlockedIps ( $hosts )
+	   {
+		global		$RsAdmin, $IpTablesBackup ;
+		
+		
+		$ips_per_host	=  [] ;
+		$global_ips	=  [] ;
+
+		// Retrieve the complete list of ips, from all servers
+		output ( "Getting iptables data from local database :" ) ;
+  
+		foreach  ( $hosts  as  $host )
+		   {
+			echo ( "\t$host..." ) ;
+			$ips_per_host [ $host ]	=  get_iptables_data ( $host ) ;
+			$count			=  count ( $ips_per_host [ $host ] ) ;
+
+			foreach  ( $ips_per_host [ $host ]  as  $blocked_ip ) 
+			   {
+				if  ( ! isset ( $global_ips [ $blocked_ip [ 'source' ] ] ) )
+					$global_ips [ $blocked_ip [ 'source' ] ]	=  $blocked_ip ;
+			    }
+
+			output ( "done ($count ips)" ) ;
+		    }
+
+		// For each server, find the missing ips
+		$missing_ips	=  [] ;
+		$commands	=  [] ;
+
+		foreach  ( $global_ips  as  $global_ip )
+		   {
+			foreach  ( $hosts  as  $host )
+			   {
+				if  ( ! isset ( $ips_per_host [ $host ] [ $global_ip [ 'source' ] ] ) )
+				   {
+					$missing_ips [ $host ] []	=  $global_ip ;
+
+					add_iptables_entry ( $host, $global_ip [ 'source' ],
+								$global_ip [ 'chain' ], $global_ip [ 'policy' ], $global_ip [ 'target' ] ) ;
+
+					$commands []	=  "iptables -A INPUT -s {$global_ip [ 'source' ]} -j DROP" ;
+				    }
+			    }
+
+			
+		    }
+
+		if  ( count ( $missing_ips ) )
+		   {
+			output ( "The following ips were synchronized between servers :" ) ;
+		    }
+		else
+			output ( "Blocked ips are in sync with all servers." ) ;
+	    }
+
+		
+	/*==============================================================================================================
+	
+	    SetIpState -
+	        Blocks/unblocks the specified ips for the specified servers.
+	
+	  ==============================================================================================================*/
+	function  SetIpState ( $hosts, $ips, $block = true ) 
+	   {
+		global		$Database, $IpTablesBackup ;
+
+		$iptables	=  RsAdmin::TABLE_SERVER_IPTABLES ;
+		$server_table	=  RsAdmin::TABLE_SERVERS ;
+		$host_rows	=  [] ;
+		$ip_list	=  [] ;
+		$ip_count	=  0 ;
+
+		// Loop through hosts...
+		foreach (  $hosts  as  $host )
+		   {
+			$host_ips	=  [] ;
+			$commands	=  [] ;
+			$ip_list	=  [] ;
+
+			// ... then through ips
+			foreach  ( $ips  as  $ip )
+			   {
+				$address	=  $ip [ 'ip-address' ] ;
+
+				// Check that the ip is not referenced in the local database
+				$query	=  "
+						SELECT seri_id
+						FROM $iptables
+						LEFT JOIN $server_table ON
+							ser_id = seri_server_id
+						WHERE
+							ser_name	=  '$host' AND
+							seri_source	=  '$address'
+					   " ;
+				$Database -> SetSimpleQuery ( $query ) ;
+				$exists	 =  $Database -> LoadValue ( ) ;
+
+				if  ( $block ) 
+				   {
+					// Ip already exists : do nothing
+					if  ( $exists )
+						$host_ips []	=  "[$address]" ;
+					// Otherwise issue a command to block the ip
+					else 
+					   {
+						$host_ips []	=  $address ;
+						$ip_count ++ ;
+						$commands []	=  "iptables -A INPUT -s $address -j DROP" ;
+						$ip_list []	=  $address ;
+					    }
+				    }
+				else
+				   {
+					// Ip does not exists : do nothing
+					if  ( ! $exists )
+						$host_ips []	=  "[$address]" ;
+					// Otherwise issue a command to unblock the ip
+					else 
+					   {
+						$host_ips []	=  $address ;
+						$ip_count ++ ;
+						$commands []	=  "iptables -D INPUT -s $address -j DROP" ;
+						$ip_list []	=  $address ;
+					    }
+				    }
+			    }
+
+			$host_rows []	=  [ 'host' => $host, 'ips' => implode ( "\n", $host_ips )  ] ;
+
+			// Block/unblock the ips for this host
+			if  ( count ( $commands ) )
+			   {
+				$commands []	=  "iptables-save >$IpTablesBackup" ;
+				$command	=  implode ( ";\n", $commands ) ;
+
+				execute_command ( $host, $command ) ;
+
+				foreach  ( $ip_list  as  $ip  )
+				   {
+					if  ( $block )
+						add_iptables_entry ( $host, $ip ) ;
+					else
+						delete_iptables_entry ( $host, $ip ) ;
+				    }
+			    }
+		    }
+
+		// Generate a user-friendly report
+		$report		=  new AsciiReport 
+		   (
+			[ 'member' => 'host', 'title' => 'Server' ],
+			[ 'member' => 'ips' , 'title' => 'Ips' ] 
+		    ) ;
+
+		echo $report -> Generate ( $host_rows ) ;
+		$verb	=  ( $block ) ? 'blocked' : 'unblocked' ;
+		output ( "$ip_count ips $verb on " . count ( $hosts ) . " servers." ) ;
+	    }
+
+
+	
+	/*==================================================================================================
+
+		Global constants and variables.
+
+	  ==================================================================================================*/
+	$CL 			=  new  CLParser ( $Definitions ) ;
+	$BlockIps		=  $CL -> block_ips ;
+	$ConfigurationFile	=  $CL -> configuration_file ;
+	$ListConfiguredServers	=  $CL -> list_configured_servers ;
+	$ListServers		=  $CL -> list_servers ;
+	$MergeBlockedIps	=  $CL -> merge_blocked_ips ;
+	$UnblockIps		=  $CL -> unblock_ips ;
+	$Servers		=  $CL -> servers ;	
+	
+	$RsAdmin		=  new RsAdmin ( $ConfigurationFile ) ;
+	$ServerList		=  $RsAdmin -> FindServers ( $Servers ) ;
+	$IpTablesBackup		=  '/etc/network/iptables.rules' ;
+	$HadOption		=  false ;
+
+	
+	/*==================================================================================================
+
+		Main program.
+
+	  ==================================================================================================*/
+	
+	// -block_ips :
+	//	Blocks the specified ips.
+	if  ( ! $HadOption  &&  $CL -> IsSpecified ( 'block_ips' ) )
+	   {
+		SetIpState ( $ServerList, $BlockIps, true ) ;
+		$HadOption	=  true ;
+	    }
+
+	// -merge_blocked_ips :
+	//	Ensures that all the specified servers have the same list of blocked ips.
+	if  ( ! $HadOption  &&  $MergeBlockedIps )
+	   {
+		MergeBlockedIps ( $ServerList ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// -unblock_ips :
+	//	Unblocks the specified ips.
+	if  ( ! $HadOption  &&  $CL -> IsSpecified ( 'unblock_ips' ) )
+	   {
+		SetIpState ( $ServerList, $UnblockIps, false ) ;
+		$HadOption	=  true ;
+	    }
+
+	// -list_servers :
+	//	Lists the number of blocked ips per server.
+	if  ( ! $HadOption  &&  $ListServers ) 
+	   {
+		ListServers ( ) ;
+		$HadOption	=  true ;
+	    }
+
+	// -list_configured_servers :
+	//	Lists the servers configured for this command.
+	if  ( ! $HadOption  &&  $ListConfiguredServers ) 
+	   {
+		$RsAdmin -> ListServers ( ) ;
+		$HadOption	=  true ;
+	    }
+
+	// No argument specified : display help
+	if  ( ! $HadOption )
+		$CL -> DisplayHelp ( ) ;

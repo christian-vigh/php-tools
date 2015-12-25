@@ -1,0 +1,554 @@
+<?php
+	//!phpcmd(security, 1.0, production) : Applies distribution functions over a certain range.
+	/**************************************************************************************************************
+	
+	    NAME
+	        rangedist.phs
+	
+	    DESCRIPTION
+	        Applies distribution functions over a certain range.
+		The original idea for that came from a need to develop a lightweight server in php, whose sole purpose
+		would be to filter incoming requests for accessing a website admin panel.
+		Of course, a connection would have to be established on a specific port. I wanted this port to change
+		from time to time, so I thought that using some function to compute a port number based on the current
+		date/time would be a good idea and, even if this is not a bullet-proof approach, it could discourage
+		hackers, especially when coupled with an SSL connection.
+		Computed port numbers would fall within a given range (typically between 20000 and 65000), and current
+		time would be rounded down to the lowest x minutes (ie, port number would change every x minutes).
+		To achieve that, I needed a tool that :
+		- Apply a distribution function on every time value between January 1st 00:00:00 and December 31st
+		  23:59:59, by increments of x minutes (to allow time differences between the client and the server)
+		- Check how many values cover the given range cited above and chose the distribution function which 
+		  generates the greatest count of values within this range
+		- In the above range, get the list of free values (ie, values not covered by the distribution function)
+		  in order to have a list of port numbers that will be considered as free within this range. These
+		  port numbers can then be used for custom configurations of smtp, mysql, etc.
+	
+	    AUTHOR
+	        Christian Vigh, 11/2015.
+	
+	    HISTORY
+	    [Version : 1.0]    [Date : 2015/11/24]     [Author : CV]
+	        Initial version.
+	
+	 **************************************************************************************************************/
+	require ( "tools.phpinclude" ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Types\String ;
+	use  Thrak\Types\String\Convert ;
+	use  Thrak\Types\ArrayHelpers ;
+	use  Thrak\IO\Console ;
+	use  Thrak\IO\Path ;
+	use  Thrak\IO\AsciiReport ;
+	use  Thrak\Processors\IniFile ;
+
+
+	/*==============================================================================================================
+	
+	        Command-line definition.
+	
+	  ==============================================================================================================*/
+	$Definitions = <<<END
+<command>
+
+	<usage>
+		Applies distribution functions over ranges.
+	</usage>
+
+	<file name="configuration_file, cf" disposition="existing" default="thraktools://Data/rangedist.ini">
+		Parameters file for rangedist.
+	</file>
+
+	<file name="cache_file, cache" disposition="any" default="thraktools://Data/rangedist.cache">
+		Cache file containing the results of previous runs. If the configuration has been modified since the last
+		rebuild, the distribution functions will be run again to regenerate the cache.
+	</file>
+	
+	<string name="list_covered_ranges, lcr" value-text="function">
+		Lists the ranges covered by the specified function.
+	</string>
+
+	<flag name="list_functions, lf">
+		Lists the functions defined in the configuration file.
+	</flag>
+
+	<string name="list_function_code, lfc">
+		Lists the code defined for the specified function.
+	</string>
+
+	<string name="list_uncovered_ranges, lur" value-text="function">
+		Lists the ranges not covered by the specified function.
+	</string>
+
+	<flag name="rebuild_cache, rc">
+		Rebuilds the cache. This implies re-running all the distribution functions.
+	</flag>
+
+	<string name="run, r" arguments="0..*">
+		Runs the specified distribution functions. The default is to run all the functions if none
+		specified.
+		The function name can include wildcards.
+	</string>
+</command>
+END;
+
+
+	/*==================================================================================================
+
+		Support functions.
+
+	  ==================================================================================================*/
+
+
+	// evaluate_value -
+	//	Evaluates a value or the return value of a function.
+	function  evaluate_value ( $str )
+	   {
+		$cmd		=  "\$value = $str ;" ;
+		eval ( $cmd ) ;
+
+		return ( $value ) ;
+	    }
+
+
+	// get_function_entry -
+	//	Retrieves the settings defined for the specified function.
+	function  get_function_entry ( $settings, $name )
+	   {
+		foreach  ( $settings [ 'functions' ]  as  $entry )
+		   {
+			if  ( ! strcasecmp ( $entry [ 'name' ], $name ) )
+				return ( $entry ) ;
+		    }
+
+		error ( "Distribution function \"$name\" does not exist." ) ;
+	    }
+
+
+	// get_function_entries -
+	//	Retrieves the settings defined for the specified function names, which can include wildcards.
+	function  get_function_entries ( $settings, $namelist )
+	   {
+		if  ( ! $namelist )
+			return ( $settings [ 'functions' ] ) ;
+
+		$entries	=  [] ;
+
+		foreach  ( $namelist  as  $name )
+		   {
+			$found	=  false ;
+
+			foreach  ( $settings [ 'functions' ]  as  $entry )
+			   {
+				if  ( String::Matches ( $entry [ 'name' ], $name ) )
+				    {
+					$found	=  true ;
+					break ;
+				     }
+			    }
+
+			if  ( $found )
+				$entries []	=  $entry ;
+			else
+				error ( "Distribution function \"$name\" does not exist." ) ;
+		    }
+
+		if  ( ! count ( $entries ) )
+			error ( "No function(s) match(es) the specified function names." ) ;
+
+		return ( $entries ) ;
+	    }
+
+
+	// get_required_key -
+	//	Gets the specified required key.
+	function  get_required_key ( $configuration_file, $inifile, $section, $key, $default = null, $evaluate = false ) 
+	   {
+		$value		=  $inifile -> GetKey ( $section, $key, $default ) ;
+
+		if  ( $value  ===  null )
+			error ( "Required key \"$key\" is missing in section [$section] of file \"$configuration_file\", and " .
+				"no default setting exists in the [Settings] section." ) ;
+
+		if  ( $evaluate )
+			$value	=  evaluate_value ( $value ) ;
+
+		return ( $value ) ;
+	    }
+
+
+	/*==================================================================================================
+
+	    ListCoveredRanges -
+		Lists the ranges covered by the specified distribution function.
+
+	  ==================================================================================================*/
+	function  ListCoveredRanges ( $settings, $functions ) 
+	   {
+		$data	=  RunFunctions ( $settings, $functions ) ;
+		$values	=  $data [0] [ 'values' ] ;
+		$ranges =  ArrayHelpers::ToRanges ( array_keys ( $values ) ) ;
+
+		output ( "Occupied ranges (low;high;width) :" ) ;
+
+		foreach  ( $ranges  as  $range )
+			output ( $range [0] . ';' . $range [1] . ';' . ( $range [1] - $range [0] + 1 ) ) ;
+
+		output ( count ( $ranges ) . " occupied ranges listed." ) ;
+	    }
+
+
+	/*==================================================================================================
+
+	    ListUncoveredRanges -
+		Lists the ranges not covered by the specified distribution function.
+
+	  ==================================================================================================*/
+	function  ListUncoveredRanges ( $settings, $functions ) 
+	   {
+		$data		=  RunFunctions ( $settings, $functions ) ;
+		$entry		=  $data [0] ;
+		$values		=  $entry [ 'values' ] ;
+		$covered_ranges =  ArrayHelpers::ToRanges ( array_keys ( $values ) ) ;
+		$ranges		=  [] ;
+		$range_count	=  count ( $covered_ranges ) ;
+
+
+		if ( $covered_ranges [0] [0]  ==  $entry [ 'range-low' ] )
+		   {
+			$start_index	=  1 ;
+			$last_high	=  $covered_ranges [0] [1] + 1 ;
+		    }
+		else
+		   {
+			$start_index	=  0 ;
+			$ranges []	=  [ $entry [ 'range-low' ], $covered_ranges [0] [0] - 1 ] ;
+			$last_high	=  $entry [ 'range-high' ] + 1 ;
+		    }
+
+		for  ( $i = $start_index ; $i  <  $range_count ; $i ++ )
+		   {
+			$ranges []	=  [ $last_high, $covered_ranges [$i] [0] - 1 ] ;
+			$last_high	=  $covered_ranges [$i] [1] + 1 ;
+		    }
+
+		if  ( $last_high  <  $entry [ 'range-high' ] )
+			$ranges []	=  [ $last_high, $entry [ 'range-high' ] ] ;
+
+		output ( "Free ranges (low;high;width) :" ) ;
+
+		foreach  ( $ranges  as  $range )
+			output ( $range [0] . ';' . $range [1] . ';' . ( $range [1] - $range [0] + 1 ) ) ;
+
+		output ( count ( $ranges ) . " free ranges listed." ) ;
+	    }
+
+
+	/*==================================================================================================
+
+	    ListFunctions -
+		Lists the currently defined distribution functions.
+
+	  ==================================================================================================*/
+	function  ListFunctions ( $settings )
+	   {
+		$report		=  new AsciiReport
+		   (
+			[ 'member' => 'name'		, 'title' => 'Function'					],
+			[ 'member' => 'start'		, 'title' => 'Start'		, 'align' => 'right'	],
+			[ 'member' => 'end'		, 'title' => 'End'		, 'align' => 'right'	],
+			[ 'member' => 'increment'	, 'title' => 'Increment'	, 'align' => 'right'	],
+			[ 'member' => 'range-low'	, 'title' => 'Low value'	, 'align' => 'right'	],
+			[ 'member' => 'range-high'	, 'title' => 'High value'	, 'align' => 'right'	],
+			[ 'member' => 'description'	, 'title' => 'Description'				]
+		    ) ;
+
+		echo $report -> Generate ( $settings [ 'functions' ] ) ;
+		echo $report -> Summary ( 'distribution function' ) ;
+	    }
+
+
+	/*==================================================================================================
+
+	    LoadSettings -
+		Loads the current settings.
+
+	  ==================================================================================================*/
+	function  LoadSettings ( $configuration_file )
+	   {
+		$settings	=  [ 'functions' => [] ] ;
+		$inifile	=  IniFile::LoadFromFile ( $configuration_file ) ;
+
+		// Get default values
+		$default_start_value		=  $inifile -> GetKey ( 'Settings', 'StartValue', null ) ;
+		$default_end_value		=  $inifile -> GetKey ( 'Settings', 'EndValue'	, null ) ;
+		$default_increment		=  $inifile -> GetKey ( 'Settings', 'Increment'	, 1 ) ;
+		$default_range_low		=  $inifile -> GetKey ( 'Settings', 'RangeLow'	, null ) ;
+		$default_range_high		=  $inifile -> GetKey ( 'Settings', 'RangeHigh'	, null ) ;
+
+		// Get function definitions
+		$sections			=  $inifile -> GetSections ( 'Function \s* : \s* (?P<name> [^\s]+)' ) ;
+
+		foreach  ( $sections  as  $section )
+		   {
+			$fullname	=  $section [ 'name' ] ;
+			$name		=  $section [ 'match' ] [ 'name' ] ;
+
+			$start_value	=  get_required_key ( $configuration_file, $inifile, $fullname, 'StartValue'	, $default_start_value	, true ) ;
+			$end_value	=  get_required_key ( $configuration_file, $inifile, $fullname, 'EndValue'	, $default_end_value	, true ) ;
+			$increment	=  get_required_key ( $configuration_file, $inifile, $fullname, 'Increment'	, $default_increment	, true ) ;
+			$range_low	=  get_required_key ( $configuration_file, $inifile, $fullname, 'RangeLow'	, $default_range_low	, true ) ;
+			$range_high	=  get_required_key ( $configuration_file, $inifile, $fullname, 'RangeHigh'	, $default_range_high	, true ) ;
+			$description	=  get_required_key ( $configuration_file, $inifile, $fullname, 'Description'	, '' ) ;
+			$function	=  get_required_key ( $configuration_file, $inifile, $fullname, 'Code'		, null			, false ) ;
+
+			if  ( $start_value  >  $end_value )
+				error ( "Start value $start_value is greater than end value $end_value in the [$fullname] section of file " .
+					"\"$configuration_file\"" ) ;
+
+			if  ( $range_low  >  $range_high )
+				error ( "Low range value $range_low is greater than high range value $range_high in the [$fullname] section of file " .
+					"\"$configuration_file\"" ) ;
+
+			$settings [ 'functions' ] []	=
+			   [
+				'name'		=>  $name,
+				'description'	=>  $description,
+				'start'		=>  $start_value,
+				'end'		=>  $end_value,
+				'increment'	=>  $increment,
+				'range-low'	=>  $range_low,
+				'range-high'	=>  $range_high,
+				'code'		=>  $function,
+				'function'	=>  evaluate_value ( $function )
+			    ] ;
+		    }
+
+		return ( $settings ) ;
+	    }
+
+
+	/*==================================================================================================
+
+	    RunFunctions -
+		Runs the specified functions.
+
+	  ==================================================================================================*/
+	function  RunFunctions ( $settings, $list )
+	   {
+		global		$ConfigurationFile, $CacheFile, $RebuildCache ;
+
+
+		if  ( ! $RebuildCache  &&  file_exists ( $CacheFile )  &&  filemtime ( $ConfigurationFile )  <  filemtime ( $CacheFile ) )
+			$data	=  unserialize ( file_get_contents ( $CacheFile ) ) ;
+		else
+		   {
+			echo ( "Rebuilding cache...\n" ) ;
+
+			$data		=  [] ;
+
+			foreach  ( $settings [ 'functions' ]  as  &$entry )
+			   {
+				echo ( "\tRunning \"{$entry [ 'name' ]}\"..." ) ;
+
+				$row	=  
+				   [
+					'name'			=>  $entry [ 'name' ],
+					'values'		=>  [],
+					'min-value'		=>  PHP_INT_MAX,
+					'max-value'		=>  0,
+					'range-low'		=>  $entry [ 'range-low' ],
+					'range-high'		=>  $entry [ 'range-high' ],
+					'value-count'		=>  0,
+					'width'			=>  $entry [ 'end' ] - $entry [ 'start' ] + 1,
+					'distinct'		=>  0,
+					'delta'			=>  0,
+					'coverage'		=>  0,
+					'max-collisions'	=>  0
+				    ] ;
+
+				$function	=  $entry [ 'function' ] ;
+				$range_low	=  $entry [ 'range-low' ] ;
+				$range_high	=  $entry [ 'range-high' ] ;
+				$range_width	=  $range_high - $range_low + 1 ;
+
+				for  ( $current_value  =  $entry [ 'start' ] ; $current_value  <=  $entry [ 'end' ] ; $current_value  +=  $entry [ 'increment' ] )
+				   {
+					$computed_value		=  $function ( $current_value ) ;
+					$normalized_value	=  $range_low + ( $computed_value % $range_width ) ;
+
+					if  ( isset ( $row [ 'values' ] [ $normalized_value ] ) )
+						$row [ 'values' ] [ $normalized_value ] ++ ;
+					else
+						$row [ 'values' ] [ $normalized_value ]	=  1 ;
+
+					if  ( $row [ 'min-value' ]  >  $normalized_value ) 
+						$row [ 'min-value' ]	=  $normalized_value ;
+					else if  ( $row [ 'max-value' ]  <  $normalized_value )
+						$row [ 'max-value' ]	=  $normalized_value ;
+
+					$row [ 'value-count' ] ++ ;
+				    }
+
+
+				foreach  ( $row [ 'values' ]  as  $value => $count ) 
+				   {
+					if  ( $count  >  $row [ 'max-collisions' ] ) 
+						$row [ 'max-collisions' ]	=  $count ;
+				    }
+
+				$row [ 'distinct' ]	=  count ( $row [ 'values' ] ) ;
+				$row [ 'delta' ]	=  $row [ 'max-value' ] - $row [ 'min-value' ] + 1 ;
+				$row [ 'range' ]	=  $row [ 'range-high' ] - $row [ 'range-low' ] + 1 ;
+				$row [ 'coverage' ]	=  sprintf ( "%.2f", ( 100 / $row [ 'range' ] ) * $row [ 'distinct' ] ) . '%' ;
+
+				ksort ( $row [ 'values' ] ) ;
+				$data []		=  $row ;
+
+				output ( 'ok' ) ;
+			    }
+
+			output ( "done." ) ;
+			file_put_contents ( $CacheFile, serialize ( $data ) ) ;
+		    }
+
+		if  ( ! $list )
+			return ( $data ) ;
+
+		$result		=  [] ;
+
+		foreach ( $list  as  $name )
+		   {
+			$found		=  false ;
+
+			foreach  ( $data  as  $data_entry ) 
+			   {
+				if  ( ! strcasecmp ( $name, $data_entry [ 'name' ] ) )
+				   {
+					$result []	=  $data_entry ;
+					$found		=  true ;
+					break ;
+				    }
+			    }
+
+			if  ( ! $found )
+				error ( "Distribution function \"$name\" does not exist." ) ;
+		    }
+
+		return ( $result ) ;
+	    }
+
+
+	/*==================================================================================================
+
+	    Run -
+		Runs the specified functions.
+
+	  ==================================================================================================*/
+	function  Run ( $settings, $list )
+	   {
+		$data	=  RunFunctions ( $settings, $list ) ;
+
+		$report		=  new  AsciiReport
+		   (
+			[ 'member' => 'name'		, 'title' => 'Name'					],
+			[ 'member' => 'range-low'	, 'title' => 'Range min'				],
+			[ 'member' => 'range-high'	, 'title' => 'Range max'				],
+			[ 'member' => 'range'		, 'title' => 'Range size'				],
+			[ 'member' => 'value-count'	, 'title' => 'Iterations'				],
+			[ 'member' => 'min-value'	, 'title' => 'Min'					],
+			[ 'member' => 'max-value'	, 'title' => 'Max'					],
+			[ 'member' => 'distinct'	, 'title' => 'Distinct#'				],
+			[ 'member' => 'coverage'	, 'title' => '%Covered'		, 'align' => 'right'	],
+			[ 'member' => 'delta'		, 'title' => 'Real range'				],
+			[ 'member' => 'max-collisions'	, 'title' => 'Max dups'					]
+		    ) ;
+
+		echo $report -> Generate ( $data ) ;
+		echo $report -> Summary ( 'distribution run' ) ;
+	    }
+
+
+	/*==================================================================================================
+
+		Global constants and variables.
+
+	  ==================================================================================================*/
+	$CL 				=  new CLParser ( $Definitions ) ;
+	$ConfigurationFile		=  $CL -> configuration_file ;
+	$CacheFile			=  $CL -> cache_file ;
+	$ListCoveredRanges		=  $CL -> list_covered_ranges ;
+	$ListFunctions			=  $CL -> list_functions ;
+	$ListFunctionCode		=  $CL -> list_function_code ;
+	$ListUncoveredRanges		=  $CL -> list_uncovered_ranges ;
+	$RebuildCache			=  $CL -> rebuild_cache ;
+	$Run				=  $CL -> run ;
+	
+	$HadOption			=  false ;
+	$HadListOption			=  false ;
+
+
+	/*==================================================================================================
+
+		Main program.
+
+	  ==================================================================================================*/
+	$Settings	=  LoadSettings ( $ConfigurationFile ) ;
+	
+
+	// -rebuild_cache :
+	//	Rebuilds the cache.
+	if  ( $RebuildCache )
+	   {
+		RunFunctions ( $Settings, [] ) ;
+	    }
+
+	// -run :
+	//	Runs the specified functions.
+	if  ( ! $HadOption  &&  $CL -> IsSpecified ( 'run' ) )
+	   {
+		Run ( $Settings, $Run ) ;
+		$HadListOption		=  true ;
+	    }
+
+	// -list_covered_ranges :
+	//	Lists the ranges covered by the specified function.
+	if  ( ! $HadOption  &&  $CL -> IsSpecified ( 'list_covered_ranges' ) )
+	   {
+		ListCoveredRanges ( $Settings, [ $ListCoveredRanges ] ) ;
+		$HadListOption		=  true ;
+	    }
+
+	// -list_uncovered_ranges :
+	//	Lists the ranges not covered by the specified function.
+	if  ( ! $HadOption  &&  $CL -> IsSpecified ( 'list_uncovered_ranges' ) )
+	   {
+		ListUncoveredRanges ( $Settings, [ $ListUncoveredRanges ] ) ;
+		$HadListOption		=  true ;
+	    }
+
+	// -list_functions :
+	//	Lists the functions currently defined in the configuration file.
+	if  ( ! $HadOption  &&  $ListFunctions )
+	   {
+		ListFunctions ( $Settings ) ;
+		$HadListOption		=  true ;
+	    }
+
+	// -list_function_code :
+	//	Displays the php code of a distribution function.
+	if  ( ! $HadOption  &&  $ListFunctionCode )
+	   {
+		$entry	=  get_function_entry ( $Settings, $ListFunctionCode ) ;
+		output ( $entry [ 'code' ] ) ;
+
+		$HadListOption		=  true ;
+	    }
+
+	if  ( $HadListOption )
+		$HadOption	=  true ;
+
+	// Display help if no option specified
+	if  ( ! $HadOption )
+		$CL -> DisplayHelp ( ) ;

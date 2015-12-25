@@ -1,0 +1,293 @@
+<?php
+	//!phpcmd(Windows, 2.0) : Shows information about logical drives.
+	/***************************************************************************************************
+
+	    NAME
+		drives.phs
+
+	    DESCRIPTION
+		Shows information about logical drives.
+
+	    AUTHOR
+	     	Christian Vigh, 11/2014.
+
+	    HISTORY
+	    [Version : 1.0]	[Date : 2014/11/02]	[Author : CV]
+	     	Initial version.
+
+	 ***************************************************************************************************/
+	require ( "tools.phpinclude" ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Types\String ;
+	use  Thrak\IO\Path ;
+	use  Thrak\IO\AsciiReport ;
+	use  Thrak\Processors\IniFile ;
+	use  Thrak\Windows\Windows ;
+	use  Thrak\Windows\LogicalDrives ;
+	use  Thrak\Windows\LogicalDrive ;
+
+	
+	/*==================================================================================================
+
+		Command line parameters.
+
+	  ==================================================================================================*/
+	$Definitions = <<<END
+<command name="drives" allow-files="false">
+
+	<usage>
+		Shows information about logical drives.
+	</usage>
+
+	<flag name="assigned, a">
+		Displays a list of assigned drive letters.
+	</flag>
+	
+	<flag name="list, l">
+		Lists information about the currently assigned drives.
+	</flag>
+	
+	<flag name="next, n">
+		Displays the next available drive letter.
+	</flag>
+	
+	<string name="show, s" arguments="1..*" value-text="drive(s)" validation-regex="^([A-Za-z]:?|[*])$">
+		Shows information about the specified drive(s).
+	</string>
+	
+	<keyword name="type, t" arguments="1..*">
+		Restrict the listing to the specified type(s) of drives.
+		
+		<keyword name="cdrom, cd, c" value="5">
+			Display only compact disk drives.
+		</keyword>
+		
+		<keyword name="local, l" value="3">
+			Display only local disks.
+		</keyword>
+		
+		<keyword name="network, n" value="4">
+			Display only network drives.
+		</keyword>
+		
+		<keyword name="removable, r" value="2">
+			Display only removable disks.
+		</keyword>
+		
+		<keyword name="ram" value="6">
+			Display only ram disks.
+		</keyword>
+		
+		<keyword name="unknown, u" value="-1">
+			Display unknown disks or disks in error.
+		</keyword>
+	</keyword>
+	
+	<flag name="unassigned, u">
+		Displays a list of unassigned drive letters.
+	</flag>
+	
+	
+</command>
+END;
+
+	/*==================================================================================================
+
+	    IsSearchedDriveType -
+	 	Checks if the specified drive type belongs to the list of searched drives.
+
+	  ==================================================================================================*/
+	function  IsSearchedDriveType ( $searched_types, $type ) 
+	   {
+		if  ( ! $searched_types )
+			return ( true ) ;
+		
+		foreach  ( $searched_types  as  $searched_type )
+		   {
+			if  ( $searched_type  ==  -1  &&  $type  <  2  ||  $type  >  6 )
+				return ( true ) ;
+			
+			if  ( $searched_type  ==  $type ) 
+				return ( true ) ;
+		    }
+		
+		return ( false ) ;
+	    }
+	
+	/*==================================================================================================
+
+	    ListDrives -
+	 	Lists the available logical drives.
+
+	  ==================================================================================================*/
+	function  ListDrives  ( $drives, $types )
+	   {
+		$data	=  [] ;
+		
+		foreach  ( $drives  as  $drive )
+		   {
+			if  ( ! IsSearchedDriveType ( $types, $drive -> DriveType ) )
+				continue ;
+			
+			$data []	= 
+			   [
+				'drive'			=>  $drive -> DeviceID,
+				'type'			=>  $drive -> GetDriveType ( ),
+				'compressed'		=>  ( $drive -> Compressed ) ?  "Y" : "N",
+				'name'			=>  ( $drive -> VolumeName ) ?  $drive -> VolumeName : $drive -> ProviderName,
+				'serial'		=>  $drive -> VolumeSerialNumber,
+				'filesystem'		=>  $drive -> FileSystem,
+				'size'			=>  number_format ( $drive -> Size, 0, '.', ' ' ),
+				'free'			=>  number_format ( $drive -> FreeSpace, 0, '.', ' ' ),
+				'used'			=>  number_format ( $drive -> Size - $drive -> FreeSpace, 0, '.', ' ' ),
+			    ] ;
+		    }
+		
+		$report		=  new  AsciiReport 
+		   (
+			[ 'member' => 'drive'		, 'title' => 'Drive'					],
+			[ 'member' => 'type'		, 'title' => 'Type'					],
+			[ 'member' => 'compressed'	, 'title' => 'C?'		, 'align' => 'center'	],
+			[ 'member' => 'serial'		, 'title' => 'SN#'					],
+			[ 'member' => 'name'		, 'title' => 'Volume'					],
+			[ 'member' => 'filesystem'	, 'title' => 'FS'					],
+			[ 'member' => 'size'		, 'title' => 'Size'		, 'align' => 'right'	],
+			[ 'member' => 'free'		, 'title' => 'Free'		, 'align' => 'right'	],
+			[ 'member' => 'used'		, 'title' => 'Used'		, 'align' => 'right'	] 
+		    ) ;
+		
+		echo $report -> Generate ( $data ) ;
+		echo $report -> Summary ( "drive" ) ;
+	    }
+
+	
+	/*==================================================================================================
+
+	    ShowDrives -
+	 	Shows complete information about logical drives.
+
+	  ==================================================================================================*/
+	function  ShowDrives  ( $drives, $letters, $types )
+	   {
+		if  ( in_array ( "*", $letters ) )
+		   {
+			$letters	=   [] ;
+			
+			foreach  ( $drives  as  $drive )
+				$letters []	=  $drive -> DeviceID ;
+		    }
+		else
+		   {
+			foreach  ( $letters  as  &$letter ) 
+			   {
+				$normalized	=  LogicalDrive::NormalizeDriveLetter ( $letter ) ;
+				
+				if  ( $normalized  ===  false )
+					error ( "Invalid driver letter \"$letter\"." ) ;
+				else
+					$letter		=  $normalized ;
+			    }
+		    }
+
+		$eject	=  false ;
+		
+		foreach  ( $drives  as  $drive )
+		   {
+			if  ( ! in_array ( $drive -> DeviceID, $letters ) )
+				continue ;
+			
+			if  ( ! IsSearchedDriveType ( $types, $drive -> DriveType ) )
+				continue ;
+			
+			$data		=  [] ;
+			
+			foreach  ( $drive  as  $property_name => $property_value )
+			   {
+				if  ( $property_value  !==  null )
+				   {
+					if  ( is_array ( $property_value ) )
+						$value	=  "[" . implode ( ", ", $property_value ) . "]" ;
+					else if  ( is_bool ( $property_value ) )
+						$value	=  ( $property_value ) ?  "true" : "false" ;
+					else 
+						$value	=  $property_value ;
+					
+					$data []	=  
+					   [
+						'name'		=>  $property_name,
+						'value'		=>  $value
+					    ] ;
+				     }
+			    }
+		
+			if  ( $eject )
+				output ( "" ) ;
+			
+			output ( "Drive " . $drive -> DeviceID . " properties : " ) ;
+			
+			$report		=  new AsciiReport 
+			   (
+				[ 'member' => 'name' , 'title' => 'Property'				],
+				[ 'member' => 'value', 'title' => 'Value'   , 'align' => 'right'	]
+			    ) ;
+			
+			echo $report -> Generate ( $data ) ;
+			
+			$eject	=  true ;
+		    }
+	    }
+	
+	
+	/*==================================================================================================
+
+		Global constants and variables.
+
+	  ==================================================================================================*/
+	$CL 			=  new  CLParser ( $Definitions ) ;
+	$List			=  $CL -> list ;
+	$Show			=  $CL -> show ;
+	$Drives			=  new  LogicalDrives ( ) ;
+	$ListAssigned		=  $CL -> assigned ;
+	$ListUnassigned		=  $CL -> unassigned ;
+	$ListNext		=  $CL -> next ;
+	$Types			=  $CL -> type ;
+	
+	
+	/*==================================================================================================
+
+		Main program.
+
+	  ==================================================================================================*/
+	$HadOption	=  false ;
+	
+	if  ( ! $HadOption  &&  $List )
+	   {
+		ListDrives ( $Drives, $Types ) ;
+		$HadOption	=  true ;
+	    }
+	
+	if  ( ! $HadOption  &&  $Show )
+	   {
+		ShowDrives ( $Drives, $Show, $Types ) ;
+		$HadOption	=  true ;
+	    }
+	
+	if  ( ! $HadOption  &&  $ListAssigned )
+	   {
+		output ( implode ( " ", $Drives -> GetAssignedDrives ( ) ) ) ;
+		$HadOption	=  true ;
+	    }
+
+	if  ( ! $HadOption  &&  $ListUnassigned )
+	   {
+		output ( implode ( " ", $Drives -> GetUnassignedDrives ( ) ) ) ;
+		$HadOption	=  true ;
+	    }
+
+	if  ( ! $HadOption  &&  $ListNext )
+	   {
+		output ( $Drives -> GetNextAvailableDrive ( ) ) ;
+		$HadOption	=  true ;
+	    }
+

@@ -1,0 +1,192 @@
+<?php
+	//!phpcmd(Administration, 1.0, production) : Retrieves data collected from random.org on remote servers.
+	/***************************************************************************************************
+
+	    NAME
+		rsgetrandom.phs
+
+	    DESCRIPTION
+		Retrieves data collected from random.org on remote servers.
+
+	    AUTHOR
+	     	Christian Vigh, 05/2015.
+
+	    HISTORY
+	    [Version : 1.0]	[Date : 2015/05/24]	[Author : CV]
+	     	Initial version.
+
+	    [Version : 1.0.1]	[Date : 2015/11/29]     [Author : CV]
+		. Added the -list_configured_servers option.
+
+	 ***************************************************************************************************/
+	require ( "tools.phpinclude" ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Types\String ;
+	use  Thrak\IO\Path ;
+	use  Thrak\IO\AsciiReport ;
+	use  Thrak\Processors\IniFile ;
+	use  Thrak\Processors\Csv ;
+	use  Thrak\Processors\CsvOptions ;
+	use  Thrak\Types\FileSpecificationFormatter ;
+	use  Thrak\Types\SpecializedFormatterDefinition ;
+
+	
+	require ( "RsAdmin.phpclass" ) ;
+
+	/*==================================================================================================
+
+		Command line parameters.
+
+	  ==================================================================================================*/
+	$Definitions = <<<END
+<command name="rsgetrandom" allow-files="false">
+
+	<usage>
+		Retrieves data collected from random.org on remote servers.		
+	</usage>
+	
+	<file name="configuration_file, cf" disposition="existing" default="thraktools://Data/rsadmin.ini">
+		Hosted servers parameters file.
+	</file>
+	
+	<flag name="keep_files, kf">
+		Normally, files are removed from the remote servers once they have been processed.
+		This options tels rsgetrandom to remove them after processing.
+	</flag>
+	
+	<flag name="list_configured_servers, lcs">
+		Lists the servers configured for this command.
+	</flag>
+		
+	<file name="output, o" disposition="any" default="thrak://Support/Materials/Random/random.%s.txt">
+		Output file containing all the collected random data.
+	</file>
+	
+	<string name="servers, server, s" default="*" arguments="0..*">
+		Server name(s) on which collected random data is to be retrieved.
+		Wildcard characters are authorized, and search is performed on every server alias.
+	</string>
+	
+	<string name="server_path, sp" default="/server/data/random">
+		Path on the remote server where the files containing random data are stored.
+	</string>
+</command>
+END;
+
+	
+	/*==================================================================================================
+
+	    CollectFiles -
+		Collects data from the specified server list.
+
+	  ==================================================================================================*/
+	function  CollectFiles ( $hosts, $server_path, $output, $keepfiles )
+	   {
+		global		$RsAdmin ;
+		
+		
+		$formatter		=  new  FileSpecificationFormatter ( ) ;
+		$output_file		=  $formatter -> format ( $output ) ;
+		$output_fp		=  fopen ( $output_file, "a" ) ;
+		$files_processed	=  0 ;
+		$total_values		=  0 ;
+		
+		output ( "Collecting random data to $output_file..." ) ;
+		
+		foreach  ( $hosts  as  $host )
+		   {
+			output ( "\tServer $host :" ) ;
+			
+			$server			=  $RsAdmin -> FindServer ( $host ) ;
+			$server -> Connect ( false, true, true ) ;
+			
+			$fs			=  $server -> GetFileSystem ( ) ;
+			$rs			=  $fs -> opendir ( $server_path ) ;
+			$host_files_processed	=  0 ;
+			$host_values		=  0 ;
+				
+			while  ( $path = $fs -> readdir ( $rs ) )
+			   {
+				$server_file	=  "$server_path/$path" ;
+
+				if  ( $fs -> is_file ( $server_file ) )
+				   {
+					echo ( "\t\t$server_file..." ) ;
+				
+					$lines		=  $fs -> file ( $server_file ) ;
+					$count		=  0 ;
+					
+					foreach  ( $lines  as  $line )
+					   {
+						$line	=  trim ( $line ) ;
+						
+						if  ( preg_match ( '/^ \s* [+\-]? \d+ \s* $/imsx', $line ) )
+						   {
+							fputs ( $output_fp, "$line\n" ) ;
+							$count ++ ;
+						    }
+					    }
+					
+					output ( "$count values" ) ;
+					$total_values	+=  $count ;
+					$files_processed ++ ;
+					
+					$host_values	+=  $count ;
+					$host_files_processed ++ ;
+					
+					if  ( ! $keepfiles )
+						$fs -> unlink ( $server_file ) ;
+				    }
+			    }
+			
+			$fs -> closedir ( $rs ) ;
+			output ( "\tProcessed $host_values values in $host_files_processed files." ) ;
+		    }
+		    
+		fclose ( $output_fp ) ;
+		
+		if  ( $total_values )
+			output ( "Total files : $files_processed, total values : $total_values" ) ;
+		else
+		   {
+			unlink ( $output_file ) ;
+			output ( "No value found, no output file generated." ) ;
+		    }
+	    }
+	
+
+	/*==================================================================================================
+
+		Global constants and variables.
+
+	  ==================================================================================================*/
+	$CL 			=  new  CLParser ( $Definitions ) ;
+	$ConfigurationFile	=  $CL -> configuration_file ;
+	$KeepFiles		=  $CL -> keep_files ;
+	$ListConfiguredServers	=  $CL -> list_configured_servers ;
+	$Output			=  $CL -> output ;
+	$Servers		=  $CL -> servers ;
+	$ServerPath		=  $CL -> server_path ;
+	
+	$RsAdmin		=  new RsAdmin ( $ConfigurationFile ) ;
+	$ServerList		=  $RsAdmin -> FindServers ( $Servers ) ;
+	$HadOption		=  false ;
+
+	
+	/*==================================================================================================
+
+		Main program.
+
+	  ==================================================================================================*/
+
+	// -list_configured_servers :
+	//	Lists the servers configured for this command.
+	if  ( ! $HadOption  &&  $ListConfiguredServers ) 
+	   {
+		$RsAdmin -> ListServers ( ) ;
+		$HadOption	=  true ;
+	    }
+
+	if  ( ! $HadOption )
+		CollectFiles ( $ServerList, $ServerPath, $Output, $KeepFiles ) ;

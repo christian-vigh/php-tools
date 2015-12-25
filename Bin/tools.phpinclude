@@ -1,0 +1,37 @@
+<?php
+use  Thrak\Types\String ;
+use  Thrak\IO\Path ;
+
+// Define the thrak tools root
+$THRAK_PHPTOOLS 		=  getenv ( 'THRAK_PHPTOOLS' ) ;
+$SITE_ROOT			=  $THRAK_PHPTOOLS ;
+$SITE_CONFIGURATION		=  $THRAK_PHPTOOLS . "/Data/Tools.cfg.phpinclude" ;
+
+if  ( ! $THRAK_PHPTOOLS )
+	error ( "The THRAK_PHPTOOLS environment variable must be defined and point to the directory containing additional PHP tools." ) ;
+
+if  ( ! is_dir ( $THRAK_PHPTOOLS ) )
+	error ( "The directory specified by the THRAK_PHPTOOLS environment variable ($THRAK_PHPTOOLS) does not exist." ) ;
+
+// Include Thrak main file
+$OBJECT_GARDENKEEPER	=  true ;
+
+require ( getenv (  'THRAK_ROOT' ) . '/Thrak.phpinclude' ) ;
+
+// Normalize THRAK_PHPTOOLS
+$THRAK_PHPTOOLS		=  Path::ToUnix ( $THRAK_PHPTOOLS ) ;
+
+if  ( ! String::EndsWith ( $THRAK_PHPTOOLS, '/' ) )
+	$THRAK_PHPTOOLS	.= '/' ;
+
+$GLOBALS [ 'THRAK_PHPTOOLS_INCLUDE' ] 	=  Thrak\IO\Path::ToUnix ( $THRAK_PHPTOOLS . "/Include" ) ;
+
+// Add the thraktools IO wrapper
+\Thrak\IO\Wrappers\FileWrapper::Register ( "thraktools" , array ( 'root' => $GLOBALS [ 'THRAK_PHPTOOLS' ] ) ) ;
+
+// And a few directories to the include path
+set_include_path ( get_include_path ( ) . PATH_SEPARATOR . "thraktools://Include" ) ;
+
+
+// To be included by all PHP tool programs
+$THRAK_PHPTOOLS_DATA 		=  "thraktools://Data" ;

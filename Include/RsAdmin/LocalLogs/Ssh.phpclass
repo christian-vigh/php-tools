@@ -1,0 +1,93 @@
+<?php
+/**************************************************************************************************************
+
+    NAME
+        Ssh.phpclass
+
+    DESCRIPTION
+        Handles custom ssh log.
+
+    AUTHOR
+        Christian Vigh, 07/2015.
+
+    HISTORY
+    [Version : 1.0]    [Date : 2015/07/24]     [Author : CV]
+        Initial version.
+
+ **************************************************************************************************************/
+
+use		Thrak\Types\String ;
+
+/*==============================================================================================================
+
+    LocalSshLog class -
+        Handles custom ssh logfile entries.
+
+  ==============================================================================================================*/
+class  LocalSshLog	extends  LocalLog
+   {
+	public		$Title		=  'ssh' ;
+
+	// Auth message codes
+	const	SSH_NONE					=   0 ;
+	const   SSH_CONNECT					=   1 ;
+
+
+	public function  __construct ( $string_store, $rsadmin ) 
+	   {
+		parent::__construct ( RsAdmin::LOGTYPE_SSH, $string_store, $rsadmin ) ;
+	    }
+
+
+	protected function  Parse ( $line, &$parsed_data, $string_store )
+	   {
+		static		$re	=  '#
+						(?P<message>
+							(?P<ip> [^\s]+)
+							\s+
+							(?P<domain> [^\s]+)
+							\s+
+							(?P<command> [^\s]+)
+							.*
+						 )
+					    #imsx' ;
+
+		if  ( preg_match ( $re, $line, $match ) )
+		   {
+			$ip_id		=  0 ;
+			$domain_id	=  0 ;
+			$command	=  strtolower ( $match [ 'command' ] ) ;
+			$code		=  self::SSH_NONE ;
+			$message_id	=   $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE, $match [ 'message' ] ) ;
+
+			switch  ( strtolower ( $command ) )
+			   {
+				case	'connect' :
+					$code		=  self::SSH_CONNECT ;
+					$ip_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP, $match [ 'ip' ] ) ;
+					$domain_id	=  $string_store -> Insert ( LogStringStore::LOGSTORE_DOMAIN_NAME, $match [ 'domain' ] ) ;
+					break ;
+
+				default :
+					warning ( new \Thrak\System\ParseException ( "The following {$this -> Title} log entry message part could not be interpreted :\n\t$line" ) ) ;
+
+					return ( false ) ;
+			    }
+
+			$parsed_data	=
+			   [
+				'type'		=>  $code,
+				'data'		=>
+				   [
+					LogStringStore::LOGSTORE_IP		=>  $ip_id,
+					LogStringStore::LOGSTORE_DOMAIN_NAME	=>  $domain_id,
+					LogStringStore::LOGSTORE_MESSAGE	=>  $message_id
+				    ]
+			    ] ;
+
+			return ( true ) ;
+		    }
+		else 
+			warning ( new \Thrak\System\ParseException ( "The following {$this -> Title} log entry could not be interpreted :\n\t$line" ) ) ;
+	    }
+    }

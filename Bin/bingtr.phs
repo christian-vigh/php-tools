@@ -1,0 +1,963 @@
+<?php
+	//!phpcmd(Internet, 2.0) : Language translator using the Bing API.
+	/***************************************************************************************************
+
+	    NAME
+		bingtr.phs
+
+	    DESCRIPTION
+		A language translator using the Bing API.
+
+	    AUTHOR
+	     	Christian Vigh, 02/2015.
+	 
+	    HISTORY
+	    [Version : 1.0]	[Date : 2015/02/01]	[Author : CV]
+	     	Initial version.
+
+	 ***************************************************************************************************/
+	require ( "tools.phpinclude" ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Types\String ;
+	use  Thrak\Types\String\Formatting ;
+	use  Thrak\IO\Path ;
+	use  Thrak\IO\AsciiReport ;
+	use  Thrak\Processors\IniFile ;
+	use  Thrak\Internet\Azure\BingTranslator ;
+	   
+	
+	/*==================================================================================================
+
+		Command line parameters.
+
+	  ==================================================================================================*/
+	$Definitions = <<<END
+<command name="bingtr" allow-files="true" min-files="0" max-files="*" value-text="text" value-help="sentence(s)">
+
+	<usage>
+		Language translator using the Bing API.
+	</usage>
+	
+	<string name="break_sentences, bs" arguments="1..*">
+		Breaks the specified text into sentences and display them, one per line.
+	</string> 
+	
+	<file name="configuration_file, cf" disposition="existing" default="thraktools://Data/bingtr.ini">
+		Specifies the location of the bingtr .ini file.
+	</file>
+
+	<string name="detect_and_say, das" arguments="1..*" value-text="sentence">
+		Detects a sentence's laguage then speaks it.
+	</string>
+		
+	<flag name="detect_language, dl">
+		When specified, tries to detect the language of the supplied text.
+	</flag>
+	
+	<string name="from, f">
+		Specifies the source language code or name for translation.
+	</string>
+	
+	<flag name="html, h">
+		Specifies that supplied input data (either on the command-line or through a file) contains
+		html contents.
+	</flag>
+	
+	<file name="input, i" disposition="existing">
+		Specifies a file containing the text to be translated.
+	</file>
+
+	<flag name="list_languages, ll, list_translated_languages, ltl">
+		Lists the languages available for translation, sorted by name.
+	</flag>
+	
+	<flag name="list_language_codes, llc, list_translated_language_codes, ltlc">
+		Lists the languages available for translation, sorted by code.
+	</flag>
+
+	<flag name="list_service, ls">
+		Displays translator service information.
+	</flag>
+	
+	<flag name="list_services, lss">
+		Displays information about all Azure services.
+	</flag>
+	
+	<flag name="list_spoken_languages, lsl">
+		Lists the languages available for speech synthesis, sorted by name.
+	</flag>
+	
+	<flag name="list_spoken_language_codes, lslc">
+		Lists the languages available for speech synthesis, sorted by code.
+	</flag>
+
+	<flag name="no_cache, nc">
+		Do not search translations in the cache.
+	</flag>
+
+	<string name="normalize_text, nt" arguments="1..*" value-text="sentence">
+		Transforms the specified text.
+	</string>
+		
+	<flag name="play, p">
+		Generates a sound file for each sentence translation and plays it.
+	</flag>
+		
+	<flag name="quota, q">
+		Shows the remaining quota for translations, in characters.
+	</flag>
+	
+	<flag name="reload_languages, rl">
+		Rebuilds the language list, for both translation and speech analysis.
+	</flag>
+	
+	<string name="say, s" arguments="1..*" value-text="sentence">
+		Speaks the given sentence in the destination language.
+	</string>
+		
+	<string name="say_in, si" arguments="1..*" value-text="language sentence">
+		Speaks the given sentence in the specified language.
+	</string>
+		
+	<string name="to, t">
+		Specifies the destination language code or name for translation.
+	</string>
+	
+	<flag name="to_local, tl">
+		Translation will be performed using the FIRST language specified in the DefaultLanguages
+		key of the [Settings] section of the configuration file to the first language.
+	</flag>
+	
+	<flag name="to_remote, tr">
+		Translation will be performed using the SECOND language specified in the DefaultLanguages
+		key of the [Settings] section of the configuration file to the second language.
+	</flag>
+	
+	<flag name="transform_text, tt">
+		Transforms the supplied text before translation.
+		Only works for the "en" language. This setting is applied to source sentences.
+	</flag>
+	
+	<flag name="verbose, v">
+		Outputs additional information, such as translation origin (Bing or internal cache).
+	</flag>
+</command>
+END;
+
+	
+	/**************************************************************************************************************
+	 **************************************************************************************************************
+	 **************************************************************************************************************
+	 ******                                                                                                  ******
+	 ******                                                                                                  ******
+	 ******                                     UTILITY FUNCTIONS                                            ******
+	 ******                                                                                                  ******
+	 ******                                                                                                  ******
+	 **************************************************************************************************************
+	 **************************************************************************************************************
+	 **************************************************************************************************************/
+	
+	// check_translation_languages, check_translation_language -
+	//	In case of a translation request, checks that source and destination languages have been specified.
+	function  check_translation_language ( $language, $origin )
+	   {
+		global		$Translator ;
+		
+		if  ( ! $Translator -> GetLanguageCode ( $language ) )
+			error ( "Invalid $origin language \"$language\"." ) ;
+	    }
+	
+	
+	function  check_translation_languages ( )
+	   {
+		global		$TranslateFromLanguage, $TranslateToLanguage ;
+		
+		
+		if  ( ! $TranslateFromLanguage )
+			error ( "A translation has been requested, but no source language has been specified on the command line " .
+				"or in the DefaultLanguages key of the [Settings] section of configuration file \"$ConfigurationFile\"." ) ;
+		
+		if  ( ! $TranslateToLanguage )
+			error ( "A translation has been requested, but no destination language has been specified on the command line " .
+				"or in the DefaultLanguages key of the [Settings] section of configuration file \"$ConfigurationFile\"." ) ;
+		
+		check_translation_language ( $TranslateFromLanguage, "source language" ) ;
+		check_translation_language ( $TranslateToLanguage  , "destination language" ) ;
+	    }
+	
+	
+	// cli_convert -
+	//	Converts character code on Windows CLI.
+	function  cli_convert ( $text )
+	   {
+		if  ( IS_WINDOWS  &&  IS_CLI )
+			$text		=  iconv ( 'ISO-8859-1', 'CP437', $text ) ;
+		
+		return ( $text ) ;
+	    }
+	
+	
+	// get_sentences -
+	//	Normalizes the sentences specified on the command-line.
+	function  get_sentences ( $array )
+	   {
+		$count		=  count ( $array ) ;
+		
+		for  ( $i  =  0 ; $i  <  $count ; $i ++ )
+		   {
+			$result		=  strtolower ( preg_replace ( '/\s+/', ' ', $array [$i] ) ) ;
+			$array [$i]	=  $result ;
+		    }
+		
+		return ( $array ) ;
+	    }
+	
+	
+	// speak_and_play -
+	//	Plays the specified sound file.
+	function  speak_and_play ( $language, $text )
+	   {
+		global		$Translator ;
+		
+		$file		=  'volatile://bingtr.play.' . rand ( 1, 999999 ) . '.wav' ;
+		$sound_data	=  $Translator -> Speak ( $language, $text ) ;
+		file_put_contents ( $file, $sound_data ) ;
+		
+		if  ( IS_WINDOWS )
+		   {
+			if  ( getenv ( 'CYGWIN_ROOT' ) )
+			   {
+				$file	=  Path::ToCygWin ( Path::RealPath ( $file ) ) ;
+				exec ( "bash -c \"cat \\\"$file\\\" > /dev/dsp\"" ) ;
+			    }
+			else
+			   {
+				exec ( "wmplayer \"$file\"" ) ;
+			    }
+		    }
+		else
+		   {
+			exec ( "cat \"$file\" >/dev/dsp 2>/dev/null" ) ;
+		    }
+	    }
+	
+	
+	/**************************************************************************************************************
+	 **************************************************************************************************************
+	 **************************************************************************************************************
+	 ******                                                                                                  ******
+	 ******                                                                                                  ******
+	 ******                           COMMAND-LINE OPTION PROCESSING FUNCTIONS                               ******
+	 ******                                                                                                  ******
+	 ******                                                                                                  ******
+	 **************************************************************************************************************
+	 **************************************************************************************************************
+	 **************************************************************************************************************/
+
+	/*==============================================================================================================
+	
+	    ListLanguages -
+	        Lists the available languages, either by name or by code.
+	
+	  ==============================================================================================================*/
+	function  ListLanguages ( $translation, $by_code )
+	   {
+		global		$Translator ;
+		
+		if  ( $by_code )
+			$headers	=  
+			   [
+				[ 'member' => 'code', 'title' => 'Code'     ],
+				[ 'member' => 'name', 'title' => 'Language' ]
+			    ] ;
+		else
+			$headers	=  
+			   [
+				[ 'member' => 'name', 'title' => 'Language' ],
+				[ 'member' => 'code', 'title' => 'Code'     ]
+			    ] ;
+		
+		$report		=  new AsciiReport ( $headers ) ;
+		$languages	=  $Translator -> GetLanguages ( $translation, $by_code ) ;
+		
+		echo $report -> Generate ( $languages ) ;
+		echo $report -> Summary ( 'language' ) ;
+	    }
+
+	
+	/*==============================================================================================================
+	
+	    Translate -
+	        Tranlates a sentence. Updates the internal cache if necessary.
+	
+	  ==============================================================================================================*/
+	function  Translate ( $texts )
+	   {
+		global		$Translator, $DirtyCache, $CachePurge, $CachedEntries, $NoCache, $Html, $Play,
+				$TranslateFromLanguage, $TranslateToLanguage, $Verbose, $TransformText ;
+		
+		// Compute the minimum time for a cache entry to remain valid
+		$purge_time		=  strtotime ( "now - $CachePurge" ) ;
+		$renewed		=  false ;
+		$text_count		=  count ( $texts ) ;
+		
+		// Build an array of translation requests
+		$translations		=  [] ;
+		
+		foreach  ( $texts  as  $text )
+			$translations []	=  [ 'text' => $text, 'entry' => [], 'cached' => false ] ;
+		
+		// Get the possible translations from the cache, if they are still valid and isolate the others
+		$translation_request_indexes	=  [] ;		// Index of translations not present in the cache
+		$translation_request_texts	=  [] ;		// Text to be translated
+		
+		if  ( $NoCache )
+		   {
+			$translation_request_indexes	=  range ( 0, $text_count ) ;
+			$translation_request_texts	=  $texts ;
+		    }
+		else
+		   {
+			$translation_count	=  count ( $translations ) ;
+
+			// Collect the translations that are present in the cache
+			for ( $i = 0 ; $i  <  $translation_count ; $i ++ )
+			   {
+				foreach  ( $CachedEntries  as  $entry )
+				   {
+					// Ignore obsolete cache entries
+					if  ( $entry [ 'time' ]  <  $purge_time )
+						continue ;
+				
+					// Only select a translation with the same text and source/destination languages
+					if  ( ! strcasecmp ( $entry [ 'from-language' ] , $TranslateFromLanguage  )  && 
+					      ! strcasecmp ( $entry [ 'to-language'   ] , $TranslateToLanguage    )  &&
+					      ! strcasecmp ( $entry [ 'text' ]		, $translations [$i] [ 'text' ] ) )
+					   {
+						$translations [$i] [ 'entry' ]	=  $entry [ 'translations' ] ;
+						$translations [$i] [ 'cached' ]	=  true ;
+						continue ;
+					    }
+				    }
+			    }
+			
+			// Now collect the translations missing in the cache
+			for  ( $i = 0 ; $i  <  $translation_count ; $i ++ )
+			   {
+				if  ( ! $translations [$i] [ 'entry' ] )
+				   {
+					$translation_request_indexes []	=  $i ;
+					$translation_request_texts []	=  $translations [$i] [ 'text' ] ;
+				    }
+			    }
+		    }
+
+		// Process translations (both out-of-date and new ones)
+		$request_count	=  count ( $translation_request_texts ) ;
+		
+		if  ( $request_count )
+		   {
+			$DirtyCache		=  true ;
+			$translation_results	=  $Translator -> GetTranslationsArray ( $TranslateFromLanguage, $TranslateToLanguage, $translation_request_texts ) ;
+			$renewed		=  $Translator -> AccessTokenRenewed ;
+			$result_count		=  count ( $translation_results ) ;
+			
+			// Complete the translation data array
+			for  ( $i = 0 ; $i  <  $result_count ; $i ++ )
+				$translations [ $translation_request_indexes [$i] ] [ 'entry' ]	=  $translation_results [$i] [ 'translations' ] ;
+		    }
+		
+		// Display the translations
+		$report_columns		= 
+		   [
+			[ 'member'	=>  $TranslateFromLanguage ],
+			[ 'member'	=>  $TranslateToLanguage   ]
+		    ] ;
+		
+		// Verbose option : add information about whether the answer has been found in the cache and, if not, 
+		// whether it required requesting a new token.
+		if  ( $Verbose )
+		   {
+			$report_columns	[]	=  [ 'member' => 'C', 'title' => 'Cached?', 'align' => 'center' ] ;
+			$report_columns []	=  [ 'member' => 'R', 'title' => 'Renewed?', 'align' => 'center' ] ;
+		    }
+		
+		// Generate the report data
+		$report			=  new AsciiReport ( $report_columns ) ;
+		$data			=  [] ;
+
+		// Loop through each translation
+		foreach ( $translations  as  $translation )
+		   {
+			$translated_texts	=  [] ;
+			$row			=  
+			   [ 
+				$TranslateFromLanguage	=>  cli_convert ( $translation [ 'text' ] ),
+				'C'			=>  ( $translation [ 'cached' ]			) ?  '*' : ' ',
+				'R'			=>  ( ! $translation [ 'cached' ]  &&  $renewed ) ?  '*' : ' '
+			    ] ;
+
+			// Collect translations, if any
+			if  ( count ( $translation [ 'entry' ] ) )
+			   {
+				foreach  ( $translation [ 'entry' ]  as  $entry )
+					$translated_texts []	=  cli_convert ( $entry [ 'text' ] ) ;
+			    }
+			
+			$translated_text_count	=  count ( $translated_texts ) ;
+			
+			// Build the translation list
+			if  ( ! $translated_text_count )
+				$row [ $TranslateToLanguage ]	=  '*** NO TRANSLATION ***' ;
+			else if  ( $translated_text_count  ==  1 ) 
+				$row [ $TranslateToLanguage ]	=  $translated_texts [0] ;
+			else
+				$row [ $TranslateToLanguage ]	=  '- ' . implode ( "\n- ", $translated_texts ) ;
+			
+			// Add this new row to report data
+			$data []	=  $row ;
+		    }
+		
+		echo $report -> Generate ( $data ) ;
+		
+		// Speak if needed 
+		if  ( $Play  &&  count ( $translated_texts ) )
+		   {
+			foreach  ( $translated_texts  as  $translated_text )
+			   {
+				speak_and_play ( $TranslateToLanguage, $translated_text ) ;
+			    }
+		    }
+		
+		// Replace cache entries or add new ones
+		$now		=  time ( ) ;
+		
+		foreach  ( $translations  as  $translation )
+		   {
+			$found	=  false ;
+			
+			// Search for a similar translation for update
+			foreach  ( $CachedEntries  as  &$cached_entry )
+			   {
+				if  ( ! strcasecmp ( $cached_entry [ 'from-language' ]	, $TranslateFromLanguage  )  && 
+				      ! strcasecmp ( $cached_entry [ 'to-language'   ]	, $TranslateToLanguage    )  &&
+				      ! strcasecmp ( $cached_entry [ 'text' ]		, $translation [ 'text' ] ) )
+				   {
+					$cached_entry [ 'translations' ]	=  $translation [ 'entry' ] ;
+					$cached_entry [ 'time' ]		=  $now ;
+					$found					=  true ;
+					break ;
+				    }
+			    }
+			
+			// No cached translation found, add this one
+			if  ( ! $found )
+			   {
+				$CachedEntries []	=
+				   [
+					'time'			=>  $now, 
+					'from-language'		=>  $TranslateFromLanguage,
+					'to-language'		=>  $TranslateToLanguage,
+					'text'			=>  $translation [ 'text' ],
+					'translations'		=>  $translation [ 'entry' ]
+				    ] ;
+			    }
+		    }
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    WriteCache -
+	        Writes back the list of translations that have not yet expired.
+	
+	  ==============================================================================================================*/
+	function  WriteCache ( $output, $entries, $purge_delay ) 
+	   {
+		global		$ConfigurationObject, $Translator ;
+		
+		$output_entries		=  [] ;
+		$purge_start		=  strtotime ( "now - $purge_delay" ) ;
+		
+		foreach  ( $entries  as  $entry )
+		   {
+			if  ( $entry [ 'time' ]  >  $purge_start )
+				$output_entries []	=  $entry ;
+		    }
+		
+		file_put_contents ( $output, serialize ( $output_entries ) ) ;
+		
+		$ConfigurationObject -> SetKey ( 'Authentication', 'AccessToken', $Translator -> AccessToken ) ;
+		$ConfigurationObject -> SetKey ( 'Authentication', 'Expires'    , $Translator -> AccessTokenExpirationTime ) ;
+		$ConfigurationObject -> Save ( ) ;
+	    }
+	
+	
+	/**************************************************************************************************************
+	 **************************************************************************************************************
+	 **************************************************************************************************************
+	 ******                                                                                                  ******
+	 ******                                                                                                  ******
+	 ******                                       MAIN PROGRAM                                               ******
+	 ******                                                                                                  ******
+	 ******                                                                                                  ******
+	 **************************************************************************************************************
+	 **************************************************************************************************************
+	 **************************************************************************************************************/
+
+	/*==================================================================================================
+
+		Global variables.
+
+	  ==================================================================================================*/
+	$AccountId		=  false ;				// Account id
+	$ClientApplicationId		=  false ;				// Client app id, as delivered by Bing Translator when a new application is registered
+	$SecretKey		=  false ;				// Secret key
+	$CacheFile		=  false ;				// Cache file path
+	$CachedEntries		=  false ;				// Cached entries read from the cache file
+	$CachePurge		=  "1 month" ;				// Cache purge delay
+	$DefaultLocalLanguage	=  false ;				// Default local and remote languages
+	$DefaultRemoteLanguage	=  false ;
+	
+	$DirtyCache		=  false ;				// When true, the cache file will be rewritten before exitting.
+	$Translator		=  false ;				// Translator object
+	
+	$TranslateFromLanguage	=  false ;				// Language to translate from
+	$TranslateToLanguage	=  false ;				// Language to translate to
+	
+	
+	/*==================================================================================================
+
+		Get command-line parameters and configuration file.
+
+	  ==================================================================================================*/
+	$CL 				=  new CLParser ( $Definitions ) ;
+	$ConfigurationFile		=  $CL -> configuration_file ;
+	$ConfigurationObject		=  IniFile::LoadFromFile ( $ConfigurationFile ) ;
+	$HadOption			=  false ;
+	
+	$BreakSentences			=  $CL -> break_sentences ;
+	$DetectAndSay			=  $CL -> detect_and_say ;
+	$DetectLanguage			=  $CL -> detect_language ;
+	$Html				=  $CL -> html ;
+	$Input				=  $CL -> input ;
+	$ListLanguages			=  $CL -> list_languages ;
+	$ListLanguageCodes		=  $CL -> list_language_codes ;
+	$ListSpokenLanguages		=  $CL -> list_spoken_languages ;
+	$ListSpokenLanguageCodes	=  $CL -> list_spoken_language_codes ;
+	$From				=  $CL -> from ;
+	$ListService			=  $CL -> list_service ;
+	$ListServices			=  $CL -> list_services ;
+	$NoCache			=  $CL -> no_cache ;
+	$NormalizeText			=  $CL -> normalize_text ;
+	$Play				=  $CL -> play ;
+	$Quota				=  $CL -> quota ;
+	$ReloadLanguages		=  $CL -> reload_languages ;
+	$Say				=  $CL -> say ;
+	$SayIn				=  $CL -> say_in ;
+	$To				=  $CL -> to ;
+	$ToLocal			=  $CL -> to_local ;
+	$ToRemote			=  $CL -> to_remote ;
+	$TransformText			=  $CL -> transform_text ;
+	$Verbose			=  $CL -> verbose ;
+	$Words				=  get_sentences ( $CL -> Files ) ;
+
+	
+	$OutputWidth		=  $Configuration -> Get ( 'Console/line-width' ) ;
+	
+	// Client id, needed for using the API
+	$ClientApplicationId		=  $ConfigurationObject -> GetKey ( 'Settings', 'ClientApplicationId' ) ;
+
+	if  ( ! $ClientApplicationId )
+		error ( "The [Settings] section of configuration file \"$ConfigurationFile\" does not contain the ClientApplicationId key, " .
+			"which is needed for Bing Translator authentication." ) ;
+	
+	// Secret key, needed for using the API
+	$SecretKey		=  $ConfigurationObject -> GetKey ( 'Settings', 'SecretKey' ) ;
+
+	if  ( ! $SecretKey )
+		error ( "The [Settings] section of configuration file \"$ConfigurationFile\" does not contain the SecretKey key, " .
+			"which is needed for Bing Translator authentication." ) ;
+	
+	// Account id, needed for querying account information
+	$AccountId		=  $ConfigurationObject -> GetKey ( 'Settings', 'AccountId' ) ;
+
+	if  ( ! $AccountId )
+		error ( "The [Settings] section of configuration file \"$ConfigurationFile\" does not contain the AccountId key, " .
+			"which is needed when retrieving Microsoft Azure account information." ) ;
+	
+	// Create the translator object
+	$Translator	=  new BingTranslator ( $AccountId, $ClientApplicationId, $SecretKey ) ;
+
+	// Cache file, which contains previous translations performed so far 
+	// This is a serialized array whose elements are associative arrays containing the following entries :
+	// 'time' -
+	//	Time of	requested translation (Unix time).
+	// 'from-language' :
+	//	Language code of the source language.
+	// 'to-language' :
+	//	Language code of the destination language.
+	// 'from-text' :
+	//	Text to be translated.
+	// 'to-text' :
+	//	Translated text.
+	//
+	// When a new translation request is issued, the cache is searched for matching source/destination languages
+	// and a matching text to be translated. If a match is found, the translated text is taken from the cache 
+	// instead of querying the Bing translator API.
+	//
+	// Note that the use of a cache file is optional ; to disable the use of a cache file (and thus always query
+	// the Bing translation API), simply remove the CacheFile key from the [Settings] section of the configuration
+	// file, or empty its value.
+	$file		=  $ConfigurationObject -> GetKey ( 'Settings', 'CacheFile' ) ;
+
+	if  ( $file )
+	   {
+		if  ( file_exists ( $file ) )
+		   {
+			$contents	=  @file_get_contents ( $file ) ;
+			
+			if  ( ! $contents ) 
+				$CachedEntries	=  [] ;
+			else
+			   {
+				$data	=  @unserialize ( $contents ) ;
+				
+				if (  $data  ===  false ) 
+					$CachedEntries	=  [] ;
+				else
+					$CachedEntries	=  $data ;
+			    }
+		    }
+		else
+		   {
+			@fclose ( @fopen ( $file, "w" ) ) ;
+			
+			if  ( ! file_exists ( $file ) ) 
+				error ( "The file specified in the CacheFile key (\"$file\") of the [Settings] section of configuration file " .
+					"\"$ConfigurationFile\" does not reference a valid filename." ) ;
+			
+			$CachedEntries	=  [] ;
+		    }	
+		
+		$CachedFile	=  $file ;
+	    }
+	
+	// The CachePurge key of the [Settings] section contains the maximum duration for cache entries to be preserved.
+	// This duration can be expressed in a format that the strtotime() function can understand.
+	$purge		=  $ConfigurationObject -> GetKey ( 'Settings', 'CachePurge' ) ;
+	
+	if  ( $purge )
+	   {
+		$time	=  strtotime ( $purge ) ;
+		
+		if  ( $time  ===  false )
+			error ( "The duration specified in the CachePurge key (\"$purge\") of the [Settings] section of configuration file " .
+				"\"$ConfigurationFile\" is not a valid duration specification." ) ;
+		
+		$CachePurge	=  $purge ;
+	    }
+	
+	// Default languages for translations, when none specified (optional)
+	$defaults	=  $ConfigurationObject -> GetKey ( 'Settings', 'DefaultLanguages' ) ;
+	
+	if  ( $defaults ) 
+	   {
+		$items	=  explode ( ' ', preg_replace ( '/\s+/', ' ', $defaults ) ) ;
+		$count	=  count ( $items ) ;
+		
+		switch  ( $count ) 
+		   {
+			case	1 :
+				$from_item	=  $items [0] ;
+				$from		=  $Translator -> GetLanguageCode ( $from_item ) ;
+				$to		=  false ;
+				break ;
+				
+			case	2 :
+				$from_item	=  $items [0] ;
+				$to_item	=  $items [1] ;
+				$from		=  $Translator -> GetLanguageCode ( $from_item ) ;
+				$to		=  $Translator -> GetLanguageCode ( $items [1] ) ;
+				break ;
+				
+			default :
+				error ( "The DefaultLanguages key of the [Settings] section of configuration file \"$ConfigurationFile\" " .
+					"should contain the code of a default local and remote language (optional) ; $count items where specified." ) ;
+		    }
+	    }
+	else
+		$from = $to = false ;
+	
+	// Previous access token and expiration time
+	$access_token	=  $ConfigurationObject -> GetKey ( 'Authentication', 'AccessToken' ) ;
+	$expires	=  $ConfigurationObject -> GetKey ( 'Authentication', 'Expires' ) ;
+	
+	if  ( $access_token  &&  $expires  &&  $expires  >  time ( ) )
+	   {
+		$Translator -> AccessToken			=  $access_token ;
+		$Translator -> AccessTokenExpirationTime	=  $expires ;
+	    }
+	
+	// $from and $to can now contain one of the following :
+	// - false :
+	//	The default language has not been specified in the .ini file. Simply ignore it.
+	// - Empty string :
+	//	A language has been specified but it does not exists in the list of supported Bing Translator languages.
+	//	Issue an error.
+	// - Non empty string :
+	//	This is a real, valid language code.
+	if  ( $from  !==  false )
+	   {
+		if  ( ! $from )
+			error ( "The language \"$from_item\" specified in the DefaultLanguages key of the [Settings] section of configuration file " .
+				"\"$ConfigurationFile\" does not reference any language supported by the Bing translator." ) ;
+		
+		$DefaultLocalLanguage	=  $from ;
+	    }
+	
+	if  ( $to  !==  false )
+	   {
+		if  ( ! $to )
+			error ( "The language \"$to_item\" specified in the DefaultLanguages key of the [Settings] section of configuration file " .
+				"\"$ConfigurationFile\" does not reference any language supported by the Bing translator." ) ;
+		
+		$DefaultRemoteLanguage	=  $to ;
+	    }
+	
+	// -input option :
+	//	Specifies an input text file instead of command-line arguments.
+	if  ( ! $HadOption  &&  $Input )
+	   {
+		$Words		=  [ file_get_contents ( $Input ) ] ;
+	    }
+
+	// Source and destination languages options
+	if  ( $ToLocal )
+	   {
+		$TranslateFromLanguage	=  $DefaultRemoteLanguage ;
+		$TranslateToLanguage	=  $DefaultLocalLanguage ;
+	    }
+	else if  ( $ToRemote )
+	   {
+		$TranslateFromLanguage	=  $DefaultLocalLanguage ;
+		$TranslateToLanguage	=  $DefaultRemoteLanguage ;
+	    }
+	else
+	   {
+		$TranslateFromLanguage	=  $DefaultLocalLanguage ;
+		$TranslateToLanguage	=  $DefaultRemoteLanguage ;
+	    }
+	
+	if  ( $From )
+	   {
+		$language	=  $Translator -> GetLanguageCode ( $From ) ;
+		
+		if  ( $language )
+			$TranslateFromLanguage	=  $language ;
+		else
+			error ( "The language specified with the -from option (\"$From\") does not exist or is not supported by Bing." ) ;
+	    }
+	
+	if  ( $To )
+	   {
+		$language	=  $Translator -> GetLanguageCode ( $To ) ;
+		
+		if  ( $language )
+			$TranslateToLanguage	=  $language ;
+		else
+			error ( "The language specified with the -from option (\"$To\") does not exist or is not supported by Bing." ) ;
+	    }
+	
+	
+	/*==================================================================================================
+
+		Process command-line options.
+
+	  ==================================================================================================*/
+	
+	// -break_sentences :
+	//	Breaks an input text into sentences, using the specified destination language.
+	if  ( ! $HadOption  &&  $BreakSentences )
+	   {
+		check_translation_language ( $TranslateToLanguage, "break sentence" ) ;
+		
+		$Sentence	=  implode ( ' ', get_sentences ( $BreakSentences ) ) ;
+		$result		=  $Translator -> BreakSentences ( $TranslateToLanguage, $Sentence ) ;
+		
+		output ( implode ( "\n", $result ) ) ;
+		
+		$HadOption	=  true ;
+	    }
+	
+	// -list_languages option :
+	//	Lists languages available for translation sorted by language name.
+	if  ( ! $HadOption  &&  $ListLanguages )
+	   {
+		ListLanguages ( true, false ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// -list_language_codes option :
+	//	Lists languages available for translation sorted by language code.
+	if  ( ! $HadOption  &&  $ListLanguageCodes )
+	   {
+		ListLanguages ( true, true ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// -list_spoken_languages option :
+	//	Lists languages available for speech synthesis sorted by language name.
+	if  ( ! $HadOption  &&  $ListSpokenLanguages )
+	   {
+		ListLanguages ( false, false ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// -list_language_codes option :
+	//	Lists languages available for speech synthesis sorted by language code.
+	if  ( ! $HadOption  &&  $ListSpokenLanguageCodes )
+	   {
+		ListLanguages ( false, true ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// -list_service :
+	//	Displays translator service information.
+	if  ( ! $HadOption  &&  $ListService )
+	   {
+		$result		=  $Translator -> GetServiceInformation ( ) ;
+		
+		echo $Translator -> ReportServiceData ( [ $result ] ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// -list_services :
+	//	Displays information about all services.
+	if  ( ! $HadOption  &&  $ListServices )
+	   {
+		$result		=  $Translator -> GetAccountInformation ( ) ;
+		
+		echo $Translator -> ReportServiceData ( $result ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// -quota parameter :
+	//	Displays the remaining quota in characters.
+	if  ( ! $HadOption  &&  $Quota )
+	   {
+		$result		=  $Translator -> GetServiceInformation ( ) ;
+		
+		output ( number_format ( $result -> ResourceBalance, 0, '.', ' ' ) . " characters left." ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// -reload_languages :
+	//	Rebuilds the language list.
+	if  ( ! $HadOption  &&  $ReloadLanguages )
+	   {
+		$Translator -> ReloadLanguages ( ) ;
+		output ( "Language list rebuilt : " . 
+				count ( BingTranslator::$TranslatedLanguages ) . " for translation, " .
+				count ( BingTranslator::$SpokenLanguages     ) . " for speech synthesis." ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// -detect_language :
+	//	Detects the language of the specified input text.
+	if  ( ! $HadOption  &&  $DetectLanguage )
+	   {
+		if  ( ! $Words )
+			error ( "Original language detection cannot be performed : no sentence specified, neither through command-line nor through input file." ) ;
+		
+		$result		=  $Translator -> DetectLanguage ( $Words ) ;
+		$report		=  new  AsciiReport
+		   (
+			[ 'member' => 'code', 'title' => 'Language'								],
+			[ 'member' => 'text', 'title' => 'Text'		, 'width' =>  $OutputWidth - 20, 'overflow' => 'wrap'	]
+		    ) ;
+		
+		echo  $report -> Generate ( $result ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// -say option :
+	//	Speaks the specified sentence in the specified destination language.
+	if  ( ! $HadOption  &&  $CL -> IsSpecified ( "say" ) ) 
+	   {
+		check_translation_languages ( ) ;
+		$Sentence	=  implode ( ' ', get_sentences ( $Say ) ) ;
+		$Translation	=  $Translator -> Translate ( $TranslateFromLanguage, $TranslateToLanguage, $Sentence ) ;
+		speak_and_play ( $TranslateToLanguage, $Translation ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// -say_in option :
+	//	Speaks the specified sentence in the specified language.
+	if  ( ! $HadOption  &&  $CL -> IsSpecified ( "say_in" ) ) 
+	   {
+		$Language	=  array_shift ( $SayIn ) ;
+		$Sentence	=  implode ( ' ', get_sentences ( $SayIn ) ) ;
+		
+		check_translation_language ( $Language, "spoken" ) ;
+		speak_and_play ( $Language, $Sentence ) ;
+		
+		$HadOption	=  true ;
+	    }
+	
+	// -detect_and_say option :
+	//	Detects the language of the specified sentence then speaks it.
+	if  ( ! $HadOption  &&  $CL -> IsSpecified ( "detect_and_say" ) ) 
+	   {
+		$Sentence	=  implode ( ' ', get_sentences ( $DetectAndSay ) ) ;
+		$Language	=  $Translator -> Detect ( $Sentence ) ;
+
+		check_translation_language ( $Language, "spoken" ) ;
+		speak_and_play ( $Language, $Sentence ) ;
+		
+		$HadOption	=  true ;
+	    }
+	
+	// -normalize_text option :
+	//	Normalizes the supplied text.
+	if  ( ! $HadOption  &&  $CL -> IsSpecified ( "normalize_text" ) ) 
+	   {
+		$Sentence	=  implode ( ' ', get_sentences ( $NormalizeText ) ) ;
+
+		check_translation_language ( $TranslateFromLanguage, "spoken" ) ;
+		
+		$result		=  $Translator -> TransformText ( $TranslateFromLanguage, $Sentence ) ;
+		
+		output ( $result [ 'text' ] ) ;
+		
+		$HadOption	=  true ;
+	    }
+	
+	// No list option specified but at list one sentence has been specified
+	if  ( ! $HadOption  &&  $Words )
+	   {
+		check_translation_languages ( ) ;
+
+		if  ( $TransformText )
+		   {
+			foreach  ( $Words  as  &$word )
+			   {
+				$result		=  $Translator -> TransformText ( $TranslateFromLanguage, $word ) ;
+				
+				if  ( ! $result [ 'errno' ] )
+					$word	=  $result [ 'text' ] ;
+			    }
+		    }
+		
+		Translate ( $Words ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// Before exiting, check if we need to rewrite back cached entries
+	if  ( $DirtyCache )
+		WriteCache ( $CachedFile, $CachedEntries, $CachePurge ) ;
+
+	// No option specified : display help
+	if  ( ! $HadOption )
+		$CL -> DisplayHelp ( ) ;

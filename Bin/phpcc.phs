@@ -1,0 +1,870 @@
+<?php
+	//!phpcmd(PhpSdk, 2.0, unfinished) : Php source compilation.
+	/***************************************************************************************************
+
+	    NAME
+		phpcc.phs
+
+	    DESCRIPTION
+		Compiles PHP source
+
+	    AUTHOR
+	     	Christian Vigh, 11/2014.
+
+	    HISTORY
+	    [Version : 1.0]	[Date : 2014/11/20]	[Author : CV]
+	     	Initial version.
+
+	 ***************************************************************************************************/
+	require ( "tools.phpinclude" ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Types\String ;
+	use  Thrak\IO\Path ;
+	use  Thrak\IO\AsciiReport ;
+	use  Thrak\Processors\IniFile ;
+	use  Thrak\Runtime\AsynchronousCommand ;
+	use  Thrak\Windows\WampManager ;
+	
+	require ( "PhpccConfiguration.phpclass" ) ;
+
+
+	/*==================================================================================================
+
+		Command line parameters.
+
+	  ==================================================================================================*/
+	$Definitions = <<<END
+<command name="phpcc" allow-files="false">
+
+	<usage>
+		Builds PHP binary releases.
+	</usage>
+	
+	<flag name="case_insensitive, ci">
+		Performs a case-insensitive search.
+	</flag>
+	
+	<string name="build_extensions, build_extension, be" min-args="1" max-args="*" value-text="extname">
+		Builds the specified extension(s).
+	</string>
+	
+	<string name="compare_extensions, cmp, ce" min-args="2" max-args="*" value-text="version1 version2 ... versionx">
+		Compares the extensions present in the two source directories whose location is given
+		by the version numbers "version1" up to "versionx".
+	</string>
+	
+	<file name="configuration_file, cf" disposition="existing" default="thraktools://Data/phpcc.ini">
+		Specifies the location of the phpcc .ini file.
+	</file>
+	
+	<flag name="display_body, db">
+		When searching for functions or methods, also display the function/method body.
+	</flag>
+	
+	<flag name="display_version, dv">
+		Displays the currently selected Php version.
+	</flag>
+	
+	<string name="find_define, fd">
+		Locates a macro in the source files. Macro name can use wildcards.
+	</string>
+	
+	<string name="find_function, ff">
+		Locates a regular function in the source files. Function name can use wildcards.
+	</string>
+	
+	<string name="find_include, fi">
+		Locates a file inclusion in the source files. File name can use wildcards.
+	</string>
+	
+	<string name="find_php_function, fpf">
+		Locates a Php function in the source files. Function name can use wildcards.
+	</string>
+	
+	<string name="find_php_method, fpm">
+		Locates a method in the source files. Class name and method name can be specified as :
+			class::method
+			class::
+			::method
+			class_or_method
+		The -loose_search parameter is activated for this kind of search.
+	</string>
+	
+	<string name="find_structure, find_struct, fs">
+		Locates a structure definition in the source files. Structure name can use wildcards.
+	</string>
+	
+	<string name="find_symbol, fsy">
+		Locates a symbol of any type in the source files. Symbol name can use wildcards.
+	</string>
+	
+	<string name="find_typedef, find_type, ft">
+		Locates a type definition in the source files. Type name can use wildcards.
+	</string>
+	
+	<string name="find_union, fu">
+		Locates a union definition in the source files. Union name can use wildcards.
+	</string>
+	
+	<string name="grep, g">
+		Calls the grep command on the specified string.
+	</string>
+	
+	<list name="grep_ignore, gi" item-type="string">
+		List of expressions to be ignored.
+	</list> 
+	
+	<string name="grep_options, go">
+		Grep options, without the leading dash.
+	</string>
+	
+	<string name="list_extensions, le" default="" arguments="0..1" value-text="group_or_extname">
+		Lists the extensions defined in the ext/ directory for the current version.
+	</string>
+	
+	<flag name="list_all_parameters, lap">
+		Lists all extension parameters, including those not defined in the ext/ directory.
+	</flag>
+	
+	<string name="list_extension_parameters, lep" default="ext" arguments="0..1" value-text="group_or_extname">
+		Lists the parameters defined for the specified extension (which can include the extension group) or
+		group name.
+	</string>
+	
+	<flag name="list_versions, lv">
+		Lists the available source code versions.
+	</flag>
+
+	<flag name="loose_search, ls">
+		When a search function is asked (-locate_function, -locate_macro, -display_macro), the specified
+		search string is used as a case-insensitive, wildcard string.
+	</flag>
+	
+	<string name="missing_extensions, me" min-args="2" max-args="*" value-text="version1 version2 ... versionx">
+		Same as the the -compare_extensions parameter, but only display the missing extensions.
+	</string>
+	
+	<flag name="no_line_numbers, nln">
+		Do not display line numbers in search results.
+	</flag>
+	
+	<flag name="rebuild_cache, rc">
+		Rebuilds the cache file.
+	</flag>
+	
+	<flag name="rebuild_source_cache, rsc">
+		Rebuilds the source cache file used for searching.
+	</flag>
+	
+	<string name="search_parameter, sp">
+		Searches for the specified parameter, which can be a wildcard expression.
+	</string>
+	
+	<string name="set_version, sv">
+		Set the current Php version.
+	</string>
+	
+	<string name="update_extensions, update_extension, ue" min-args="1" max-args="*" value-text="extension(s)">
+		Updates extensions from one version to another. Must be specified together with the -with and -to
+		parameters.
+	</string>
+	
+	<string name="from, f">
+		(to be used with the -update_extensions parameter) Specifies the version holding the extension(s)
+		to be copied.
+	</string>
+	
+	<string name="to, t">
+		(to be used with the -update_extensions parameter) Specifies the destination version where the
+		source extension(s) is(are) to be copied.
+	</string>
+	
+	<include name="update_extensions" with="from, to"/>
+</command>
+END;
+
+	
+	/**************************************************************************************************************
+	 **************************************************************************************************************
+	 **************************************************************************************************************
+	 ******                                                                                                  ******
+	 ******                                                                                                  ******
+	 ******                                       HELPER FUNCTIONS                                           ******
+	 ******                                                                                                  ******
+	 ******                                                                                                  ******
+	 **************************************************************************************************************
+	 **************************************************************************************************************
+	 **************************************************************************************************************/
+
+	
+	/**************************************************************************************************************
+	 **************************************************************************************************************
+	 **************************************************************************************************************
+	 ******                                                                                                  ******
+	 ******                                                                                                  ******
+	 ******                                PARAMETER HANDLING FUNCTIONS                                      ******
+	 ******                                                                                                  ******
+	 ******                                                                                                  ******
+	 **************************************************************************************************************
+	 **************************************************************************************************************
+	 **************************************************************************************************************/
+
+	/*==================================================================================================
+
+	    BuildExtensions -
+		Builds the specified extensions.
+
+	  ==================================================================================================*/
+	function  BuildExtensions ( $extensions )
+	   {
+		global		$PhpccConfiguration ;
+		
+		$PhpccConfiguration -> BuildExtensions ( $extensions ) ;
+	    }
+	
+	
+	/*==================================================================================================
+
+	    CompareExtensions -
+		Compares the extensions installed in the source directories identified by the specified 
+		version numbers.
+
+	  ==================================================================================================*/
+	function  CompareExtensions ( $versions, $missing_only = false ) 
+	   {
+		global		$PhpccConfiguration ;
+		
+		// Sort out the list of versions specified on the command line
+		$version_list	=  [] ;
+		
+		foreach  ( $versions  as  $version )
+		   {
+			if  ( ! isset ( $PhpccConfiguration -> Versions [ $version ] ) )
+				error ( "Version $version does not exist." ) ;
+			
+			if  ( ! in_array ( $version, $version_list ) ) 
+				$version_list []	=  $version ;
+		    }
+		
+		if  ( count ( $version_list )  < 2 )
+			error ( "At least 2 different version numbers must be specified with the -compare_versions parameter." ) ;
+		
+		// For each version specified, collect the list of installed extensions
+		$version_init		=  [] ;
+		$extension_list		=  [] ;
+		
+		foreach  ( $versions  as  $version )
+			$version_init [ $version ]	=  false ;
+		
+		foreach  ( $version_list  as  $version )
+		   {
+			$extensions	=  $PhpccConfiguration -> GetExtensions ( 'ext' ) ;
+			
+			foreach  ( $extensions  as  $extension )
+			   {
+				$extension_name		=  $extension [ 'extension' ] ;
+				
+				if  ( ! isset ( $extension_list [ $extension_name ] ) )
+					$extension_list [ $extension_name ]	=  $version_init ;
+				
+				$extension_list [ $extension_name ] [ $version ]	=  true ;
+			    }
+		    }
+
+		ksort ( $extension_list ) ;	// Its nicer when sorted, don't you think ?
+		
+		// Create the report columns
+		$columns	= [ [ 'member' => 'name', 'title' => 'Extension' ] ] ;
+		
+		foreach  ( $version_init  as  $version => $present )
+			$columns []	=  [ 'member' => $version, 'align' => 'center' ] ;
+		
+		// Create the report 
+		$report		=  new AsciiReport ( $columns ) ;
+		
+		// Create the data for the report
+		$data		=  [] ;
+		$missing	=  [] ;
+		$total_missing	=  0 ;
+		
+		foreach  ( $version_init  as  $version => $junk )
+			$missing [ $version ]	=  0 ;
+		
+		foreach  ( $extension_list  as  $name => $presences )
+		   {
+			$row	=  [ 'name' => $name ] ;
+			$found	=  false ;
+			
+			foreach  ( $presences  as  $version => $present )
+			   {
+				if  ( $present )
+				   {
+					$cell	=  '*' ;
+				    }
+				else
+				   {
+					$cell	=  '' ;
+					$missing [ $version ] ++ ;
+					$total_missing ++ ;
+					$found	=  true ;
+				    }
+				
+				$row [ $version ]	=  $cell ;
+			    }
+			
+			if  ( ! $missing_only  ||  $found ) 
+				$data []	=  $row ;
+		    }
+
+		// Report summary line
+		if  ( $total_missing )
+		   {
+			$data []	=  '!=' ;
+			$data []	=  array_merge ( [ 'name' => 'Missing extensions :' ], $missing ) ;
+		    }
+		
+		// Generate the report
+		$text	=  ( $missing_only ) ?  'missing extension' : 'extension' ;
+		
+		if  ( count ( $data ) )
+		   {
+			echo $report -> Generate ( $data ) ;
+			echo $report -> Summary ( $text, null, null, 1 ) ;
+		    }
+		else
+			echo $report -> Summary ( $text ) ;
+	    }
+	
+	
+	/*==================================================================================================
+
+	    DoGrep -
+		Calls the grep utility to locate text in PHP source files.
+
+	  ==================================================================================================*/
+	function  DoGrep ( $expression, $options = "", $ignore = [] )
+	   {
+		global		$PhpccConfiguration ;
+		
+		$results	=  $PhpccConfiguration -> Grep ( $expression, $options, $ignore ) ;
+
+		if  ( count ( $results ) )
+		   {
+			$line_count	=  0 ;
+			
+			foreach  ( $results  as  $result )
+			   {
+				output ( $result [ 'file' ] . ":" ) ;
+				
+				foreach  ( $result [ 'source' ]  as  $source )
+				   {
+					echo ( "\t" . $source [ 'line' ] . ": " . $source [ 'text' ] . "\n" ) ;
+				    }
+				
+				$line_count	+=  count ( $result [ 'source' ] ) ;
+			    }
+			
+			output ( "$line_count matches found in " . count ( $results ) . " files." ) ;
+		    }
+		else
+			error ( "No match." ) ;
+	    }
+	
+	
+	/*==================================================================================================
+
+	    FindElement -
+		Locates an item in the source files.
+
+	  ==================================================================================================*/
+	function  FindElement ( $name, $loose_search, $symbol_type, $options )
+	   {
+		global		$PhpccConfiguration ;
+		
+
+		$results	=  $PhpccConfiguration -> SearchSymbol ( $name, $symbol_type, $options ) ;
+		$result_count	=  count ( $results ) ;
+		$index		=  0 ;
+		
+		if  ( $result_count )
+		   {
+			foreach  ( $results  as  $filename => $result )
+			   {
+				output ( "$filename:" ) ;
+				$index	=  0 ;
+				
+				foreach  ( $result  as  $source )
+				   {
+					if  ( $index  &&  $result [ $index - 1 ] [ 'line' ] + 1  !=  $source [ 'line' ] )
+						output ( "" ) ;
+					
+					echo ( "\t" ) ;
+					
+					if  ( ! ( $options & PhpccConfiguration::SEARCH_OPTION_NO_LINE_NUMBERS ) )
+						echo ( $source [ 'line' ] . ": " ) ;
+					
+					output ( $source [ 'text' ] ) ;
+					$index ++ ;
+				    }
+				
+				if  ( $index + 1  <  $result_count )
+					output ( "" ) ;
+				
+				$index ++ ;
+			    }
+		    }
+		else
+			output ( "Symbol \"$name\" not found." ) ;
+	    }
+	
+	
+	/*==================================================================================================
+
+	    ListExtensions -
+		Lists the available extensions.
+
+	  ==================================================================================================*/
+	function  ListExtensions ( $parent = null )
+	   {
+		global		$PhpccConfiguration ;
+		
+		
+		$extensions	=  $PhpccConfiguration -> GetExtensions ( $parent ) ;
+		$report		=  new  AsciiReport 
+		   (
+			[ 'member' => 'parent'   , 'title' => 'Dir.' ],
+			[ 'member' => 'extension', 'title' => 'Extension' ] 
+		    ) ;
+		$data		=  [] ;
+		ksort ( $extensions ) ;
+		
+		foreach  ( $extensions  as  $extension )
+			$data []	=  [ 'parent' => $extension [ 'parent' ], 'extension' => $extension [ 'extension' ] ] ;
+		
+		echo $report -> Generate ( $data ) ;
+		echo $report -> Summary ( 'extension' ) ;
+	    }
+	
+	
+	/*==================================================================================================
+
+	    ListExtensionParameters -
+		Lists the available extension parameters for the specified parent directory, extension name 
+		or extension_dir/extension_name.
+
+	  ==================================================================================================*/
+	function  ListExtensionParameters ( $ext_or_parent )
+	   {
+		global		$PhpccConfiguration ;
+		
+		
+		$extensions		=  $PhpccConfiguration -> Extensions ;
+		$report			=  new  AsciiReport 
+		   (
+			[ 'member' => 'parent'		, 'title' => 'Dir.'									],
+			[ 'member' => 'extension'	, 'title' => 'Extension'								],
+			[ 'member' => 'parameter'	, 'title' => 'Parameter'								],
+			[ 'member' => 'description'	, 'title' => 'Description'	, 'width' => 60		, 'overflow' => 'wrap'		],
+			[ 'member' => 'default'		, 'title' => 'Default'		, 'align' => 'left'					],
+			[ 'member' => 'dependencies'	, 'title' => 'Dep?'		, 'align' => 'center'					]
+		    ) ;
+		$data			=  [] ;
+		
+		if  ( $ext_or_parent  ===  null )
+			$match_re	=  "#.*#" ;
+		else if  ( preg_match ( '#.*/.*#', $ext_or_parent ) )
+			$match_re	=  "#^$ext_or_parent$#i" ;
+		else
+		   {
+			$escaped	=  preg_quote ( $ext_or_parent, '#' ) ;
+			$match_re	=  "#^ (.*/$escaped) | ($escaped/.*) $#imsx" ;
+		    }
+		
+		foreach  ( $extensions  as  $name => $extension )
+		   {
+			if  ( preg_match ( $match_re, $name ) )
+			   {
+				foreach  ( $extension [ 'arguments' ]  as  $argument )
+				   {
+					$data []	=
+					   [
+						'parent'	=>  $extension [ 'parent' ],
+						'extension'	=>  $extension [ 'extension' ],
+						'parameter'	=>  $argument [ 'name' ],
+						'description'	=>  $argument [ 'description' ],
+						'default'	=>  $argument [ 'default' ],
+						'dependencies'	=>  ($argument [ 'has-dependencies' ] ) ?  '*' : '' 
+					    ] ;  
+				    }
+			    }
+		    }
+		
+		echo $report -> Generate ( $data ) ;
+		echo $report -> Summary ( 'parameter' ) ;
+	    }
+	
+	
+	/*==================================================================================================
+
+	    ListVersions -
+		Lists the available source code versions.
+
+	  ==================================================================================================*/
+	function  ListVersions ( )
+	   {
+		global		$PhpccConfiguration ;
+		
+		$report		=  new  AsciiReport
+		   (
+			[ 'member' => 'version'	, 'title' => 'Version', 'align' => 'left'	],
+			[ 'member' => 'path'	, 'title' => 'Path'				]
+		    ) ;
+		$data		=  [] ;
+		
+		foreach  ( $PhpccConfiguration -> Versions  as  $number => $path )
+			$data []	=  [ 'version' => $number, 'path' => $path ] ;
+		
+		echo $report -> Generate ( $data ) ;
+		echo $report -> Summary ( 'source code version' ) ;
+	    }
+	
+	
+	
+	/*==================================================================================================
+
+	    SearchParameter -
+		Searches for the specified parameter, which can be a text string or a wildcard expression.
+
+	  ==================================================================================================*/
+	function  SearchParameter ( $search )
+	   {
+		global		$PhpccConfiguration ;
+		
+		$extensions		=  $PhpccConfiguration -> Extensions ;
+		$report			=  new  AsciiReport 
+		   (
+			[ 'member' => 'parent'		, 'title' => 'Dir.'									],
+			[ 'member' => 'extension'	, 'title' => 'Extension'								],
+			[ 'member' => 'parameter'	, 'title' => 'Parameter'								],
+			[ 'member' => 'description'	, 'title' => 'Description'	, 'width' => 60		, 'overflow' => 'wrap'		],
+			[ 'member' => 'default'		, 'title' => 'Default'		, 'align' => 'left'					],
+			[ 'member' => 'dependencies'	, 'title' => 'Dep?'		, 'align' => 'center'					]
+		    ) ;
+		$data			=  [] ;
+
+		foreach  ( $extensions  as  $extension )
+		   {
+			foreach  ( $extension [ 'arguments' ]  as  $argument )
+			   {
+				if  ( stripos ( $argument [ 'name' ], $search )  !==  false  ||
+					Path::Matches ( $argument [ 'name' ], $search ) )
+				   {
+					$data []	=
+					   [
+						'parent'	=>  $extension [ 'parent' ],
+						'extension'	=>  $extension [ 'extension' ],
+						'parameter'	=>  $argument [ 'name' ],
+						'description'	=>  $argument [ 'description' ],
+						'default'	=>  $argument [ 'default' ],
+						'dependencies'	=>  ( $argument [ 'has-dependencies' ] ) ?  '*' : '' 
+					    ] ;  
+				    }
+			    }
+		    }
+		
+		echo $report -> Generate ( $data ) ;
+		echo $report -> Summary ( 'parameter' ) ;
+	    }
+	
+	
+	/*==================================================================================================
+
+	    SetVersion -
+		Sets the current version to the specified number.
+
+	  ==================================================================================================*/
+	function  SetVersion ( $version )
+	   {
+		global		$PhpccConfiguration ;
+		
+		if  ( ! $PhpccConfiguration -> SetVersion ( $version ) ) 
+			error ( "No source code directory found for version $version." ) ;
+		else
+			output ( "Current version is now $version" ) ;
+	    }
+	
+	
+	/*==================================================================================================
+
+	    UpdateExtensions -
+		Updates the specified extensions from the source to the destination versions.
+
+	  ==================================================================================================*/
+	function  UpdateExtensions ( $extensions, $source, $destination )
+	   {
+		global		$PhpccConfiguration ;
+		
+		// Check source and destination versions
+		if  ( ! isset ( $PhpccConfiguration -> Versions [ $source ] ) )
+			error ( "Source version $source does not exist." ) ;
+		
+		if  ( ! isset ( $PhpccConfiguration -> Versions [ $destination ] ) )
+			error ( "Destination version $destination does not exist." ) ;
+		
+		$source_path		=  $PhpccConfiguration -> Versions [ $source ] ;
+		$destination_path	=  $PhpccConfiguration -> Versions [ $destination ] ;
+		
+		// Check that the specified extension(s) exist(s)
+		$undefined_extensions	=  [] ;
+		
+		foreach  ( $extensions  as  $extension )
+		   {
+			if  ( ! is_dir ( "$source_path/ext/$extension" ) )
+				$undefined_extensions []	=  $extension ;
+			output ( "$source_path/ext/$extension");
+		    }
+		
+		if  ( count ( $undefined_extensions ) )
+			error ( "Undefined extension(s) : " . implode ( ', ', $undefined_extensions ) ) ;
+		
+		// Execute the copy commands
+		foreach  ( $extensions  as  $extension )
+		   {
+			$command	=  "ROBOCOPY /E \"$source_path/ext/$extension\" \"$destination_path/ext/$extension\"" ;
+			
+			AsynchronousCommand::Execute ( $command ) ;
+		    }
+	    }
+	
+	
+	/*==================================================================================================
+
+		Global constants and variables.
+
+	  ==================================================================================================*/
+	$CL 				=  new CLParser ( $Definitions ) ;
+	$BuildExtensions		=  $CL -> build_extensions ;
+	$CaseInsensitive		=  $CL -> case_insensitive ;
+	$ConfigurationFile		=  $CL -> configuration_file ;
+	$CompareExtensions		=  $CL -> compare_extensions ;
+	$DisplayBody			=  $CL -> display_body ;
+	$DisplayVersion			=  $CL -> display_version ;
+	$FindFunction			=  $CL -> find_function ;
+	$FindMacro			=  $CL -> find_define ;
+	$FindPhpMethod			=  $CL -> find_php_method ;
+	$FindPhpFunction		=  $CL -> find_php_function ;
+	$FindInclude			=  $CL -> find_include ;
+	$FindStructure			=  $CL -> find_structure ;
+	$FindSymbol			=  $CL -> find_symbol ;
+	$FindType			=  $CL -> find_typedef ;
+	$FindUnion			=  $CL -> find_union ;
+	$From				=  $CL -> from ;
+	$Grep				=  $CL -> grep ;
+	$GrepIgnore			=  $CL -> grep_ignore ;
+	$GrepOptions			=  $CL -> grep_options ;
+	$ListExtensions			=  $CL -> list_extensions ;
+	$ListAllParameters		=  $CL -> list_all_parameters ;
+	$ListExtensionParameters	=  $CL -> list_extension_parameters ;
+	$ListVersions			=  $CL -> list_versions ;
+	$LooseSearch			=  $CL -> loose_search ;
+	$MissingExtensions		=  $CL -> missing_extensions ;
+	$NoLineNumbers			=  $CL -> no_line_numbers ;
+	$RebuildCache			=  $CL -> rebuild_cache ;
+	$RebuildSourceCache		=  $CL -> rebuild_source_cache ;
+	$SearchOptions			=  PhpccConfiguration::SEARCH_OPTION_NONE ;
+	$SearchParameter		=  $CL -> search_parameter ;
+	$SetVersion			=  $CL -> set_version ;
+	$To				=  $CL -> to ;
+	$UpdateExtensions		=  $CL -> update_extensions ;
+
+	$PhpccConfiguration		=  new  PhpccConfiguration ( $ConfigurationFile, $RebuildCache ) ;
+	$HadOption			=  false ;
+
+	
+	// Search options
+	if  ( $LooseSearch )
+		$SearchOptions	|=  PhpccConfiguration::SEARCH_OPTION_LOOSE_SEARCH ;
+	
+	if  ( $CaseInsensitive )
+		$SearchOptions	|=  PhpccConfiguration::SEARCH_OPTION_CASE_INSENSITIVE ;
+	
+	if  ( $DisplayBody )
+		$SearchOptions	|=  PhpccConfiguration::SEARCH_OPTION_GET_BODY ;
+	
+	if  ( $NoLineNumbers ) 
+		$SearchOptions	|=  PhpccConfiguration::SEARCH_OPTION_NO_LINE_NUMBERS ;
+	
+	// -rebuild_source_cache parameter :
+	//	Rebuilds the cache used for searching within the source code.
+	if  ( $RebuildSourceCache )
+		$PhpccConfiguration -> RebuildSourceCache ( ) ;
+	
+	// -compare_extensions parameter :
+	//	Compare the extensions present in the source directories identified by the specified version numbers.
+	if  ( ! $HadOption  &&  $CompareExtensions )
+	   {
+		CompareExtensions ( $CompareExtensions, false ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// -display_version parameter :
+	//	Displays the currently selected Php version.
+	if  ( ! $HadOption  &&  $DisplayVersion )
+	   {
+		output ( $PhpccConfiguration -> GetVersion ( ) ) ;
+		$HadOption	=  true ;
+	    }
+
+	// -find_define parameter :
+	//	Finds a macro in the source files.
+	if  ( ! $HadOption  &&  $FindMacro )
+	   {
+		FindElement ( $FindMacro, $LooseSearch, PhpccConfiguration::SYMBOL_TYPE_DEFINE, $SearchOptions ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// -find_function parameter :
+	//	Finds a regular function in the source files.
+	if  ( ! $HadOption  &&  $FindFunction )
+	   {
+		FindElement ( $FindFunction, $LooseSearch, PhpccConfiguration::SYMBOL_TYPE_FUNCTION, $SearchOptions ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// -find_include parameter :
+	//	Finds a file inclusion in the source files.
+	if  ( ! $HadOption  &&  $FindInclude )
+	   {
+		FindElement ( $FindInclude, $LooseSearch, PhpccConfiguration::SYMBOL_TYPE_INCLUDE, $SearchOptions ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// -find_php_function parameter :
+	//	Finds a Php function in the source files.
+	if  ( ! $HadOption  &&  $FindPhpFunction )
+	   {
+		FindElement ( $FindPhpFunction, $LooseSearch, PhpccConfiguration::SYMBOL_TYPE_PHP_FUNCTION, $SearchOptions ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// -find_php_method parameter :
+	//	Finds a method or class name in the source files.
+	if  ( ! $HadOption  &&  $FindPhpMethod )
+	   {
+		FindElement ( $FindPhpMethod, true, PhpccConfiguration::SYMBOL_TYPE_PHP_METHOD, $SearchOptions ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// -find_structure parameter :
+	//	Finds a structure definition in the source files.
+	if  ( ! $HadOption  &&  $FindStructure )
+	   {
+		FindElement ( $FindStructure, $LooseSearch, PhpccConfiguration::SYMBOL_TYPE_STRUCTURE, $SearchOptions ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// -find_symbol parameter :
+	//	Finds any kind of symbol in the source files.
+	if  ( ! $HadOption  &&  $FindSymbol )
+	   {
+		FindElement ( $FindSymbol, $LooseSearch, PhpccConfiguration::SYMBOL_TYPE_ANY, $SearchOptions ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// -find_typedef parameter :
+	//	Finds a type definition in the source files.
+	if  ( ! $HadOption  &&  $FindType )
+	   {
+		FindElement ( $FindType, $LooseSearch, PhpccConfiguration::SYMBOL_TYPE_TYPEDEF, $SearchOptions ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// -find_union parameter :
+	//	Finds a union definition in the source files.
+	if  ( ! $HadOption  &&  $FindUnion )
+	   {
+		FindElement ( $FindUnion, $LooseSearch, PhpccConfiguration::SYMBOL_TYPE_UNION, $SearchOptions ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// -grep parameter :
+	//	Use the grep utility to find text in PHP source files.
+	if  ( ! $HadOption  &&  $Grep )
+	   {
+		DoGrep ( $Grep, $GrepOptions, $GrepIgnore ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// -list_versions parameter :
+	//	Lists the available versions.
+	if  ( ! $HadOption  &&  $ListVersions )
+	   {
+		ListVersions ( ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// -list_extensions parameter :
+	//	Lists the available extensions.
+	if  ( ! $HadOption  &&  $CL -> GetParameterByName ( 'list_extensions' ) -> Specified )
+	   {
+		ListExtensions ( ( $ListExtensions [0] ) ?  $ListExtensions [0] : '' ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// -list_extension_parameters parameter :
+	//	Lists the available extension parameters.
+	if  ( ! $HadOption  && $CL -> GetParameterByName ( 'list_extension_parameters' ) -> Specified )
+	   {
+		ListExtensionParameters ( $ListExtensionParameters [0] ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// -list_all_parameters parameter :
+	//	Lists all the available extension parameters.
+	if  ( ! $HadOption  &&  $ListAllParameters )
+	   {
+		ListExtensionParameters ( null ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// -missing_extensions parameter :
+	//	Similar to the -compare_extensions parameter, but only shows the missing extensions.
+	if  ( ! $HadOption  &&  $MissingExtensions )
+	   {
+		CompareExtensions ( $MissingExtensions, true ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// -search_parameter parameter :
+	//	Searches for the specified parameter, which can be a regular expression.
+	if  ( ! $HadOption  &&  $SearchParameter )
+	   {
+		SearchParameter ( $SearchParameter ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// -set_version parameter :
+	//	Sets the current Php version to the specified number.
+	if  ( ! $HadOption  &&  $SetVersion )
+	   {
+		SetVersion ( $SetVersion ) ;
+		$HadOption	=  true ;
+	    }
+
+	// -update_extensions parameter :
+	//	Updates the specified extension(s) from one version to another, specified by the -from
+	//	and -to parameters, respectively.
+	if  ( ! $HadOption  &&  $UpdateExtensions )
+	   {
+		UpdateExtensions ( $UpdateExtensions, $From, $To ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// -build_extensions parameter :
+	//	Builds the specified extension(s).
+	if  ( ! $HadOption  &&  $BuildExtensions )
+	   {
+		BuildExtensions ( $BuildExtensions ) ;
+		$HadOption	=  true ;
+	    }	

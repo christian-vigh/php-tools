@@ -1,0 +1,1292 @@
+<?php
+	//!phpcmd(Administration, 1.0, production) : Manipulates log data on remote servers.
+	/***************************************************************************************************
+
+	    NAME
+		rslogs.phs
+
+	    DESCRIPTION
+		Manipulates log data on remote servers.
+
+	    AUTHOR
+	     	Christian Vigh, 06/2015.
+
+	    HISTORY
+	    [Version : 1.0]	[Date : 2015/06/06]	[Author : CV]
+	     	Initial version.
+
+	    [Version : 1.0.1]	[Date : 2015/11/29]     [Author : CV]
+		. Added the -list_configured_servers option.
+
+	 ***************************************************************************************************/
+	require ( "tools.phpinclude" ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Processors\CL\CLException ;
+	use  Thrak\Types\String ;
+	use  Thrak\IO\Console ;
+	use  Thrak\IO\Path ;
+	use  Thrak\IO\AsciiReport ;
+	use  Thrak\Processors\IniFile ;
+	use  Thrak\Processors\WhoisInformation ;
+	use  Thrak\Database\Tables\ResolvedDomains ;
+	use  Thrak\Database\Tables\StringStore ;
+	use  Thrak\Reflection\ReflectionClass ;
+
+
+	require ( "RsAdmin.phpclass" ) ;
+
+
+	/*==================================================================================================
+
+		Command line parameters.
+
+	  ==================================================================================================*/
+	$Definitions = <<<END
+<command name="rslogs" allow-files="false">
+
+	<usage>
+		Manipulates log data on remote servers.
+	</usage>
+	
+	<flag name="check_extracted_data, ced">
+		Checks that extracted (and analyzed) data is in sync with log entries.
+	</flag>
+
+	<file name="configuration_file, cf" disposition="existing" default="thraktools://Data/rsadmin.ini">
+		Hosted servers parameters file.
+	</file>
+	
+	<flag name="extract, e">
+		Extracts data from the captured log entries, having the type specified by the -log_type parameter.
+	</flag>
+	
+	<string name="find_string, fs">
+		Searches for a string in the string store. Search automatically includes the '%' mysql wildcard character
+		at the beginning and at the end of the string.
+		The -limit option can be used to limit searched string count. Ordering is made on string type then string value.
+	</string>
+
+	<integer name="limit, l">
+		Indicates the maximum number of records to be returned by queries.
+	</integer>
+	
+	<flag name="list_configured_servers, lcs">
+		Lists the servers configured for this command.
+	</flag>
+	
+	<flag name="list_log_entry_statistics, lles">
+		Lists log entry statistics by occurrences.
+	</flag>
+
+	<flag name="list_string_store_statistics, lsss, ls">
+		Lists statistics about string store tables.
+	</flag>
+
+	<flag name="list_table_information, lti">
+		Lists table information.
+	</flag>
+
+	<keyword name="log_type, logtype, lt" default="all">
+		Specifies the type of logs to be processed.
+		
+		<case name="all" value="-1">
+			Inspects all logs.
+		</case>
+
+		<case name="auth, a" constant="RsAdmin::LOGTYPE_AUTH">
+			Authentication logs.
+		</case>
+		
+		<case name="http, h" constant="RsAdmin::LOGTYPE_HTTP">
+			Http access logs.
+		</case>
+		
+		<case name="http_errors, http_error, httperr, he, error, err, e"  constant="RsAdmin::LOGTYPE_HTTP_ERROR">
+			Http error logs.
+		</case>
+		
+		<case name="http_errors_404, http_error_404, httperr404, he404, error404, err404, e404, e4"  constant="RsAdmin::LOGTYPE_HTTP_ERROR_404">
+			Http special error 404 logs.
+		</case>
+			
+		<case name="mail, m" constant="RsAdmin::LOGTYPE_MAIL">
+			Mail logs.
+		</case>
+		
+		<case name="ssh, s" constant="RsAdmin::LOGTYPE_SSH">
+			SSH access logs.
+		</case>		
+	</keyword>
+	
+	<flag name="optimize_tables, ot">
+		Optimizes all the tables related to log entries.
+	</flag>
+
+	<flag name="query_ips, qi">
+		Displays accesses by domain and ip, together with the resolved hostname.
+		The -sort_by option can specify one of the following keywords for this query : <?= implode ( ', ', \$QueryIpsData [ 'sort' ] ) ?>.
+		The -where option can use the following columns : <?= implode ( ', ', \$QueryIpsData [ 'columns' ] ) ?>.
+	</flag>
+	
+	<flag name="reset_log_data">
+		Resets the the extracted data log.
+	</flag>
+	
+	<flag name="reset_log_tables">
+		Resets the log tables, including the extracted data log.
+	</flag>
+	
+	<flag name="resolve_ips, resolve_ip, ri">
+		Resolves ip addresses to domain names (for unresolved ip addresses), including whois data for both the
+		ip (if any) and its hoster.
+	</flag>
+	
+	<file name="rslogs_configuration_file, rcf" disposition="existing" default="thraktools://Data/rslogs.ini">
+		Rslogs parameters file.
+	</file>
+	
+	<string name="servers, server, s" default="*" arguments="0..*">
+		Server name(s) on which http logs are to be retrieved.
+		Wildcard characters are authorized, and search is performed on every server alias.
+	</string>
+
+	<list name="sort_by, sb, sort" value-text="field-list">
+		Specifies the sort order. This parameter is to be used in conjunction with one of the
+		-query_xxx parameters, and its value is a list of field names accepted by the corresponding
+		-query_xxx option.
+		Each field name can be followed by an optional "ASC" or "DESC" value.
+	</list>
+
+	<range name="string_store_types, string_store_type, sst" arguments="1..*" default="*" allow-null="both">
+		Restricts string store searches (-find_string option) to the specified range(s) of values.
+		Authorized values are :
+		<?php
+			\$types	=  LogStringStore::GetTypes ( ) ;
+			
+			foreach ( \$types  as  \$type )
+				echo '- ' . sprintf ( '%02d', \$type [ 'value' ] ) . ': ' .  \$type [ 'name' ] . "\\n" ;
+		 ?>
+	</range>
+
+	<flag name="sync">
+		Equivalent to : -update -extract -resolve_ips -optimize_tables.
+	</flag>
+
+	<flag name="update, u">
+		Updates the logs from the remote servers, having the type specified by the -log_type parameter.
+	</flag>
+	
+	<string name="where, w">
+		Includes a WHERE clause in the -query_xxx queries.
+	</string>
+</command>
+END;
+
+	
+
+	/*==================================================================================================
+
+	    FindString -
+		Finds a string in the string store.
+
+	  ==================================================================================================*/
+	function  FindString ( $string )
+	   {
+		global		$Database, $Limit, $StringStoreTypes ;
+
+		$escaped_string	=  $Database -> Escape ( $string ) ;
+		$types		=  LogStringStore::GetTypes ( ) ;
+		$limit_clause	=  ( $Limit ) ? "LIMIT $Limit" : '' ;
+		$id_clause	=  ( $StringStoreTypes ) ? 
+					'AND type IN (' . implode ( ',', $StringStoreTypes ) . ')' :
+					'' ;
+		$query		=  "
+					SELECT *
+					FROM server_string_store
+					WHERE
+						value LIKE '%$escaped_string%' 
+						$id_clause 
+					ORDER BY type, value
+					$limit_clause
+				   " ;
+		$Database -> SetSimpleQuery ( $query ) ;
+		$rows		=  $Database -> LoadRows ( ) ;
+		$row_count	=  count ( $rows ) ;
+
+		if  ( $row_count )
+		   {
+			$report		=  new AsciiReport 
+			   (
+				[ 'member' => 'id'	, 'title' => 'Id'							],
+				[ 'member' => 'type'	, 'title' => 'Entry type'						],
+				[ 'member' => 'value'	, 'title' => 'String'		, 'width' => 80, 'overflow' => 'wrap'	]
+			    ) ;
+			$data		=  [] ;
+
+			foreach  ( $rows  as  $row )
+			   {
+				$id		=  $row [ 'id' ] ;
+				$type		=  $row [ 'type' ] ;
+				$type		=  ( isset ( $types [ $type ] ) ) ?  
+							$types [ $type ] [ 'label' ] . ' (' . $type . ')' :
+							'*** unknown (' . $type . ') ***' ;
+				$value		=  $row [ 'value' ] ;
+
+				$data []	=  [ 'id' => $id, 'type' => $type, 'value' => $value ] ;
+			    }
+
+			echo $report -> Generate ( $data ) ;
+			echo $report -> Summary ( 'string' ) ;
+		    }
+		else
+			output ( "No match." ) ;
+	    }
+
+
+	/*==================================================================================================
+
+		Data checking functions.
+
+	  ==================================================================================================*/
+
+
+	// CheckExtractedData -
+	//	Performs the following checks :
+	//	- Every server_logfile_entries row which has the serle_processed flag set to 1 MUST have at least
+	//	  one row in the server_logfile_data table. If not, the serle_processed flag will be reset for
+	//	  the corresponding entries.
+	//	- Every server_logfile_entries row which has the serle_processed flag set to 0 MUST NOT have any
+	//	  row in the server_logfile_data table. If rows are present in the server_logfile_data table, they
+	//	  will be deleted.
+	//	- Every row in the server_logfile_data table MUST have a parent in the server_logfile_entries table
+	function  CheckExtractedData ( )
+	   {
+		global		$RsAdmin ;
+
+
+		$db			=  $RsAdmin -> Database ;
+		$log_entries_table	=  RsAdmin::TABLE_SERVER_LOGFILE_ENTRIES ;
+		$log_data_table		=  RsAdmin::TABLE_SERVER_LOGFILE_DATA ;
+
+		// server_logfile_entries rows having serle_processed = 1 must have at least one row in server_logfile_data
+		echo ( 'Checking for log entries marked as processed without any corresponding extracted data... ' ) ;
+		$query		=  "
+					SELECT  serle_id
+					FROM $log_entries_table
+					WHERE
+						serle_processed = 1 AND
+						NOT EXISTS 
+						   (
+							SELECT serld_id
+							FROM $log_data_table
+							WHERE 
+								serld_parent_id = serle_id
+ 						    ) 
+				   " ;
+
+		$db -> SetSimpleQuery ( $query ) ;
+
+		$ids		=  $db -> LoadValues ( ) ;
+		
+		if  ( $ids ) 
+		   {
+			$id_list	=  implode ( ',', $ids ) ;
+			$id_count	=  count ( $ids ) ;
+			$query		=  "
+						UPDATE $log_entries_table
+						SET
+							serle_processed = 0,
+							serle_entry_type = 0 
+						WHERE
+							serle_id IN ( $id_list )
+					   " ;
+			$db -> Execute ( $query ) ;
+			$affected_rows	=  $db -> GetAffectedRows ( ) ;
+
+			output ( "$id_count/$affected_rows rows processed" ) ;
+		    }
+		else
+			output ( "ok" ) ;
+
+		// server_logfile_entries rows having serle_processed = 0 must not any row in server_logfile_data
+		echo ( 'Checking for log entries not marked as processed but having corresponding extracted data... ' ) ;
+		$query		=  "
+					SELECT  serle_id
+					FROM $log_entries_table
+					WHERE
+						serle_processed = 0 AND
+						EXISTS 
+						   (
+							SELECT serld_id
+							FROM $log_data_table
+							WHERE 
+								serld_parent_id = serle_id
+ 						    ) 
+				   " ;
+
+		$db -> SetSimpleQuery ( $query ) ;
+
+		$ids		=  $db -> LoadValues ( ) ;
+		
+		if  ( $ids ) 
+		   {
+			$id_list	=  implode ( ',', $ids ) ;
+			$id_count	=  count ( $ids ) ;
+			$query		=  "
+						DELETE FROM $log_data_table
+						WHERE
+							serld_parent_id IN ( $id_list )
+					   " ;
+			$db -> Execute ( $query ) ;
+			$affected_rows	=  $db -> GetAffectedRows ( ) ;
+
+			output ( "$id_count entry/$affected_rows data rows processed" ) ;
+		    }
+		else
+			output ( "ok" ) ;
+
+		// Every row in the server_logfile_data table MUST have a parent in the server_logfile_entries table
+		echo ( 'Checking for orphan rows in extracted log data... ' ) ;
+		$query		=  "
+					SELECT  serld_id
+					FROM $log_data_table
+					WHERE
+						NOT EXISTS 
+						   (
+							SELECT serle_id
+							FROM $log_entries_table
+							WHERE 
+								serld_parent_id = serle_id
+ 						    ) 
+				   " ;
+
+		$db -> SetSimpleQuery ( $query ) ;
+
+		$ids		=  $db -> LoadValues ( ) ;
+		
+		if  ( $ids ) 
+		   {
+			$id_list	=  implode ( ',', $ids ) ;
+			$id_count	=  count ( $ids ) ;
+			$query		=  "
+						DELETE FROM $log_data_table
+						WHERE
+							serld_id IN ( $id_list )
+					   " ;
+			$db -> Execute ( $query ) ;
+			$affected_rows	=  $db -> GetAffectedRows ( ) ;
+
+			output ( "$id_count/$affected_rows data rows processed" ) ;
+		    }
+		else
+			output ( "ok" ) ;
+
+	    }
+
+
+
+	/*==================================================================================================
+
+		Data list functions.
+
+	  ==================================================================================================*/
+
+	// ListLogEntryStatistics -
+	//	Lists statistics about log entry types.
+	function  ListLogEntryStatistics ( )
+	   {
+		global		$Database ;
+
+		$query			=  "
+						SELECT 
+							serle_logfile_type AS 'type', 
+							COUNT(*) AS 'count'
+						FROM " . RsAdmin::TABLE_SERVER_LOGFILE_ENTRIES . "
+						GROUP BY serle_logfile_type
+						ORDER BY serle_logfile_type				   
+					    " ;
+
+		$Database -> SetSimpleQuery ( $query ) ;
+		$rows			=  $Database -> LoadRows ( ) ;
+		$report			=  new AsciiReport 
+		   (
+			[ 'member' => 'type'		, 'title' => 'Type'					],
+			[ 'member' => 'count'		, 'title' => 'Count'		, 'align' => 'right'	],
+			[ 'member' => 'unprocessed'	, 'title' => 'Unprocessed'	, 'align' => 'right'	]
+		    ) ;
+		$data			=  [] ;
+		$total			=  0 ;
+		$total_unprocessed	=  0 ;
+
+		foreach  ( $rows  as  $row )
+		   {
+			switch  ( $row [ 'type' ] )
+			   {
+				case  RsAdmin::LOGTYPE_HTTP			:  $type = 'Http access'	; break ;
+				case  RsAdmin::LOGTYPE_MAIL			:  $type = 'Mail'		; break ;
+				case  RsAdmin::LOGTYPE_AUTH			:  $type = 'Auth'		; break ;
+				case  RsAdmin::LOGTYPE_HTTP_ERROR		:  $type = 'Http Error'		; break ;
+				case  RsAdmin::LOGTYPE_HTTP_ERROR_404		:  $type = 'Http error 404'	; break ;
+				case  RsAdmin::LOGTYPE_SSH			:  $type = 'Ssh'		; break ;
+				default						:  $type = '*** unknown ***'	; break ;
+			    }
+
+			$data_row	=  [ 'type' => $type, 'count' => number_format ( $row [ 'count' ], 0, '.', ' ' ) ] ;
+			$query		=  "
+						SELECT 
+							COUNT(*) AS 'count'
+						FROM " . RsAdmin::TABLE_SERVER_LOGFILE_ENTRIES . "
+						WHERE
+							serle_logfile_type = {$row [ 'type' ]} AND
+							serle_processed = 0
+					    " ;
+			$Database -> SetSimpleQuery ( $query ) ;
+			$unprocessed	=  $Database -> LoadValue ( ) ;
+			$data_row [ 'unprocessed' ]	=  number_format ( $unprocessed, 0, '.', ' ' ) ;
+			$data []			=  $data_row ;
+
+			$total			+=  $row [ 'count' ] ;
+			$total_unprocessed	+=  $unprocessed ;
+		    }
+
+		output ( "Logfile entries per type :" ) ;
+		$data []		=  '!=' ;
+		$data []		=  
+		   [
+			'type'		=>  'TOTAL :',
+			'count'		=>  number_format ( $total, 0, '.', ' ' ),
+			'unprocessed'	=>  number_format ( $total_unprocessed, 0, '.', ' ' )
+		    ] ;
+
+		echo $report -> Generate ( $data ) ;
+	    }
+
+
+	// ListStringStoreStatistics -
+	//	Lists statistics about string store tables.
+	function  ListStringStoreStatistics ( )
+	   {
+		global		$Database, $StringStoreTables ;
+
+
+		$index	=  0 ;
+
+		foreach  ( $StringStoreTables  as  $string_store => $types )
+		   {
+			$table		=  $string_store ;
+			$constants	=  $types ;
+
+			$Database -> SetSimpleQuery ( "SELECT COUNT(*) FROM $table" ) ;
+			$count		=  $Database -> LoadValue ( ) ;
+
+			if  ( $index )
+				output ( '' ) ;
+
+			if  ( $count )
+			   {
+				$report		=  new  AsciiReport 
+				   (
+					[ 'member' => 'item' , 'title' => 'Statistic' ],
+					[ 'member' => 'value', 'title' => 'Value', 'align' => 'right' ]
+				    ) ;
+
+				// Total number of rows
+				$data		=  [] ;
+				$data []	=  [ 'item' => 'Total rows', 'value' => number_format ( $count, 0, '.', ' ' ) ] ;
+
+				// Number of rows per defined type
+				$Database -> SetSimpleQuery
+				   ("
+					SELECT type, COUNT(*) AS count
+					FROM $table
+					GROUP BY type
+					ORDER BY type
+				    ") ;
+				$rows		=  $Database -> LoadRows ( ) ;
+				$types		=  [ 'Row count by type :' ] ;
+				$counts		=  [ '' ] ;
+
+				foreach  ( $rows  as  $row )
+				   {
+					if  ( isset ( $constants [ $row [ 'type' ] ] ) )
+					   {
+						$types []	=  '   - ' . $constants [ $row [ 'type' ] ] [ 'label' ] . ' (' . $row [ 'type' ] . ')' ;
+						$counts []	=  number_format ( $row [ 'count' ], 0, '.', ' ' ) ;
+					    }
+					else
+					   {
+						$types []	=  '   - Other rows (' . $row [ 'type' ] . ')' ;
+						$counts []	=  number_format ( $row [ 'count' ], 0, '.', ' ' ) ;
+					    }
+				    }
+
+				$item		=  implode ( "\n", $types ) ;
+				$count		=  implode ( "\n", $counts ) ;
+				$data []	=  [ 'item' => $item, 'value' => $count ] ;
+
+				// Min and max lengths
+				$Database -> SetSimpleQuery ( "SELECT MIN( LENGTH( value ) ) FROM $table" ) ;
+				$count1	=  $Database -> LoadValue ( ) ;
+
+				$Database -> SetSimpleQuery ( "SELECT MAX( LENGTH( value ) ) FROM $table" ) ;
+				$count2	=  $Database -> LoadValue ( ) ;
+
+				$data []	=  
+				   [ 
+					'item'	=> "Min row length\nMax row length",
+					'value' => number_format ( $count1, 0, '.', ' ' ) . "\n" . number_format ( $count2, 0, '.', ' ' )
+				    ] ;
+
+				// Try to find duplicate checksums (collisions)
+				$Database -> SetSimpleQuery
+				   ("
+					SELECT type, checksum, COUNT(*) AS count
+					FROM $table
+					GROUP BY type, checksum
+					HAVING COUNT(*)  >  1
+					ORDER BY type, checksum
+				    ") ;
+				$rows	=  $Database -> LoadRows ( ) ;
+
+				if  ( $rows )
+				   {
+					$items		=  [ 'Checksum collisions :' ] ;
+					$values		=  [ 'Count :' ] ;
+
+					foreach ( $rows  as  $row )
+					   {
+						$items []	=  '   - Type = ' . $row [ 'type' ] . ', checksum = ' . $row [ 'checksum' ] ;
+						$values []	=  number_format ( $row [ 'count' ], 0, '.', ' ' ) ;
+
+						$item		=  implode ( "\n", $items ) ;
+						$value		=  implode ( "\n", $values ) ;
+					    }
+
+					$item		=  implode ( "\n", $items ) ;
+					$count		=  implode ( "\n", $values ) ;
+					$data []	=  [ 'item' => $item, 'value' => $count ] ;
+				    }
+				else
+					$data []	=  [ 'item' => 'Checksum collisions :', 'value' => 'none' ] ;
+
+				// Try to find duplicate values (case-insensitive search, thus the use of the HEX() function in the GROUP BY clause)
+				$Database -> SetSimpleQuery
+				   ("
+					SELECT value, COUNT(value) AS count
+					FROM $table
+					GROUP BY type, HEX(value)
+					HAVING COUNT(value)  >  1
+					ORDER BY type, value
+				    ") ;
+				$rows	=  $Database -> LoadRows ( ) ;
+
+				if  ( $rows )
+				   {
+					$items		=  [ 'Duplicate value count :' ] ;
+					$values		=  [ 'Row ids :' ] ;
+
+					// Loop through each row and retrieve every row id having the found value
+					foreach ( $rows  as  $row )
+					   {
+						$escaped_value	=  $Database -> Escape ( $row [ 'value' ] ) ;
+						$count		=  $row [ 'count' ] ;
+						$ids		=  [] ;
+
+						$Database -> SetSimpleQuery
+						   ("
+							SELECT id 
+							FROM $table
+							WHERE
+								value = '$escaped_value' ;
+						    ") ;
+						$id_rows	=  $Database -> LoadRows ( ) ;
+
+						foreach  ( $id_rows  as  $id_row )
+							$ids []		=  $id_row [ 'id' ] ;
+
+						$items []	=  $row [ 'count' ] ;
+						$values []	=  implode ( ', ', $ids ) ;
+					    }
+
+					$item		=  implode ( "\n", $items ) ;
+					$value		=  implode ( "\n", $values ) ;
+					$data []	=  [ 'item' => $item, 'value' => $value ] ;
+				    }
+				else
+					$data []	=  [ 'item' => 'Duplicate values :', 'value' => 'none' ] ;
+
+				// Generate the report
+				output ( "Statistics for string store $table :" ) ;
+				echo $report -> Generate ( $data ) ;
+			    }
+			else
+				warning ( "String store $table is empty" ) ;
+
+			$index ++ ;
+		    }
+	    }
+
+
+	// ListTableInformation -
+	//	Lists information about server tables related to logs.
+	function  ListTableInformation ( )
+	   {
+		global		$RsAdmin ;
+
+		$db		=  $RsAdmin -> Database ;
+		$report		=  new  AsciiReport 
+		   (
+			[ 'member' => 'table'		, 'title' => 'Table'							],
+			[ 'member' => 'engine'		, 'title' => 'Engine'							],
+			[ 'member' => 'format'		, 'title' => 'Row format'						],
+			[ 'member' => 'rows'		, 'title' => 'Rows'		, 'align' => 'right'			],
+			[ 'member' => 'data_size'	, 'title' => 'Data size'	, 'align' => 'right'			],
+			[ 'member' => 'index_size'	, 'title' => 'Index size'	, 'align' => 'right'			],
+			[ 'member' => 'comment'		, 'title' => 'Comment'		, 'width' => 60, 'overflow' => 'wrap'	]
+		    ) ;
+		$db -> SetSimpleQuery ( "SHOW TABLE STATUS" ) ;
+		$rows			=  $db -> LoadRows ( ) ;
+		$data			=  [] ;
+		$total_rows		=  0 ;
+		$total_data_length	=  0 ;
+		$total_index_length	=  0 ;
+
+		foreach  ( $rows  as  $row )
+		   {
+			$total_rows		+=  $row [ 'Rows' ] ;
+			$total_data_length	+=  $row [ 'Data_length' ] ;
+			$total_index_length	+=  $row [ 'Index_length' ] ;
+
+			$data_row	=
+			   [
+				'table'		=>  $row [ 'Name' ],
+				'engine'	=>  $row [ 'Engine' ],
+				'format'	=>  $row [ 'Row_format' ],
+				'rows'		=>  number_format ( $row [ 'Rows' ], 0, '.', ' ' ),
+				'data_size'	=>  number_format ( $row [ 'Data_length' ], 0, '.', ' ' ),
+				'index_size'	=>  number_format ( $row [ 'Index_length' ], 0, '.', ' ' ),
+				'comment'	=>  $row [ 'Comment' ]
+			    ] ;
+
+			$data []	=  $data_row ;
+		    }
+
+		$data []		=  '!=' ;
+		$data []		=
+		   [
+			'!'		=>  true,
+			'table'		=>  'Total:',
+			'engine'	=>  '',
+			'format'	=>  '',
+			'rows'		=>  number_format ( $total_rows, 0, '.', ' ' ),
+			'data_size'	=>  number_format ( $total_data_length, 0, '.', ' ' ),
+			'index_size'	=>  number_format ( $total_index_length, 0, '.', ' ' ),
+			'comment'	=>  ''
+		    ] ;
+
+		echo $report -> Generate ( $data ) ;
+		echo $report -> Summary ( 'table' ) ;
+	    }
+
+
+	/*==================================================================================================
+
+	    LoadConfigurationParameters -
+		Loads parameters defined in the rslogs.ini configuration file.
+
+	  ==================================================================================================*/
+	function  LoadConfigurationParameters ( )
+	   {
+		global		$RsLogs,
+				$CleanIps, $CleanMessages, $CleanSshConnections,
+				$IpsToClean, $MessagesToClean ;
+
+		
+		// [Settings] section, CleanIps/CleanMessages/CleanSshConnections key :
+		//	If true, the Ips listed in the Ips key of the [Cleaning Options] section will be processed,
+		//	when the -clean_tables option is specified.
+		//	The same principle applies to the CleanMessages key with Messages.
+		//	CleanSshConnections does not have a counterpart in the [Cleaning Options] section. It cleans
+		//	the log entries that are marked as a private SSH connection (logfile type = 
+		$CleanIps		=  String::BooleanValue ( $RsLogs -> GetKey ( 'Settings', 'CleanIps', 'true' ) ) ;
+		$CleanMessages		=  String::BooleanValue ( $RsLogs -> GetKey ( 'Settings', 'CleanMessages', 'true' ) ) ;
+		$CleanSshConnections	=  String::BooleanValue ( $RsLogs -> GetKey ( 'Settings', 'CleanSshConnections', 'true' ) ) ;
+			
+		// [Cleaning options] settings
+		$ips			=  $RsLogs -> GetKey ( 'Cleaning Options', 'Ips' ) ;
+
+		if  ( $ips )
+		   {
+			$ips			=  str_replace ( '/\s+/', ' ', trim ( $ips ) ) ;
+			$IpsToClean		=  explode ( ' ', $ips ) ;
+		    }
+
+		$messages		=  $RsLogs -> GetKey ( 'Cleaning Options', 'Messages' ) ;
+
+		if  ( $messages )
+		   {
+			$messages		=  explode ( "\n", trim ( $messages ) ) ;
+
+			foreach ( $messages  as  $message )
+				$MessagesToClean []	=  trim ( $message ) ;
+		    }
+	    }
+
+
+	/*==================================================================================================
+
+		Queries.
+
+	  ==================================================================================================*/
+	
+	// Query logs per ip address
+	$QueryIpsData		=
+	  [
+		'option'	=>  '-query_ips',
+		'sort'		=>  [ 'ip', 'count', 'last_access', 'host', 'blocked' ],
+		'columns'	=>  [ 'ip', 'domains', 'count', 'last_access', 'host', 'blocked' ],
+		'labels'	=>
+		   [
+			[ 'member' => 'ip'		, 'title' => 'Ip'							],
+			[ 'member' => 'domains'		, 'title' => 'Domains'		, 'width' => 30, 'overflow' => 'wrap'	],
+			[ 'member' => 'count'		, 'title' => 'Count'							],
+			[ 'member' => 'last_access'	, 'title' => 'Last access'						],
+			[ 'member' => 'host'		, 'title' => 'Resolved hostname', 'width' => 60, 'overflow' => 'wrap'	],
+			[ 'member' => 'blocked'		, 'title' => 'B?'		, 'align' => 'center'			]
+		    ],
+		'output'	=>  true,
+			'query'		=>  "
+						SELECT 
+							serle_ip AS 'ip',
+							count,
+							last_access,
+							server_resolved_ips. hostname  AS  'host',
+							GROUP_CONCAT(DISTINCT domain ORDER BY domain SEPARATOR '\n' ) AS 'domains',
+							CASE 
+								WHEN server_iptables. seri_id IS NULL
+								THEN ''
+								ELSE '*'
+							END  AS  'blocked'
+						FROM
+						   (
+							SELECT 
+								server_logfile_entries. serle_ip, 
+                                                                server_logfile_entries. serle_resolved_ip_id,
+								COUNT(server_logfile_entries. serle_ip) AS 'count',
+								MAX(server_logfile_entries. serle_date) as 'last_access',
+								server_domains. serd_domain  AS  'domain'
+							FROM server_logfile_entries
+							INNER JOIN server_logfiles ON server_logfiles. serl_id = server_logfile_entries. serle_logfile_id
+								{PARAMETER:logtype}
+							INNER JOIN server_domains ON server_domains. serd_id = server_logfiles. serl_domain_id
+							INNER JOIN servers ON servers. ser_id = server_domains. serd_server_id
+							WHERE
+								serle_ip <> '' AND
+								{PARAMETER:servers}
+							GROUP BY 
+								server_logfile_entries. serle_ip, 
+								server_logfiles. serl_domain_id
+						    ) AS logfile_ips
+						LEFT JOIN server_resolved_ips ON server_resolved_ips. id = logfile_ips. serle_resolved_ip_id
+						LEFT JOIN server_iptables ON server_iptables. seri_source = serle_ip
+						{WHERE}
+						GROUP BY serle_ip
+						{ORDER}
+						{LIMIT}
+					    "
+	    ] ;
+		
+	
+	    
+	/*==================================================================================================
+
+	    ResetLogTables, ResetLogData -
+		Resets the log tables.
+		ResetLogData only resets the server_log_data table, which has been generated with the 
+		-extract option.
+
+	  ==================================================================================================*/
+	function  ResetLogTables ( )
+	   {
+		global		$RsAdmin ;
+		
+		
+		$answer		=  Console::Prompt ( "Reset all log tables", [ 'y', 'n' ], 'n', true ) ;
+		
+		if  ( ! strcasecmp ( $answer, 'y' ) )
+		   {
+			$db	=  $RsAdmin -> Database ;
+			
+			$logfiles			=  $db -> Truncate ( RsAdmin::TABLE_SERVER_LOGFILES ) ;
+			$logfile_entries		=  $db -> Truncate ( RsAdmin::TABLE_SERVER_LOGFILE_ENTRIES ) ;
+			$logfile_data			=  $db -> Truncate ( RsAdmin::TABLE_SERVER_LOGFILE_DATA ) ;
+			$string_store_entries		=  $db -> Truncate ( RsAdmin::TABLE_SERVER_STRING_STORE ) ;
+			$le_string_store_entries	=  $db -> Truncate ( RsAdmin::TABLE_SERVER_LOGENTRIES_STRING_STORE ) ;
+			
+			output ( "Logfiles removed                          : $logfiles" ) ;
+			output ( "Logfile entries removed                   : $logfile_entries" ) ;
+			output ( "Logfile data entries removed              : $logfile_data" ) ;
+			output ( "String store entries removed              : $string_store_entries" ) ;
+			output ( "Log entries string store entries removed  : $le_string_store_entries" ) ;
+		    }
+	    }
+
+
+	function  ResetLogData ( ) 
+	   {
+		global		$RsAdmin ;
+		
+		
+		$answer		=  Console::Prompt ( "Reset extracted log data", [ 'y', 'n' ], 'n', true ) ;
+		
+		if  ( ! strcasecmp ( $answer, 'y' ) )
+		   {
+			$db	=  $RsAdmin -> Database ;
+			$query	=  "
+					UPDATE " . RsAdmin::TABLE_SERVER_LOGFILE_ENTRIES . "
+					SET
+						serle_processed		=  0,
+						serle_entry_type	=  0,
+						serle_process_id	=  0
+					WHERE
+						serle_processed <> 0
+				   " ;
+			$db -> Execute ( $query ) ;
+
+			$logfile_entries	=  $db -> GetAffectedRows ( ) ;
+			$logfile_data		=  $db -> Truncate ( RsAdmin::TABLE_SERVER_LOGFILE_DATA ) ;
+							
+			output ( "Logfile entries updated      : $logfile_entries" ) ;
+			output ( "Logfile data entries removed : $logfile_data" ) ;
+		    }
+	    }
+
+
+	/*==================================================================================================
+
+	    OptimizeLogTables -
+		Optimizes all the tables related to log entries.
+
+	  ==================================================================================================*/
+	function  OptimizeLogTables ( )
+	   {
+		global		$RsAdmin ;
+
+
+		$db		=  $RsAdmin -> Database ;
+		$db -> SetSimpleQuery ( "SHOW TABLE STATUS" ) ;
+		$rows		=  $db-> LoadRows ( ) ;
+		$tables		=  [] ;
+		$max_length	=  0 ;
+
+		foreach  ( $rows  as  $row )
+		   {
+			$length		=  strlen ( $row [ 'Name' ] ) ;
+
+			if  ( $length  >  $max_length )
+				$max_length	=  $length ;
+
+			$tables []	=  $row [ 'Name' ] ;
+		    }
+
+		foreach  ( $tables  as  $table )
+		   {
+			$name	= sprintf ( "%-{$max_length}s", $table ) ;
+
+			echo ( "Optimizing $name..." ) ;
+			$db -> Execute ( "OPTIMIZE TABLE $table" ) ;
+			output ( "done" ) ;
+		    }
+	    }
+
+
+	/*==================================================================================================
+
+	    ExtractLogData -
+		Extracts log data from the specified log types.
+
+	  ==================================================================================================*/
+	function  ExtractLogData  ( $logtypes )
+	   {
+		global		$RsAdmin ;
+
+
+		$global_new_records	=  0 ;
+
+		output ( "Analyzing new log entries :" ) ;
+
+		foreach  ( $logtypes  as  $logtype )
+		   {
+			$local_log		 =  $RsAdmin -> GetLocalLogInstance ( $logtype ) ;
+			$title			 =  $local_log -> Title ;
+			$new_records		 =  $local_log -> Extract ( ) ;
+
+			$global_new_records	+=  $new_records ;
+			$logtype_new_records	 =  $new_records ;
+
+			output ( "\n\t---> " . number_format ( $logtype_new_records, 0, '.', ' ' ) . " entries extracted for $title log" ) ;
+		    }
+
+		output ( "---> " . number_format ( $global_new_records, 0, '.', ' ' ) . " entries extracted." ) ;
+	    }
+	
+	
+
+
+	/*==================================================================================================
+
+	    RetrieveHostSpecificLogs -
+		Retrieves the log files from the specified server.
+
+	  ==================================================================================================*/
+	function  RetrieveHostSpecificLogs  ( $host, $logtype )
+	   {
+		$logfiles	=  new RemoteLogs ( $host, $logtype ) ;
+		$new_records	=  0 ;
+
+		foreach  ( $logfiles  as  $logfile )
+		   {
+			$new_records	+=  $logfile -> Update ( ) ;
+		    }
+
+		return ( $new_records ) ;
+	    }
+	
+	
+	/*==================================================================================================
+
+	    RetrieveHostLogs -
+		Retrieves the log files from the specified server.
+
+	  ==================================================================================================*/
+	function  RetrieveHostLogs  ( $hosts, $logtypes )
+	   {
+		global		$RsAdmin ;
+
+
+		$global_new_records	=  0 ;
+
+		foreach  ( $hosts as  $host )
+		   {
+			output ( "Server $host : " ) ;		
+			$host_new_records	=  0 ;
+		
+			foreach  ( $logtypes  as  $logtype )
+			   {
+				$new_records		 =  RetrieveHostSpecificLogs ( $host, $logtype ) ;
+				$global_new_records	+=  $new_records ;
+				$host_new_records	+=  $new_records ;
+			    }
+
+			output ( "\t---> " . number_format ( $host_new_records, 0, '.', ' ' ) . " records written for host $host" ) ;
+		    }
+
+		output ( "---> " . number_format ( $global_new_records, 0, '.', ' ' ) . " records written." ) ;
+
+		// Set the last update date for every log file 
+		$RsAdmin -> Database -> Execute ( "UPDATE " . RsAdmin::TABLE_SERVER_LOGFILES . " SET serl_last_update = NOW()" ) ;
+	    }
+	
+	
+	/*==================================================================================================
+
+	    RunQuery -
+		Runs a query, using the specified query data along with the values of the -limit, -sort_by
+		and -where command-line parameters.
+
+	  ==================================================================================================*/
+	function  RunQuery ( $query_data )
+	   {
+		global		$RsAdmin, $Limit, $SortBy, $Where, $ServerList, $LogType ;
+
+
+		$query_data [ 'parameters' ]	=
+		   [
+			[ 'name' => 'LIMIT'	, 'value' => $Limit  ],
+			[ 'name' => 'ORDER'	, 'value' => $SortBy ],
+			[ 'name' => 'WHERE'	, 'value' => $Where  ],
+			[ 'name' => 'PARAMETER'	, 
+				'value' => 'servers. ser_name IN ( ' . String::ImplodeWithQuotedStrings ( ', ', $ServerList, "'" ) . ')', 
+				'index' => 'servers' 
+			 ]
+		    ] ;
+
+		if  ( $LogType  !=   -1 )
+			$query_data [ 'parameters' ] []	=  
+			   [ 
+				'name'		=> 'PARAMETER', 
+				'value'		=> "AND server_logfiles. serl_logfile_type = $LogType",
+				'index'		=> 'logtype'
+			    ] ;
+		
+		$RsAdmin -> QueryLog ( $query_data ) ;
+	    }
+
+
+	/*==================================================================================================
+
+		Global constants and variables.
+
+	  ==================================================================================================*/
+	$CL 				=  new  CLParser ( $Definitions ) ;
+
+	$CheckExtractedData		=  $CL -> check_extracted_data ;
+	$ConfigurationFile		=  $CL -> configuration_file ;
+	$Extract			=  $CL -> extract ;
+	$FindString			=  $CL -> find_string ;
+	$Limit				=  $CL -> limit ;
+	$ListConfiguredServers		=  $CL -> list_configured_servers ;
+	$ListLogEntryStatistics		=  $CL -> list_log_entry_statistics ;
+	$ListStringStoreStatistics	=  $CL -> list_string_store_statistics ;
+	$ListTableInformation		=  $CL -> list_table_information ;
+	$LogType			=  ( integer ) $CL -> log_type ;
+	$OptimizeTables			=  $CL -> optimize_tables ;
+	$QueryIps			=  $CL -> query_ips ;
+	$ResetLogData			=  $CL -> reset_log_data ;
+	$ResetLogTables			=  $CL -> reset_log_tables ;
+	$ResolveIps			=  $CL -> resolve_ips ;
+	$RsLogsConfigurationFile	=  $CL -> rslogs_configuration_file ;
+	$Servers			=  $CL -> servers ;
+	$SortBy				=  ( $CL -> IsSpecified ( 'sort_by' ) ) ?  $CL -> sort_by : null ;
+	$StringStoreTypeIds		=  $CL -> string_store_types ;
+	$Sync				=  $CL -> sync ;
+	$Update				=  $CL -> update ;
+	$Where				=  $CL -> Where ;
+		
+	$RsAdmin			=  new RsAdmin ( $ConfigurationFile ) ;
+	$RsLogs				=  IniFile::LoadFromfile ( $RsLogsConfigurationFile ) ;
+
+	$CleanIps			=  false ;
+	$CleanMessages			=  false ;
+	$CleanSshConnections		=  false ;
+	$IpsToClean			=  [] ;
+	$MessagesToClean		=  [] ;
+
+	$ServerList			=  $RsAdmin -> FindServers ( $Servers ) ;
+	$ServerDomains			=  $RsAdmin -> FindServerDomains ( $Servers ) ;
+
+	$HadOption			=  false ;
+	$HadListOption			=  false ;
+
+	// Allows for '*' and '?' wildcards instead of mysql '%' and '_'
+	$Where				=  str_replace ( [ '*', '?' ], [ '%', '_' ], $Where ) ;
+
+	// Instanciate a string store object
+	$StringStore			=  new LogStringStore ( RsAdmin::TABLE_SERVER_STRING_STORE, $RsAdmin -> Database ) ;
+
+	// To be removed in the future
+	$StringStoreTables		=  
+	   [ 
+		'server_string_store'			=>  LogStringStore::GetTypes ( ),
+		'server_logfile_entries_string_store'	=>
+		   [
+			[ 'name' => 'Message', 'label' => 'Message', 'value' => 0 ]
+		    ],
+		'whois_string_store'			=>
+		   [
+			WhoisInformation::WHOIS_STRING_STORE_KEYWORD	=>
+			   [ 
+				'name'	=> 'WHOIS_STRING_STORE_KEYWORD', 
+				'label' => 'Keyword', 
+				'value' => WhoisInformation::WHOIS_STRING_STORE_KEYWORD	
+			    ],
+			WhoisInformation::WHOIS_STRING_STORE_TEXT	=>
+			   [ 
+				'name'	=> 'WHOIS_STRING_STORE_TEXT', 
+				'label' => 'Text', 
+				'value' => WhoisInformation::WHOIS_STRING_STORE_TEXT		
+			    ],
+			WhoisInformation::WHOIS_STRING_STORE_VALUE	=> 
+			   [ 
+				'name'	=> 'WHOIS_STRING_STORE_VALUE', 
+				'label' => 'Value', 
+				'value' => WhoisInformation::WHOIS_STRING_STORE_VALUE		
+			    ]
+		    ]
+	    ] ;
+
+	// Default value for log type is "all log types"
+	if  ( $LogType  ==  -1 )
+		$LogTypes	=  
+		   [ 
+			RsAdmin::LOGTYPE_HTTP, 
+			RsAdmin::LOGTYPE_HTTP_ERROR, 
+			RsAdmin::LOGTYPE_HTTP_ERROR_404,
+			RsAdmin::LOGTYPE_MAIL,
+			RsAdmin::LOGTYPE_AUTH,
+			RsAdmin::LOGTYPE_SSH
+		    ] ;
+	else
+		$LogTypes	=  [ $LogType ] ;
+
+	// String store types that can restrict the searches with the -find_string option
+	$StringStoreTypes	=  [] ;
+
+	foreach  ( $StringStoreTypeIds  as  $typeids )
+	   {
+		// A '*' specification anywhere on the -string_store_types option argument list automatically selects all types
+		if  ( $typeids [0]  ==  '*'  ||  $typeids [1]  ==  '*' )
+		   {
+			$StringStoreTypes	=  false ;
+			break ;
+		    }
+		
+		if  ( ! is_numeric ( $typeids [0] ) )
+			error ( new CLException ( "String store type ids must be either integer values or the '*' sign. \"{typeids [0]}\" was specified." ) ) ;
+		
+		if  ( ! is_numeric ( $typeids [1] ) )
+			error ( new CLException ( "String store type ids must be either integer values or the '*' sign. \"{typeids [1]}\" was specified." ) ) ;
+
+		$StringStoreTypes	=  array_merge ( $StringStoreTypes, range ( $typeids [0], $typeids [1] ) ) ;
+	    }
+
+	// Load rslogs-specific configuration parameters
+	LoadConfigurationParameters ( $RsLogs ) ;
+
+
+	/*==================================================================================================
+
+		Main program.
+
+	  ==================================================================================================*/
+	// -sync :
+	//	Equivalent to : -update -extract -resolve_ips -optimize_tables.
+	if  ( $Sync ) 
+	   {
+		$Update			=  true ;
+		$Extract		=  true ;
+		$ResolveIps		=  true ;
+	    }
+
+	// -reset_log_tables :
+	//	Resets the server_logfiles, server_logfile_entries and server_string_store tables.
+	if  ( ! $HadOption  &&  $ResetLogTables )
+	   {
+		ResetLogTables ( ) ;
+		exit ( ) ;
+	    }
+
+	// -reset_log_data :
+	//	Resets the server_logfile_data table.
+	if  ( ! $HadOption  &&  $ResetLogData )
+	   {
+		ResetLogData ( ) ;
+		exit ( ) ;
+	    }
+
+	// -update :
+	//	Updates the log files whose type has been specified by the -log_type parameter.
+	if  ( $Update )
+	   {
+		RetrieveHostLogs ( $ServerList, $LogTypes ) ;
+		
+		$HadOption	=  true ;
+	    }
+	
+	// -extract :
+	//	Extracts data from log files whose type has been specified by the -log_type parameter.
+	if  ( $Extract )
+	   {
+		ExtractLogData ( $LogTypes ) ;
+		
+		$HadOption	=  true ;
+	    }
+	
+	// -resolve_ips :
+	//	Resolves ip addresses collected so far.
+	if  ( $ResolveIps )
+	   {
+		$RsAdmin -> ResolveIps ( ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// -optimize_tables :
+	//	Optimizes all the log-related tables.
+	if  ( $OptimizeTables )
+	   {
+		OptimizeLogTables ( ) ;
+		$HadOption	=  true ;
+	    }
+
+	// -query_ips :
+	//	Displays a list of ip addresses that contacted the remote servers, together with a hit count.
+	if  ( ! $HadOption  &&  $QueryIps )
+	   {
+		RunQuery ( $QueryIpsData ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// -update :
+	//	Updates the log files whose type has been specified by the -log_type parameter.
+	if  ( ! $HadOption  &&  $Update )
+	   {
+		RetrieveHostLogs ( $ServerList, $LogTypes ) ;
+		
+		$HadOption	=  true ;
+	    }
+	
+	// -extract :
+	//	Extracts data from log files whose type has been specified by the -log_type parameter.
+	if  ( ! $HadOption  &&  $Extract )
+	   {
+		ExtractLogData ( $LogTypes ) ;
+		
+		$HadOption	=  true ;
+	    }
+	
+	// -check_extracted_data :
+	//	Checks that the extracted (and analyzed) data is consistent.
+	if  ( ! $HadOption  &&  $CheckExtractedData )
+	   {
+		CheckExtractedData ( ) ;
+		$HadOption	=  true ;
+	    }
+
+	// -list_configured_servers :
+	//	Lists the servers configured for this command.
+	if  ( ! $HadOption  &&  $ListConfiguredServers ) 
+	   {
+		$RsAdmin -> ListServers ( ) ;
+		$HadListOption	=  true ;
+	    }
+
+	// -list_row_count :
+	//	Lists the row count for each server table.
+	if  ( ! $HadListOption  &&  $ListTableInformation )
+	   {
+		ListTableInformation ( ) ;
+		$HadListOption	=  true ;
+	    }
+
+	// -list_log_entry_statistics :
+	//	Lists statistics about log entries.
+	if  ( ! $HadListOption  &&  $ListLogEntryStatistics )
+	   {
+		ListLogEntryStatistics ( ) ;
+		$HadListOption	=  true ;
+	    }
+
+
+	// -list_string_store_statistics :
+	//	Lists statistics about string store tables.
+	if  ( ! $HadListOption  &&  $ListStringStoreStatistics )
+	   {
+		ListStringStoreStatistics ( ) ;
+		$HadListOption	=  true ;
+	    }
+
+	if  ( $HadListOption )
+		$HadOption	=  true ;
+
+	// -find_string :
+	//	Finds a string in the message store.
+	if  ( ! $HadOption  &&  $FindString )
+	   {
+		FindString ( $FindString ) ;
+		$HadOption	=  true ;
+	    }
+
+	// No option specified : display help
+	if  ( ! $HadOption ) 
+		$CL -> DisplayHelp ( ) ;

@@ -1,0 +1,2081 @@
+<?php
+	//!phpcmd(Utilities, 2.0) : Performs incremental backups.
+	/***************************************************************************************************
+
+	    NAME
+		homebackup.phs
+
+	    DESCRIPTION
+		Performs backups on external drives.
+
+	    AUTHOR
+	     	Christian Vigh, 02/2015.
+	 
+	    HISTORY
+	    [Version : 1.0]	[Date : 2015/02/06]	[Author : CV]
+	     	Initial version.
+
+	    [Version : 1.0.1]	[Date : 2015/03/18]	[Author : CV]
+		. No default backup group was assigned if none specified on the command line.
+
+	    [Version : 1.0.2]	[Date : 2015/04/24]	[Author : CV]
+		. Added an error message if no backup mode nor any query options were specified on the
+		  command-line.
+	        . Corrected a regression in incremental mode : french and english format date strings were
+	 	  compared against each other, which caused new or modified files not to be backed up.
+	 	. Backup files with same modification time were not backed up in incremental mode if their
+	 	  modification times were identical but not their sizes.
+
+	    [Version : 1.0.3]	[Date : 2015/09/23]	[Author : CV]
+		. Use the date of the last backup, whether incremental or not, instead of the date of the 
+		  last incremental backup, when the -incremental option is specified.
+
+	 ***************************************************************************************************/
+	require ( "tools.phpinclude" ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Types\DateTime ;
+	use  Thrak\Types\String ;
+	use  Thrak\Types\String\Convert ;
+	use  Thrak\IO\Console ;
+	use  Thrak\IO\Path ;
+	use  Thrak\IO\AsciiReport ;
+	use  Thrak\Processors\IniFile ;
+	use  Thrak\Runtime\AsynchronousCommand ;
+	use  Thrak\Windows\LogicalDrives ;
+	use  Thrak\Windows\LogicalDrive ;
+	use  Thrak\Windows\WShell ;
+	use  Thrak\Math ;
+	
+	
+	/*==================================================================================================
+
+		Command line parameters.
+
+	  ==================================================================================================*/
+	$Definitions = <<<END
+<command name="homebackup">
+
+	<usage>
+		Backups directories to external USB devices.
+	</usage>
+
+	<keyword name="backup_type, bt">
+		Specifies the type of backup to perform.
+		
+		<case name="incremental, incr, i">
+			Performs an incremental backup, based on the last backup date.
+			If no previous incremental backup exists, the command will automatically switch to a sync backup.
+			Last modified files search is performed with the FORFILES command, while directory copies use
+			the ROBOCOPY command. Single files are copied using the Php API.
+		</case>
+		
+		<case name="sync, syn, s">
+			Performs a differential backup using the ROBOCOPY command.
+		</case>
+	</keyword>
+	
+	<string name="backup_group, bg">
+		Specifies the backup group to be used. If not specified, the backup group used for data backup will
+		be the one specified in the DefaultBackup key of the [Settings] section of homebackup.ini.
+	</string>
+	
+	<string name="comment, c">
+		Associates a comment to a backup being performed.
+	</string>
+	
+	<file name="configuration_file, cf" disposition="existing" default="thraktools://Data/homebackup.ini">
+		Specifies the location of the HomeBackup .ini file.
+	</file>
+			
+	<range name="delete_log, dl" value-text="datetime | index" arguments="0..*" type="any" normalize="true" auto-reorder="true">
+		Deletes one or more backup log files identified either by their date/time or index (as shown in the list
+		displayed by the -list_backup_summaries option).
+	</range>
+
+	<string name="delete_log_upto, dlu" value-text="datetime | index">
+		Deletes backup log files identified either by their date/time or index, up to the one specified (as shown in the list
+		displayed by the -list_backup_summaries option).
+	</string>
+		
+	<string name="find, f">
+		Locates a file in backup history. The specified parameter can include wildcards.
+		The search is performed using the following comparisons :
+		- Wilcard matches the filename part of the backed up file
+		- The supplied string is a substring of the backed up file
+		- Wildcard matches the whole backed up filename
+	</string>
+	
+	<flag name="incremental, incr, i">
+		Synonym for : -backup_type incremental.
+	</flag>
+
+	<string name="list_backup_group, lbg">
+		Lists the specified backup group contents.
+	</string>
+	
+	<flag name="list_backup_groups, lbgs">
+		Lists the available backup groups.
+	</flag>
+	
+	<integer name="list_last_summaries, lls" arguments="0..1">
+		Shows information about the last backups realized so far.
+		The optional integer value indicates how many recent backups should be displayed.
+	</integer>
+		
+	<range name="list_summaries, ls" value-text="datetime | index" arguments="0..*" type="any" normalize="true" auto-reorder="true">
+		Shows summary information about the specified backups.
+		The optional arguments can be a list of date/time or backup index ranges.
+	</range>
+	
+	<datetime name="since, s">
+		Backs up modified data since the specified date. This option implies the "-backup_type incremental"
+		option.
+		If not specified, the date of the last backup will be used.
+	</datetime>
+
+	<flag name="sync, sy">
+		Synonym for : -backup_type sync.
+	</flag>
+	
+	<string name="target_directory, tdir">
+		Target backup directory on the target drive. Overrides the TargetDirectory key of the [Settings]
+		section of the homebackup configuration file.
+	</string>
+	
+	<drive name="target_drive, td" arguments="1..*">
+		Target backup drive. 
+		If none specified, homebackup will try to locate a plugged drive having at its root a directory 
+		with the same name than the one specified in the TargetDirectory key of the [Settings] section 
+		of the configuration file.
+		If no removable drive is found, or if more than one removable drive is found having this
+		target directory, homebackup will complain.
+	</drive>
+		
+	<range name="view_log, vl" value-text="datetime | index" arguments="0..*" type="any" normalize="true" auto-reorder="true">
+		View one or more backup log file identified either by their date/time or index (as shown in the list
+		displayed by the -list_backup_summaries option).
+	</range>
+</command>
+END;
+
+
+	/**************************************************************************************************************
+	 **************************************************************************************************************
+	 **************************************************************************************************************
+	 ******                                                                                                  ******
+	 ******                                                                                                  ******
+	 ******                                       HELPER FUNCTIONS                                           ******
+	 ******                                                                                                  ******
+	 ******                                                                                                  ******
+	 **************************************************************************************************************
+	 **************************************************************************************************************
+	 **************************************************************************************************************/
+
+
+	/*==============================================================================================================
+	
+	    backup_log -
+	        Logs a message to both a log file and standard output.
+	
+	  ==============================================================================================================*/
+	function  backup_log ( $fp, $message, $tabs = 0, $drive = null )
+	   {
+		$text	=  '[' . date ( 'Y-m-d H:i:s' ) . '] ' ;
+		$tabstr	=  str_repeat ( "    ", $tabs ) ;
+		
+		for  ( $i = 0 ; $i  <  min ( $tabs, 3 ) ; $i ++ )
+			$tabstr [ $i * 4 ] = '|' ;
+		
+		if  ( $drive )
+			$message	=  '[' . $drive -> Name . $drive -> VolumeName . '] ' . $message ;
+		
+		$text	.=  $message ; 
+		fputs ( $fp, String::Untabify ( $text ) . "\n" ) ;
+		output ( String::Untabify ( "$tabstr$message" ) ) ;
+	    }
+	
+
+	/*==============================================================================================================
+	
+	    ensure_path_exists -
+	        Ensures that the specified path exists. Creates it if necessary and fails if an error occurs.
+	
+	  ==============================================================================================================*/
+	function  ensure_path_exists ( $path )
+	   {
+		if  ( ! file_exists ( $path ) )
+		   {
+			@mkdir ( $path, 0777, true ) ;
+			
+			if  ( ! file_exists ( $path )  )
+				error ( "Unable to create target directory $path." ) ;
+			
+			if  ( ! is_dir ( $path ) )
+				error ( "Path $path is not a directory." ) ;
+		    }
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    get_backup_log -
+	        Gets the full path of a backup log file.
+	
+	  ==============================================================================================================*/
+	function  get_backup_log ( )
+	   {
+		global		$HistoryDataDirectory ;
+		
+		$path	=  $HistoryDataDirectory . '\\backup.' . date ( 'Ymd.His' ) . '.log' ;
+		
+		if  ( $fp = @fopen ( $path, 'w' ) )
+		   {
+			fclose ( $fp ) ;
+			unlink ( $path ) ;
+		    }
+		else
+			error ( "Unable to create backup logfile \"$path\"." ) ;
+		
+		return ( Path::ToWindows ( Path::RealPath ( $path ) ) ) ;
+	    }
+
+	
+	/*==============================================================================================================
+	
+	    get_multiplier -
+	        Returns an integer multiplier based on a byte quantity.
+	
+	  ==============================================================================================================*/
+	function  get_multiplier ( $copy_multiplier )
+	   {
+		switch ( strtolower ( $copy_multiplier ) )
+		   {
+			case	'g'  : case	'gb' : case	'go' :
+				$multiplier	=  1024 * 1024 * 1024 ;
+				break ;
+								
+			case	'm'  : case	'mb' : case	'mo' :
+				$multiplier	=  1024 * 1024 ;
+				break ;
+								
+			case	'k'  : case	'kb' : case	'ko' :
+				$multiplier	=  1024 ;
+				break ;
+				
+			default :
+				$multiplier	=  1 ;
+		    }
+		
+		return ( $multiplier ) ;
+	    }
+
+	
+	/*==============================================================================================================
+	
+	    get_statistics_array -
+	        Returns an initialized array for statistics.
+	
+	  ==============================================================================================================*/
+	function  get_statistics_array ( )
+	   {
+		static	$init	=
+		   [
+			'start-time'		=>  0,
+			'total-files'		=>  0,
+			'new-files'		=>  0,
+			'updated-files'		=>  0,
+			'ignored-files'		=>  0,
+			'copied-size'		=>  0,
+			'ignored-size'		=>  0,
+			'backup-data'		=>  []
+		    ] ;
+		
+		$init [ 'start-time' ]	=  microtime ( true ) ;
+		
+		return ( $init ) ;
+	    }
+
+	
+	/*==============================================================================================================
+	
+	    get_summaries -
+	        Returns an array of summary log entries based on the specified range, which can be either a datetime
+		range or a numeric range.
+	
+	  ==============================================================================================================*/
+	function  get_summaries ( $ranges )
+	   {
+		global		$BackupHistory ;
+
+		
+		$count		=  count ( $BackupHistory ) ;
+		
+		// First case : a single numeric parameter means that we want to retrieve the last
+		// $ranges summaries
+		if  ( is_numeric ( $ranges ) )
+		   {
+			if  ( ! $ranges )
+				$ranges		=  PHP_INT_MAX ;
+			
+			if  ( $ranges  >=  $count )
+				$start	=  0 ;
+			else
+				$start	=  $count - $ranges ;
+			
+			$result		=  [] ;
+			
+			for  ( $i  =  $start ; $i  < $count ; $i ++ )
+				$result [$i]	=  $BackupHistory [$i] ;
+			
+			return ( $result ) ;
+		    }
+		// Otherwise, this may be any combination of integer ranges (meaning : retrieve all summaries between 'low' 
+		// and 'high' values) and date/time ranges
+		else if  ( count ( $ranges ) )
+		   {
+			$history	=  [] ;
+			$count		=  count ( $BackupHistory ) ;
+			
+			// Loop through ranges
+			foreach  ( $ranges  as  $range )
+			   {
+				// Numeric range : either indexes of backup summaries, but also allow for a year specification
+				if  ( is_numeric ( $range [0] )  &&  is_numeric ( $range [1] ) )
+				   {
+					// Low range value greater than the available number of elements : maybe a year number
+					if  ( $range [0]  >  $count )
+					   {
+						// Yes, this is a year number
+						if  ( $range [0]  >  1900 )
+						   {
+							// Collect backup summaries that fall between this range
+							for  ( $i = 0 ; $i  <  $count ; $i ++ )
+							   {
+								$year	=  date ( 'Y', $BackupHistory [$i] [ 'start-time' ] ) ;
+								
+								if  ( $year  >=  $range [0]  ||  $year  <=  $range [1] )
+									$history [$i]	=  $BackupHistory [$i] ;
+							    }
+						    }
+					    }
+					// No, these are simply backup summary indexes to be collected
+					else
+					   {
+						if  ( $range [0]  <  1 )
+							$range [0]	=  1 ;
+						
+						if  ( $range [1]  >=  $count )
+							$range [1]	=  $count ;
+						
+						for  ( $i = $range [0] ; $i  <=  $range [1] ; $i ++ )
+							$history [$i - 1]	=  $BackupHistory [$i - 1] ;
+					    }
+				    }
+				// Date/time range (maybe...)
+				else if  ( ( $low = strtotime ( $range [0] ) )  !==  false  &&  ( $high = strtotime ( $range [1] ) )  !==  false ) 
+				   {
+					for  ( $i = 0 ; $i  <  $count ; $i ++ )
+					   {
+						if  ( $BackupHistory [$i] [ 'start-time' ]  >=  $low  &&  $BackupHistory [$i] [ 'start-time' ]  <=  $high )
+							$history [$i]	=  $BackupHistory [$i] ;
+					    }
+				    }
+				// Junk stuff : bail out
+				else
+				   {
+					if  ( $range [0]  ==  $range [1] )
+						error ( "Invalid value \"{$range [0]}\" specified." ) ;
+					else
+						error ( "Invalid range \"{$range [0]}..{$range [1]}\" specified." ) ;
+				    }
+			    }
+			
+			// Sort the results
+			ksort ( $history ) ;
+			
+			return ( $history ) ;
+		    }
+		// No value specified : return the whole history
+		else  
+			return ( $BackupHistory ) ;
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    load_history -
+	        Loads backup history data.
+	
+	  ==============================================================================================================*/
+	function  load_history ( )
+	   {
+		global		$BackupHistory, $BackupHistoryFile, $HistoryDataDirectory ;
+		
+		$BackupHistoryFile	=  $HistoryDataDirectory . '\\backup.summary.log' ;
+		
+		if  ( file_exists ( $BackupHistoryFile ) )
+		   {
+			$contents	=  file_get_contents ( $BackupHistoryFile ) ;
+			$data		=  @unserialize ( $contents ) ;
+			
+			if  ( $data )
+				$BackupHistory	=  $data ;
+		    }
+	    }
+	
+
+	/*==============================================================================================================
+	
+	    log_free_space -
+	        Logs free space on each target drive.
+	
+	  ==============================================================================================================*/
+	function  log_free_space ( $backup_fp )
+	   {
+		global		$TargetDrives ;
+		
+		$drives			=  new LogicalDrives ( ) ;
+		$free_space		=  [] ;
+		$max			=  -1 ;
+		
+		foreach  ( $TargetDrives  as  $target_drive )
+		   {
+			foreach  ( $drives  as  $drive )
+			   {
+				if  ( ! strcasecmp ( $drive -> Name, $target_drive -> Name ) )
+					$free_space [ $target_drive -> Name ]	=  number_format ( $drive -> FreeSpace, 0, '.', ' ' ) ;
+			    }
+		    }
+		
+		foreach  ( $free_space  as  $space )
+		   {
+			$length		=  strlen ( $space ) ;
+			
+			if  ( $length  >  $max )
+				$max	=  $length ;
+		    }
+		
+		backup_log ( $backup_fp, "Free space left :", 0 ) ;
+		
+		foreach  ( $free_space  as  $drive => $space )
+			backup_log ( $backup_fp, "     Drive $drive              : " . str_pad ( $space, $max, ' ', STR_PAD_LEFT ) . " bytes", 0 ) ;
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    log_summary -
+	        Adds summary information to backup summary.
+	
+	  ==============================================================================================================*/
+	function  log_summary ( $statistics )
+	   {
+		global		$TargetDrives, $BackupHistory, $MaxHistoryLogs, $BackupComment, $BackupSince, $BackupGroups, $BackupGroup, $BackupType ;
+		
+		
+		$statistics [ 'targets' ]	=  $TargetDrives ;
+		$statistics [ 'comment' ]	=  $BackupComment ;
+		$statistics [ 'since'   ]	=  ( $BackupSince ) ?  $BackupSince [ 'unixtime' ] : '' ;
+		$statistics [ 'type' ]		=  $BackupType ;
+		$statistics [ 'group' ]		=  $BackupGroups [ strtolower ( $BackupGroup ) ] [ 'name' ] ;
+		
+		$BackupHistory []		=  $statistics ;
+	    }
+		
+	
+	/*==============================================================================================================
+	
+	    remove_old_logs -
+	        Removes old log files.
+	
+	  ==============================================================================================================*/
+	function  remove_old_logs ( )
+	   {
+		global		$MaxHistoryLogs, $HistoryDataDirectory ;
+		
+		$history	=  Path::RealPath ( $HistoryDataDirectory ) ;
+		$logfiles	=  glob ( "$history/backup.*.log" ) ;
+		$logcount	=  count ( $logfiles ) ;
+		
+		if  ( $logcount  >  $MaxHistoryLogs )
+		   {
+			output ( "Purging old log files :" ) ;
+			rsort ( $logfiles ) ;
+			
+			for  ( $i = $MaxHistoryLogs ; $i  < $logcount ; $i ++ )
+			   {
+				$file	=  Path::ToWindows ( $logfiles [$i] ) ;
+				output ( "\t$file" ) ;
+				unlink ( $file ) ;
+			    }
+		    }
+	    }
+
+	
+	/*==============================================================================================================
+	
+	    save_history -
+	        Saves history data.
+	
+	  ==============================================================================================================*/
+	function  save_history ( )
+	   {
+		global		$BackupHistoryFile, $BackupHistory, $MaxHistorySummaries ;
+		
+		
+		$count		=  count ( $BackupHistory ) ;
+		
+		if  ( $MaxHistorySummaries  <  $count )
+			$BackupHistory	=  array_slice ( $BackupHistory, $count - $MaxHistorySummaries ) ;
+		
+		$contents	=  serialize ( $BackupHistory ) ;
+		file_put_contents ( $BackupHistoryFile, $contents ) ;
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    statistics_add -
+	        Adds statistics data for a given file.
+	
+	  ==============================================================================================================*/
+	function  statistics_add ( &$statistics, $copy_type, $copy_size )	
+	   {
+		$statistics [ 'total-files' ] ++ ;
+		$statistics [ 'copied-size' ] +=  $copy_size ;
+		
+		if  ( ! strcasecmp ( $copy_type, 'update' ) )
+			$statistics [ 'updated-files' ] ++ ;
+		else if  ( ! strcasecmp ( $copy_type, 'new' ) )
+			$statistics [ 'new-files' ] ++ ;
+	    }
+
+	
+	/*==============================================================================================================
+	
+	    statistics_bad_copy -
+	        Records statistics information when a problem occurred on file copy.
+	
+	  ==============================================================================================================*/
+	function  statistics_bad_copy ( &$statistics, $size )
+	   {
+		$statistics [ 'ignored-files' ] ++ ;
+		$statistics [ 'ignored-size' ]	+=  $size ;
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    statistics_log -
+	        Logs statistics about a backup.
+	
+	  ==============================================================================================================*/
+	function  statistics_log ( $backup_fp, &$statistics, $level )
+	   {
+		$end_time			=  microtime ( true ) ;
+		$statistics [ 'end-time' ]	=  $end_time ;
+		
+		backup_log ( $backup_fp, '  -> Elapsed time          : ' .
+				Convert::ToTimeString ( $end_time - $statistics [ 'start-time' ], TTS_OPTION_ZERO_PAD, TTS_UNIT_MINUTES, TTS_UNIT_SECONDS ), $level ) ;
+		
+		backup_log ( $backup_fp, '     Total files processed : ' . $statistics [ 'total-files' ] . ' (' .
+				$statistics [ 'new-files' ] . ' new, ' .
+				$statistics [ 'updated-files' ] . ' updated, ' .
+				$statistics [ 'ignored-files' ] . ' ignored)',
+				$level ) ;
+		
+		$numbers	=  [] ;
+		$numbers []	=  number_format ( $statistics [ 'copied-size'  ], 0, '.', ' ' ) ;
+		$numbers []	=  number_format ( $statistics [ 'ignored-size'  ], 0, '.', ' ' ) ;
+		$numbers []	=  number_format ( $statistics [ 'copied-size'  ] - $statistics [ 'ignored-size' ], 0, '.', ' ' ) ;
+		$max		=  -1 ;
+			
+		for  ( $i = 0 ; $i  <  3 ; $i ++ )
+		   {
+			$number		=  $numbers [ $i ] ;
+			$length		=  strlen ( $number ) ;
+			
+			if  ( $length  >  $max )
+				$max	=  $length ;
+		    }
+
+		backup_log ( $backup_fp, '     Bytes processed       : ' . str_pad ( $numbers [0], $max, ' ', STR_PAD_LEFT ), $level ) ;
+		backup_log ( $backup_fp, '     Bytes ignored         : ' . str_pad ( $numbers [1], $max, ' ', STR_PAD_LEFT ), $level ) ;
+		backup_log ( $backup_fp, '     Bytes copied          : ' . str_pad ( $numbers [2], $max, ' ', STR_PAD_LEFT ), $level ) ;
+	    }
+
+	
+	/*==============================================================================================================
+	
+	    verify_backup_sources -
+	        Verifies the existence of the various sources belonging to the specified backup.
+	
+	  ==============================================================================================================*/
+	function  verify_backup_sources ( $config, $groups, $selected )
+	   {
+		$loselected	=  strtolower ( $selected ) ;
+		$missing	=  [] ;
+		
+		foreach  ( $groups [ $loselected ] [ 'entries' ]  as  $source => $destination )
+		   {
+			if  ( ! file_exists ( $source )  ||  ! is_dir ( $source ) )
+				$missing []	=  $source ;
+		    }
+		
+		if  ( count ( $missing ) )
+			error ( "The following backup group [$selected] entries, defined in configuration file \"$config\", are either " .
+				"missing or are not directories :\n\t. " .
+				implode ( "\n\t. ", $missing ) ) ;
+	    }
+	
+	
+	/**************************************************************************************************************
+	 **************************************************************************************************************
+	 **************************************************************************************************************
+	 ******                                                                                                  ******
+	 ******                                                                                                  ******
+	 ******                                    SETTINGS-RELATED FUNCTIONS                                    ******
+	 ******                                                                                                  ******
+	 ******                                                                                                  ******
+	 **************************************************************************************************************
+	 **************************************************************************************************************
+	 **************************************************************************************************************/
+
+	/*==============================================================================================================
+	
+	    DeleteLog, DeleteLogUpto -
+	        Deletes the specified log file(s), identified by their backup date (which can be partial) or their index.
+	
+	  ==============================================================================================================*/
+	function  __delete_log ( $summaries )
+	   {
+		global		$BackupHistory ;
+		
+		
+		if  ( ! count ( $summaries ) )
+			error ( "No match." ) ;
+
+		$keys		=  array_keys ( $summaries ) ;
+		$newhist	=  [] ;
+		
+		foreach  ( $keys  as  $i )
+		   {
+			output ( 'Delete entry #' . ( $i + 1 ) . '(' . date ( 'Y-m-d H:i:s', $BackupHistory [$i] [ 'start-time' ] ) . ')' ) ;
+			
+			if  ( file_exists ( $BackupHistory [$i] [ 'logfile' ] ) )
+			   {
+				unlink ( $BackupHistory [$i] [ 'logfile' ] ) ;
+				output ( "\t-> deleted file " . $BackupHistory [$i] [ 'logfile' ] ) ;
+			    }
+		    }
+	    }
+	
+	
+	function  DeleteLog ( )
+	   {
+		global		$DeleteLog ;
+		
+		$summaries	=  get_summaries ( $DeleteLog ) ;
+		
+		__delete_log ( $summaries ) ;
+	    }
+	
+	
+	function  DeleteLogUpto ( )
+	   {
+		global		$DeleteLogUpto ;
+		
+		
+		if  ( is_numeric ( $DeleteLogUpto ) )
+		   {
+			if  ( $DeleteLogUpto  <  1 )
+				error ( "The value \"$DeleteLogUpto\" specified for the -delete_log_upto parameter must be greater than zero." ) ;
+			
+			$params		=  [ 1, $DeleteLogUpto ] ;
+		    }
+		else
+		   {
+			$time		=  strtotime ( $DeleteLogUpto ) ;
+			
+			if  ( $time  ===  false )
+				error ( "Value specified for the -delete_log_upto should be either a backup index or a date/time." ) ;
+			
+			$params		=  [ DateTime::GetDateTimeElements ( 0 ), DateTime::GetDateTimeElements ( $time ) ] ;
+		    }
+		
+		$summaries	=  get_summaries ( [ $params ] ) ;
+		__delete_log ( $summaries ) ;
+	    }
+	
+		
+	/*==============================================================================================================
+	
+	    FindFile -
+	        Searches for a file in backup logs.
+	
+	  ==============================================================================================================*/
+	function  FindFile ( $searched_file )
+	   {
+		global		$BackupHistory ;
+
+
+		// Regular expressions for matching filenames in incremental and sync backup logs
+		static $incremental_re		=  '#
+							\[
+							(?P<date> 
+								\d+ - \d+ - \d+
+								\s+
+								\d+ : \d+ : \d+ 
+							 )
+							\]
+							\s+
+							(?P<target> \[.*?\])
+							\s+
+							\d+ / \d+ / \d+
+							\s+
+							\d+ : \d+ : \d+ 
+							\s+
+							(?P<size> [\d\s]+)
+							(?P<file> .*) 
+							$
+						    #imsx' ;
+		static $sync_re			=  '#
+							\[
+							(?P<date> 
+								\d+ - \d+ - \d+
+								\s+
+								\d+ : \d+ : \d+ 
+							 )
+							\]
+							\s+
+							(?P<target> \[.*?\])
+							\s+
+							.*?
+							\s+
+							(?P<size> [\d.]+ \s+ ( (?P<multiplier> [kmg]) \s+)? )
+							(?P<file> .*) 
+							$
+						    #imsx' ;
+		
+		// Match list
+		$list				=  [] ;
+		$history_count			=  count ( $BackupHistory ) ;
+		
+		// Loop through history logs
+		for  ( $i  =  0 ; $i  <  $history_count ; $i ++ )
+		   {
+			$history	=  $BackupHistory [$i] ;
+			
+			// Ignore history files that may have been deleted
+			if  ( ! file_exists ( $history [ 'logfile' ] ) )
+				continue ;
+			
+			$lines	=  file ( $history [ 'logfile' ] ) ;
+			$count	=  count ( $lines ) ;
+			
+			// Incremental log files
+			if  ( $history [ 'type' ]  ==  'incremental' )
+			   {
+				// Loop through log file lines
+				for  ( $j  =  0 ; $j  <  $count ; $j ++ )
+				   {
+					$line	=  $lines [$j] ;
+					
+					// Current line contains a backed up filename
+					if  ( preg_match ( $incremental_re, $line, $match ) )
+					   {
+						$file	=  trim ( $match [ 'file' ] ) ;
+						$name	=  basename ( $file ) ;
+						
+						// If filename matches, add it to the output list
+						if  ( Path::Matches ( $name, $searched_file )   ||
+						      stristr ( $file, $searched_file )		||
+						      Path::Matches ( $file, $searched_file ) )
+						   {
+							$row	=  
+							   [
+								'id'		=>  $i + 1,
+								'group'		=>  $history [ 'group' ],
+								'type'		=>  $history [ 'type' ],
+								'file'		=>  $file,
+								'size'		=>  trim ( $match [ 'size' ] ),
+								'date'		=>  $match [ 'date' ],
+								'target'	=>  $match [ 'target' ],
+								'failed'	=>  '',
+							    ] ;
+							
+							// Check next line for potential copy error
+							if  ( $j + 1  <  $count  &&  preg_match ( '/Error.*?:/', $lines [$j + 1] ) )
+							   {
+								$row [ 'failed' ]	=  '*' ;
+								$j ++ ;
+							    }
+							
+							$list []	=  $row ;
+						    }
+					    }
+				    }
+			    }
+			// Sync backup mode
+			else
+			   {
+				for  ( $j  =  0 ; $j  <  $count ; $j ++ )
+				   {
+					$line	=  $lines [$j] ;
+					
+					if  ( preg_match ( $sync_re, $line, $match ) )
+					   {
+						$file	=  trim ( $match [ 'file' ] ) ;
+						$name	=  basename ( $file ) ;
+						
+						if  ( Path::Matches ( $name, $searched_file )   ||
+						      stristr ( $file, $searched_file )		||
+						      Path::Matches ( $file, $searched_file ) )
+						   {
+							$row	=  
+							   [
+								'id'		=>  $i + 1,
+								'group'		=>  $history [ 'group' ],
+								'type'		=>  $history [ 'type' ],
+								'file'		=>  $file,
+								'size'		=>  number_format (
+									trim ( $match [ 'size' ] ) * get_multiplier ( $match [ 'multiplier' ] ), 0, '.', ' ' ),
+								'date'		=>  $match [ 'date' ],
+								'target'	=>  $match [ 'target' ],
+								'failed'	=>  '',
+							    ] ;
+							
+							if  ( $j + 1  <  $count  &&  preg_match ( '/ERREUR.*?\d+\s+\(/', $lines [$j + 1] ) )
+							   {
+								$row [ 'failed' ]	=  '*' ;
+								$j ++ ;
+							    }
+							
+							$list []	=  $row ;
+						    }
+					    }
+				    }
+			    }
+		    }
+		
+		// Generate output report
+		$report		=  new  AsciiReport
+		   (
+			[ 'member' => 'id'	, 'title' => 'Id'				],
+			[ 'member' => 'type'	, 'title' => 'Type'				],
+			[ 'member' => 'group'	, 'title' => 'Group'				],
+			[ 'member' => 'date'	, 'title' => 'Date'				],
+			[ 'member' => 'target'	, 'title' => 'Target'				],
+			[ 'member' => 'size'	, 'title' => 'Size'	, 'align' => 'right'	],
+			[ 'member' => 'file'	, 'title' => 'File'				],
+			[ 'member' => 'failed'  , 'title' => 'Failed?'	, 'align' => 'center'	]
+		    ) ;
+		
+		echo $report -> Generate ( $list ) ;
+		echo $report -> Summary ( 'file' ) ;
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    ListBackupGroup -
+	        Lists the specified backup group entries.
+	
+	  ==============================================================================================================*/
+	function  ListBackupGroup ( )
+	   {
+		global		$BackupGroups, $DefaultBackupGroup, $ListBackupGroup ;
+		
+		$group_name	=  strtolower ( $ListBackupGroup ) ;
+		
+		if  ( ! isset ( $BackupGroups [ $group_name ] ) )
+			error ( "Backup group \"$ListBackupGroup\" does not exist." ) ;
+		
+		$report		=  new  AsciiReport
+		  (
+			[ 'member' => 'Source' ],
+			[ 'member' => 'Destination' ]
+		   ) ;
+		$data		=  [] ;
+		
+		foreach  ( $BackupGroups [ $group_name ] [ 'entries' ]  as  $source => $destination )
+		   {
+			$row	=
+			   [
+				'Source'		=>  $source,
+				'Destination'		=>  $destination
+			    ] ;
+			
+			$data []	=  $row ;
+		    }
+		
+		echo $report -> Generate ( $data ) ;
+		echo $report -> Summary ( 'backup source' ) ;
+	    }
+
+	
+	/*==============================================================================================================
+	
+	    ListBackupGroups -
+	        Lists the available backup groups.
+	
+	  ==============================================================================================================*/
+	function  ListBackupGroups ( )
+	   {
+		global		$BackupGroups, $DefaultBackupGroup ;
+		
+		$report		=  new  AsciiReport
+		  (
+			[ 'member' => 'File' ],
+			[ 'member' => 'Name' ],
+			[ 'member' => 'Section' ], 
+			[ 'member' => 'D' ]
+		   ) ;
+		$data		=  [] ;
+		
+		foreach  ( $BackupGroups  as  $group_name => $entry )
+		   {
+			$row	=
+			   [
+				'File'		=>  $entry [ 'file' ],
+				'Name'		=>  $entry [ 'name' ],
+				'Section'	=>  $entry [ 'section' ],
+				'D'		=>  ( strcasecmp ( $entry [ 'name' ], $DefaultBackupGroup ) ) ?  ' ' : '*'
+			    ] ;
+			
+			$data []	=  $row ;
+		    }
+		
+		echo $report -> Generate ( $data ) ;
+		echo $report -> Summary ( 'backup group' ) ;
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    ListBackupSummaries -
+	        Lists last backups information.
+	
+	  ==============================================================================================================*/
+	function  ListBackupSummaries ( $ranges )
+	   {
+		$report		=  new  AsciiReport
+		   (
+			[ 'member'	=>  '#'						],
+			[ 'member'	=>  'Type'					],
+			[ 'member'	=>  'Group'					],
+			[ 'member'	=>  'Date'					],
+			[ 'member'	=>  'Backup since'      , 'align' => 'right'	],
+			[ 'member'	=>  'Duration'		, 'align' => 'right'	],
+			[ 'member'	=>  'Bytes copied'	, 'align' => 'right'	],
+			[ 'member'	=>  'Target'					],
+			[ 'member'	=>  'Comment'					]
+		    ) ;
+		
+		$data		=  [] ;
+		$summaries	=  get_summaries ( $ranges ) ;
+
+		foreach  ( $summaries  as  $i => $entry )
+		   {
+			$row			=  [] ;
+			
+			$row [ '#' ]		=  $i + 1 ;
+			$row [ 'Type' ]		=  $entry [ 'type' ] ;
+			$row [ 'Group' ]	=  $entry [ 'group' ] ;
+			$row [ 'Date' ]		=  date ( 'Y-m-d H:i:s', ( integer ) $entry [ 'start-time' ] ) ;
+			$row [ 'Backup since' ]	=  ( $entry [ 'since' ] ) ?  date ( 'Y-m-d H:i:s', ( integer ) $entry [ 'since' ] ) : 'N/A' ;
+			$row [ 'Duration' ]	=  Convert::ToTimeString ( $entry [ 'end-time' ] - $entry [ 'start-time' ], 
+										TTS_OPTION_ZERO_PAD,
+										TTS_UNIT_MINUTES, TTS_UNIT_SECONDS ) ;
+			$row [ 'Bytes copied' ]	=  number_format ( $entry [ 'copied-size' ] - $entry [ 'ignored-size' ], 0, '.', ' ' ) ;
+			$row [ 'Comment' ]	=  $entry [ 'comment' ] ;
+			
+			$drives			=  [] ;
+			
+			foreach  ( $entry [ 'targets' ]  as  $drive )
+				$drives []	=  $drive -> Name . ' [' . $drive -> VolumeName . ']' ;
+			
+			$row [ 'Target' ]	=  implode ( "\n", $drives ) ;
+			
+			$data []		=  $row ;
+		    }
+		
+		echo  $report -> Generate ( $data ) ;
+		echo  $report -> Summary ( 'backup' ) ;
+	    }
+	
+
+	/*==================================================================================================
+
+	    LoadSettings -
+		Load configuration settings from the homebackup.ini file.
+
+	  ==================================================================================================*/
+	function  LoadSettings ( $config )
+	   {
+		global		$ConfigurationData ;
+		global		$PreferredDrive, $TargetDirectory, $HistoryDataDirectory, $LastBackupDate, $LastBackupType , $MaxHistoryLogs ;
+		global		$BackupGroups, $DefaultBackupGroup, $DefaultIncrementalBackupGroup, $DefaultSyncBackupGroup ;
+		
+		
+		$ConfigurationData	=  IniFile::LoadFromFile ( $config ) ;
+		
+		// Get preferred drive
+		$value		=  $ConfigurationData -> GetKey ( 'Settings', 'PreferredDrive' ) ;
+		
+		if (  $value )
+		   {
+			if  ( preg_match ( '/^[a-z]:?$/i', $value ) )
+				$PreferredDrive		=  strtoupper ( $value [0] ) ;
+			else
+				error ( "Invalid drive specification \"$value\" for the PreferredDrive entry of the [Settings] section " .
+					"of file \"$config\"." ) ;
+		    }
+			
+		// Target directory : must not include any drive specification
+		$value		=  $ConfigurationData -> GetKey ( 'Settings', 'TargetDirectory' ) ;
+		
+		if  ( preg_match ( '/^[a-z]:/i', $value ) )
+			error ( "Path \"$value\" for the BackupDirectory entry of the [Settings] section " .
+				"of file \"$config\" cannot contain a drive specification." ) ;
+		
+		if  ( $value [0]  ==  '/'  ||  $value [0]  ==  '\\' )
+			$value	=  substr ( $value, 1 ) ;
+		
+		$TargetDirectory	=  $value ;
+		
+		// History data directory
+		$value		=  $ConfigurationData -> GetKey ( 'Settings', 'HistoryData' ) ;
+		
+		if  ( ! file_exists ( $value ) )
+		   {
+			@mkdir ( $value, 0755, true ) ;
+			
+			if  ( ! file_exists ( $value ) )
+				error ( "Could not locate history data directory \"$value\" specified in the HistoryData key of " .
+					"the [Settings] section of configuration file \"$config\"." ) ;
+		    }
+		
+		$HistoryDataDirectory	=  $value ;
+				
+		// Max history log files 
+		$value		=  $ConfigurationData -> GetKey ( 'Settings', 'MaxHistoryLogs' ) ;
+		
+		if  ( ! is_numeric ( $value ) )
+			error ( "Bad numeric value \"$value\" for the MaxHistoryLogs key of the [Settings] section of configuration file " .
+				"\"$config\"." ) ;
+		
+		$MaxHistoryLogs		=  ( integer ) $value ;
+		
+		// Max history summaries 
+		$value		=  $ConfigurationData -> GetKey ( 'Settings', 'MaxHistorySummaries' ) ;
+		
+		if  ( ! is_numeric ( $value ) )
+			error ( "Bad numeric value \"$value\" for the MaxHistorySummaries key of the [Settings] section of configuration file " .
+				"\"$config\"." ) ;
+		
+		$MaxHistorySummaries		=  ( integer ) $value ;
+		
+		// Backup groups
+		$groups		=  $ConfigurationData -> GetKeys ( 'Backup Groups' ) ;
+		
+		if  ( ! count ( $groups ) )
+			error ( "Missing or empty [Backup Groups] section in configuration file \"$config\"." ) ;
+		
+		$missing_groups		=  [] ;
+		$duplicate_groups	=  [] ;
+
+		foreach  ( $groups  as  $name => $section )
+		   {
+			$group		=  $ConfigurationData -> GetKeys ( $section ) ;
+			$group_key	=  strtolower ( $name ) ;
+			
+			if  ( ! count ( $group ) )
+			   {
+				$missing_groups []	=  "$name [$section]" ;
+				continue ;
+			    }
+			
+			if  ( isset ( $BackupGroups [ $group_key ] ) )
+			   {
+				$duplicate_groups []	=  "$name [$section]" ;
+				continue ;
+			    }
+			
+			$BackupGroups [ $group_key ]	=  [ 'name' => $name, 'section' => $section, 'file' => $config, 'entries' => [] ] ;
+			
+			// Get backup group entries ; source existence will be checked only before performing backup
+			foreach  ( $group  as  $source => $destination )
+			   {
+				$BackupGroups [ $group_key ] [ 'entries' ] [ Path::ToWindows ( $source ) ]	=  $destination ;
+			    }
+		     }
+
+		if  ( count ( $missing_groups )  ||  count ( $duplicate_groups ) )
+		   {
+			$message	=  "- Errors occurred while processing configuration file \"$config\" :\n" ;
+			
+			if  ( count ( $missing_groups ) )
+				$message	.=  "- The following backup groups are either missing or empty :\n\t. " .
+							implode ( "\n\t. ",$missing_groups ) ;
+			
+			if  ( count ( $duplicate_groups ) )
+				$message	.=  "- The following backup groups are specified more than once :\n\t. " .
+							implode ( "\n\t. ",$duplicate_groups ) ;
+			
+			error ( $message ) ;
+		    }
+		
+		// Default backup group
+		$value		=  $ConfigurationData -> GetKey ( 'Settings', 'DefaultBackupGroup' ) ;
+		
+		if  ( $value )
+		   {
+			if  ( ! isset ( $BackupGroups [ strtolower ( $value ) ] ) )
+				error ( "Default backup group \"$value\" is missing in configuration file \"$config\"." ) ;
+			
+			$DefaultBackupGroup	=  $value ;
+		    }
+		
+		// Default backup groups for sync and incremental backups
+		$value		=  $ConfigurationData -> GetKey ( 'Settings', 'DefaultSyncBackupGroup' ) ;
+		
+		if  ( $value )
+		   {
+			if  ( ! isset ( $BackupGroups [ strtolower ( $value ) ] ) )
+				error ( "Default sync backup group \"$value\" is missing in configuration file \"$config\"." ) ;
+			
+			$DefaultSyncBackupGroup		=  $value ;
+		    }
+		else
+			$DefaultSyncBackupGroup		=  $DefaultBackupGroup ;
+		
+		$value		=  $ConfigurationData -> GetKey ( 'Settings', 'DefaultIncrementalBackupGroup' ) ;
+		
+		if  ( $value )
+		   {
+			if  ( ! isset ( $BackupGroups [ strtolower ( $value ) ] ) )
+				error ( "Default incremental backup group \"$value\" is missing in configuration file \"$config\"." ) ;
+			
+			$DefaultIncrementalBackupGroup		=  $value ;
+		    }
+		else
+			$DefaultIncrementalBackupGroup		=  $DefaultBackupGroup ;
+	    }
+	
+
+	/*==================================================================================================
+
+	    PerformIncrementalBackup -
+		Performs a backup using a combination of the FORFILES command and copy() function.
+		New directories are created if needed.
+
+	  ==================================================================================================*/
+	function  PerformIncrementalBackup ( )
+	   {
+		global		$TargetDrives, $TargetDirectory, $BackupGroups, $BackupGroup, $BackupSince ;
+		
+		
+		$group				=  strtolower ( $BackupGroup ) ;
+		
+		// Get backup start time - just for the backup history log
+		$backup_time	=  time ( ) ;
+		
+		// Create a log file for this particular backup
+		$backup_log	=  get_backup_log ( $backup_time ) ;
+		$backup_fp	=  fopen ( $backup_log, "w" ) ;
+		
+		// Measure backup time + other statistics
+		$global_statistics		=  get_statistics_array ( ) ;
+		$global_statistics [ 'logfile']	=  $backup_log ;
+
+		// Log backup start
+		if  ( $BackupSince )
+			$since	=  "since {$BackupSince [ 'datetime' ]}" ;
+		else
+			$since	=  "no start date specified" ;
+		
+		backup_log ( $backup_fp, "Backup started [incremental mode] - $since", 0 ) ;
+		
+		// Re for matching error messages
+		$error_re		=  '#
+						^Erreur.*?:
+					    #imsx' ;
+		
+		// To supply XCOPY the response "F" when it asks for a destination type
+		$xcopy_input	=  Path::RealPath ( "volatile://xcopy.input" ) ;
+		$fp	=  fopen ( $xcopy_input, "w" ) ;
+		fputs ( $fp, "F\r\n" ) ;
+		fclose ( $fp ) ;
+						
+		// Loop through backup sources ; they are processed first to benefit from memory cache hits
+		foreach  ( $BackupGroups [ $group ] [ 'entries' ]  as  $source => $destination )
+		   {
+			$this_source_statistics		=  get_statistics_array ( ) ;
+				
+			backup_log ( $backup_fp, "Backup started for source [$source] : ", 1 ) ;
+				
+			// Loop through backup sources
+			foreach  ( $TargetDrives  as  $drive )
+			   {
+				$this_drive_statistics		=  get_statistics_array ( ) ;
+
+				// Build the full destination path and make sure it exists
+				$destination_path		=  $drive -> Name . '\\' . $TargetDirectory . '\\' . $destination ;
+
+				ensure_path_exists ( $destination_path ) ;
+
+				// Build the command
+				$command			=  "FORFILES /S /P $source /C \"CMD /C ECHO @isdir;@fdate;@ftime;@fsize;@path\" ";
+				
+				if  ( $BackupSince )
+					$command .= "/D +{$BackupSince [ 'day' ]}/{$BackupSince [ 'month' ]}/{$BackupSince [ 'year' ]}" ;
+				
+				backup_log ( $backup_fp, $command, 1 ) ;
+				backup_log ( $backup_fp, "Backup started for drive [{$drive -> Name}{$drive -> VolumeName}] :", 2 ) ;
+				
+				// Execute it
+				$cmd	=  new AsynchronousCommand ( $command ) ;
+				$cmd -> SetPollTimeout ( 500 ) ;
+				$cmd -> Run ( ) ;
+
+				// Get command output and log it
+				while  ( $cmd -> IsRunning ( ) )
+				   {
+					while ( ( $line = $cmd -> ReadLine ( ) )  !==  false )
+					   {
+						$line	=  trim ( $line ) ;
+						
+						// Ignore empty lines, along with summary lines
+						if  ( ! $line )
+							continue ;
+						
+						// Check for find errors 
+						if  ( preg_match ( $error_re, $line, $match ) )
+						   {
+							$global_statistics      [ 'total-files'   ] ++ ;
+							$global_statistics      [ 'ignored-files' ] ++ ;
+							$this_drive_statistics  [ 'total-files'   ] ++ ;
+							$this_drive_statistics  [ 'ignored-files' ] ++ ;
+							$this_source_statistics [ 'total-files'   ] ++ ;
+							$this_source_statistics [ 'ignored-files' ] ++ ;
+							
+							backup_log ( $backup_fp, $line, 3, $drive ) ;
+							continue ;
+						    }
+						
+						// Get file items
+						$parts		=  explode ( ';', $line ) ;
+						$isdir		=  ( ! strcasecmp ( $parts [0], "true" ) ) ?  1 : 0 ;
+						$date		=  $parts [1] ;
+						$time		=  $parts [2] ;
+						$size		=  $parts [3] ;
+						$path		=  $parts [4] ;
+						$path		=  substr ( $path, 1, strlen ( $path ) - 2 ) ;	// Remove enclosing doublequotes
+						
+						// Skip items that are older than starting date/time
+						$en_date	=  String::FrenchToMySqlDate ( $date ) ;
+						
+						if  ( $BackupSince [ 'datetime' ]  >  "$en_date $time" )
+						   {
+							continue ;
+						    }
+						
+						// Log this line
+						$message	=  "$date $time  " .
+								   str_pad ( number_format ( $size, 0, '.', ' ' ), 15, ' ', STR_PAD_LEFT ) .
+								   '  ' .
+								   $path ;
+						
+						backup_log ( $backup_fp, $message, 3, $drive ) ;
+
+						// Get destination path 
+						$target		=  $destination_path . '\\' . substr ( $path, strlen ( $source ) ) ;
+						$source		=  str_replace ( '\\\\', '\\', $source ) ;
+						$target		=  str_replace ( '\\\\', '\\', $target ) ;	
+						
+						// If directory, just ensure that it already exists
+						if  ( $isdir )
+						   {
+							if  ( ! file_exists ( $target ) )
+							   {
+								mkdir ( $target, 0777, true ) ;
+								
+								backup_log ( $backup_fp, "Directory $target created.", 3 ) ;
+								
+								statistics_add ( $global_statistics     , 'new', 0 ) ;
+								statistics_add ( $this_drive_statistics , 'new', 0 ) ;
+								statistics_add ( $this_source_statistics, 'new', 0 ) ;
+							    }
+						    }
+						// Otherwise, do a manual copy of the file but ensure that parent directory exists
+						else
+						   {
+							$target_dir	=  dirname ( $target ) ;
+							$copy_type	=  ( file_exists ( $target ) ) ?  'update' : 'new' ;
+							
+							// Paranoia : target directory should exist
+							if  ( ! file_exists ( $target_dir ) )
+							   {
+								mkdir ( $target_dir, 0777, true ) ;
+								
+								backup_log ( $backup_fp, "Directory $target_dir created.", 3 ) ;
+								
+								statistics_add ( $global_statistics     , 'new', 0 ) ;
+								statistics_add ( $this_drive_statistics , 'new', 0 ) ;
+								statistics_add ( $this_source_statistics, 'new', 0 ) ;
+							    }
+							
+							// Perform copy only if destination is older (either with creation or modification time)
+							if  ( @file_exists ( $target ) )
+							   {
+								$mtime	=  filemtime ( $path ) ;
+								$ctime	=  filectime ( $path ) ;
+								
+								if  ( $mtime  &&  @filemtime ( $target )  >=  $mtime  && 
+										filesize ( $target )  ==  filesize ( $path ) )
+									continue ;
+							    }
+							
+							// Count one more file to be processed
+							statistics_add ( $global_statistics     , $copy_type, $size ) ;
+							statistics_add ( $this_drive_statistics , $copy_type, $size ) ;
+							statistics_add ( $this_source_statistics, $copy_type, $size ) ;
+							
+							/***
+								Perform the copy. XCOPY arguments are :
+							 	/Y :  Do not prompt for confirmation
+							 	/H :  Copy also hidden and system files
+							 	/R :  Replace read-only files
+							 	/K :  Copy attributes
+							 	/B :  Copy symbolic links instead of their target
+							  
+							 	Note that this dump XCOPY prompts for a destination type (file or
+							 	directory) even if the source consists of only one file ! hence the
+							 	standard input redirection.
+							***/
+							$command	=  "XCOPY /Y /H /R /K /B \"$path\" \"$target\" <$xcopy_input" ;
+							$output		=  [] ;
+							exec ( $command, $output, $status ) ;
+
+							// In case of failure, count one more ignored file
+							if  ( $status )
+							   {
+								backup_log ( $backup_fp, "Error : copy($path, $target) failed.", 4 ) ;
+								
+								statistics_bad_copy ( $global_statistics     , $size ) ;
+								statistics_bad_copy ( $this_drive_statistics , $size ) ;
+								statistics_bad_copy ( $this_source_statistics, $size ) ;
+							    }
+							else
+								backup_log ( $backup_fp, "-> $target", 5 ) ;
+						    }
+					    }
+				    }
+				
+				// A final entry for keeping a track of backup elapsed time for this drive
+				$this_end	=  microtime ( true ) ;
+				backup_log ( $backup_fp, "Backup ended for drive [{$drive -> Name}{$drive -> VolumeName}], source [$source] : ", 2 ) ;
+				statistics_log ( $backup_fp, $this_drive_statistics, 2 ) ;
+
+				// Collect individual backup info
+				$this_drive_statistics [ 'source' ]		=  $source ;
+				$this_drive_statistics [ 'destination' ]	=  $destination ;
+				$this_drive_statistics [ 'drive' ]		=  $drive -> Name ;
+				$this_drive_statistics [ 'volume' ]		=  $drive -> VolumeName ;
+				$this_drive_statistics [ 'freespace' ]		=  $drive -> FreeSpace ;
+				
+				$global_statistics [ 'backup-data' ] []		=  $this_drive_statistics ;
+			    }
+				
+			// A final entry for keeping a track of backup elapsed time for this drive
+			$this_drive_end	=  microtime ( true ) ;
+			backup_log ( $backup_fp, "Backup ended for source [$source] :", 1 ) ;
+			statistics_log ( $backup_fp, $this_source_statistics, 1 ) ;
+		    }
+
+		// Keep a track of this whole backup elapsed time
+		$global_end	=  microtime ( true ) ;
+		backup_log ( $backup_fp, "Backup ended [incremental mode] : " ) ;
+		statistics_log ( $backup_fp, $global_statistics, 0 ) ;
+		log_free_space ( $backup_fp ) ;
+		log_summary ( $global_statistics ) ;
+		
+		// All done, close the backup log
+		fclose ( $backup_fp ) ;
+	    }
+		
+
+	/*==================================================================================================
+
+	    PerformSyncBackup -
+		Performs a backup using robocopy's sync capabilities.
+
+	  ==================================================================================================*/
+	function  PerformSyncBackup ( )
+	   {
+		global		$TargetDrives, $TargetDirectory, $BackupGroups, $BackupGroup ;
+		
+		
+		$group				=  strtolower ( $BackupGroup ) ;
+		
+		// Backup command
+		$BackupCommand 			=  "ROBOCOPY.EXE" ;
+
+		// Backup command line options.
+		// Options for ROBOCOPY are the following :
+		//
+		// /E -
+		//	Copy all subdirectories, including empty ones.
+		// /B -
+		//	Copy files in backup mode (no restart possible).
+		// /R:0 -
+		// 	Number of retry attempts if a problem is encountered when accessing a file.
+		//	This value is set to 0, meaning that there will be no retry attempt.
+		//	This is useful for making the backup process continue when backing up user files
+		//	(from C:\Users, C:\AppData or C:\ProgramData) which may be locked.
+		// /XJ -
+		//	Exclude junction points from backups.
+		// /COPY:D -
+		//	Copy only file data (ACL, attributes, onwership information and timestamps will not be copied).
+		// /XX -
+		//	Exclude file and directories tagged as 'Extra'.
+		// /NDL -
+		//	Suppress logging of directory names.
+		// /NJH -
+		//	Turns off logging of job header.
+		// /NP -
+		//	Turns off copy progress indicator.
+		$BackupOptions			=  "/E /B /R:0 /XJ /COPY:D /XX /NDL /NJH /NP" ;
+
+		// Regex for locating robocopy's file information
+		static $re_file			=  '#
+							(?P<type> (Plus) | (Nouveau) )
+							.+?
+							(?P<size> [0-9.]+)
+							\s*
+							(?P<multiplier> [mg]?)
+							\s+
+							(?P<path> [^\r\n]+)
+						    #imsx' ;
+		
+		// Regex for locating robocopy's file copy errors
+		static	$re_copy_error		=  '#
+							ERREUR
+							.*?
+							\d+
+							.*?
+							\(
+								[^)]+
+							\)
+						    #imsx' ;
+							
+				
+		// Get backup start time - just for the backup history log
+		$backup_time	=  time ( ) ;
+		
+		// Create a log file for this particular backup
+		$backup_log	=  get_backup_log ( $backup_time ) ;
+		$backup_fp	=  fopen ( $backup_log, "w" ) ;
+		
+		// Measure backup time + other statistics
+		$global_statistics		=  get_statistics_array ( ) ;
+		$global_statistics [ 'logfile']	=  $backup_log ;
+		$last_seen_file			=  "" ;
+		$last_seen_file_size		=  0 ;
+
+		backup_log ( $backup_fp, "Backup started [sync mode]", 0 ) ;
+		
+		// Loop through backup sources ; they are processed first to benefit from memory cache hits
+		foreach  ( $BackupGroups [ $group ] [ 'entries' ]  as  $source => $destination )
+		   {
+			$this_source_statistics		=  get_statistics_array ( ) ;
+			$found_summary			=  false ;
+				
+			backup_log ( $backup_fp, "Backup started for source [$source] : ", 1 ) ;
+				
+			$escaped_source			=  str_replace ( '\\', '\\\\', $source ) ;
+			
+			// Loop through backup sources
+			foreach  ( $TargetDrives  as  $drive )
+			   {
+				$this_drive_statistics		=  get_statistics_array ( ) ;
+
+				// Build the full destination path and make sure it exists
+				$destination_path		=  $drive -> Name . '\\' . $TargetDirectory . '\\' . $destination ;
+				$escaped_destination_path	=  str_replace ( '\\', '\\\\', $destination_path ) ;
+
+				ensure_path_exists ( $destination_path ) ;
+
+				// Build the command
+				$command			=  "$BackupCommand \"$escaped_source\" \"$escaped_destination_path\" $BackupOptions" ;
+				
+				backup_log ( $backup_fp, str_replace ( '\\\\', '\\', $command ), 1 ) ;
+				backup_log ( $backup_fp, "Backup started for drive [{$drive -> Name}{$drive -> VolumeName}] :", 2 ) ;
+								
+				// Execute it
+				$cmd	=  new AsynchronousCommand ( $command ) ;
+				$cmd -> SetPollTimeout ( 500 ) ;
+				$cmd -> Run ( ) ;
+
+				// Get command output and log it
+				while  ( $cmd -> IsRunning ( ) )
+				   {
+					$last_file_size		=  0 ;
+					
+					while ( ( $line = $cmd -> ReadLine ( ) )  !==  false )
+					   {
+						$line	=  trim ( $line ) ;
+						
+						// Ignore empty lines
+						if  ( ! $line )
+							continue ;
+						
+						backup_log ( $backup_fp, $line, 3, $drive ) ;
+						
+						// Process lines until a summary line ('-----....') has been found
+						if  ( $found_summary )
+							continue ;
+						
+						// Account for new or modified files
+						if  ( preg_match ( $re_file, $line, $match ) )
+						   {
+							$copy_type		=  ( ! strcasecmp ( $match [ 'type' ], 'Plus' ) )  ?  'new' : 'update' ;
+							$copy_path		=  $match [ 'path' ] ;
+							
+							if  ( ( $copy_size = @filesize ( $copy_path ) )  ===  false )
+							   {
+								$copy_size		=  $match [ 'size' ] ;
+								$copy_multiplier	=  get_multiplier ( $match [ 'multiplier' ] ) ;
+								$copy_size	       *=  $copy_multiplier ;
+							    }
+							
+							$last_seen_file		=  $copy_path ;
+							$last_seen_file_size	=  $copy_size ;
+							
+							statistics_add ( $global_statistics     , $copy_type, $copy_size ) ;
+							statistics_add ( $this_drive_statistics , $copy_type, $copy_size ) ;
+							statistics_add ( $this_source_statistics, $copy_type, $copy_size ) ;
+						    }
+						// Take into account copy errors
+						else if  ( preg_match ( $re_copy_error, $line ) )
+						   {
+							statistics_bad_copy ( $global_statistics     , $last_seen_file_size ) ;
+							statistics_bad_copy ( $this_drive_statistics , $last_seen_file_size ) ;
+							statistics_bad_copy ( $this_source_statistics, $last_seen_file_size ) ;
+						    }
+						// Stop processing further robocopy output when summary data starts
+						else if  ( substr ( $line, 0, 7 )  ==  '-------' )
+							$found_summary	=  true ;
+					    }
+				    }
+				
+				// Surprisingly, ROBOCOPY puts the System attribute to the destination path
+				system ( "ATTRIB -H -S \"$destination_path\"" ) ;
+				
+				// A final entry for keeping a track of backup elapsed time for this drive
+				$this_end	=  microtime ( true ) ;
+				backup_log ( $backup_fp, "Backup ended for drive [{$drive -> Name}{$drive -> VolumeName}] : ", 2 ) ;
+				statistics_log ( $backup_fp, $this_drive_statistics, 2 ) ;
+
+				// Collect individual backup info
+				$this_drive_statistics [ 'source' ]		=  $source ;
+				$this_drive_statistics [ 'destination' ]	=  $destination ;
+				$this_drive_statistics [ 'drive' ]		=  $drive -> Name ;
+				$this_drive_statistics [ 'volume' ]		=  $drive -> VolumeName ;
+				
+				$global_statistics [ 'backup-data' ] []		=  $this_drive_statistics ;
+			    }
+				
+			// A final entry for keeping a track of backup elapsed time for this drive
+			$this_drive_end	=  microtime ( true ) ;
+			backup_log ( $backup_fp, "Backup ended for source [$source] :", 1 ) ;
+			statistics_log ( $backup_fp, $this_source_statistics, 1 ) ;
+		    }
+
+		// Keep a track of this whole backup elapsed time
+		$global_end	=  microtime ( true ) ;
+		backup_log ( $backup_fp, "Backup ended [sync mode] : " ) ;
+		statistics_log ( $backup_fp, $global_statistics, 0 ) ;
+		log_free_space ( $backup_fp ) ;
+		log_summary ( $global_statistics ) ;
+		
+		// All done, close the backup log
+		fclose ( $backup_fp ) ;
+	    }
+		
+
+	/*==================================================================================================
+
+	    SelectDrive -
+		Searches for the target backup, verifies the media and determines which drive to use.
+
+	  ==================================================================================================*/
+	function  SelectDrive ( )
+	   {
+		global		$PreferredDrive, $HistoryDataDirectory, $LastBackup, $BackupGroups, $BackupGroup, $TargetDirectory ;
+		global		$ConfigurationData ;
+		global		$ConfigurationFile, $BackupType, $BackupSince, $TargetDrives ;
+		global		$SaveIniFile ;
+		
+		
+		$group	=  strtolower ( $BackupGroup ) ;
+		
+		// Get drive list then build a list of possible candidates
+		$drives			=  new LogicalDrives ( ) ;
+		$possible_drives	=  [] ;
+
+		// A target drive has been specified on the command line : this is the definite candidate for backup
+		if  ( count ( $TargetDrives ) ) 
+		   {
+			$list	=  [] ;
+			
+			foreach  ( $TargetDrives  as  $drive )
+			   {
+				if  ( ! isset ( $drives [ $drive ] ) )
+					error ( "Drive $drive does not exist." ) ;
+			
+				$list []	=  $drives [ $drive ] ;
+			    }
+			
+			$TargetDrives	=  $list ;
+			return ;
+		    }
+		
+		// Otherwise, we have to struggle through different cases
+		// A preferred drive is present in the configuration file : try to use it
+		if  ( $PreferredDrive )
+		   {
+			if  ( isset ( $drives [ $PreferredDrive ] ) )
+				$possible_drives []	=  $drives [ $PreferredDrive ] ;
+		    }
+			
+		// No preferred drive, or preferred drive does not exist : collect the list of candidate medias
+		if  ( ! count ( $possible_drives ) )
+		   {
+			foreach  ( $drives  as  $drive )
+			   {
+				$met_drive	=  false ;
+				
+				switch ( $drive -> DriveType )
+				   {
+					case	LogicalDrive::DRIVE_TYPE_REMOVABLE_DISK :
+					case	LogicalDrive::DRIVE_TYPE_LOCAL_DISK :
+					case	LogicalDrive::DRIVE_TYPE_NETWORK_DRIVE :
+						foreach  ( $BackupGroups [ $group ] [ 'entries' ]  as  $letter => $path )
+						   {
+							// Ignore drives that are supposed to be backed up
+							if  ( preg_match ( '#^ (?P<drive> [a-z] :?) [/\\\\]? $#ix', $letter, $match ) )
+							   {
+								$letter		=  strtoupper ( $match [ 'drive' ] [0] ) . ':' ;
+								
+								if  ( isset ( $drives [ $letter ] )  &&  $drive -> Name  ==  $letter )
+								   {
+									$met_drive	=  true ;
+									break ;
+								    }
+							    }
+						    }
+						break ;
+						
+					default :
+						$met_drive	=  true ;
+				    }
+				
+				if  ( ! $met_drive )
+					$possible_drives []	=  $drive ;
+			    }
+		    }
+
+		// Once we have a list of possible candidates, build two lists :
+		// - One having the trace that a previous backup was already realized on this candidate drive
+		// - One that do not have any trace, but could
+		$good_candidates	=  [] ;
+		$possible_candidates	=  [] ;
+		
+		foreach  ( $possible_drives  as  $drive )
+		   {
+			$path	=  $drive -> Name . "\\" . $TargetDirectory ;
+			
+			if  ( file_exists ( $path )  &&  is_dir ( $path ) )
+				$good_candidates []	=  $drive ;
+			else
+				$possible_candidates []	=  $drive ;
+		    }
+		
+		// Now, we potentially have two lists : one list of drives where a backup was already performed,
+		// and another one with "fresh" drives
+		$good_candidate_count		=  count ( $good_candidates ) ;
+		$possible_candidate_count	=  count ( $possible_candidates ) ;
+		
+		// Check the list of "good" candidates, ie drives where a backup was already performed
+		switch ( $good_candidate_count )
+		   {
+			// No "good" candidate ; try the "possible" candidates
+			case	0 :
+				switch  ( $possible_candidate_count )
+				   {
+					// No possible candidate : no other choice than issuing an error message then exiting.
+					case	0 :
+						error ( "No suitable drive found for backup." ) ;
+						break ;
+						
+					// One possible candidate : ask the user if she's ok with that
+					case	1 :
+						output ( "Only one drive has been found to be suitable for this backup (" . $drive -> Name . ") " .
+							  "but it does not seem to hold traces of previous backups." ) ;
+						$answer		=  Console::Prompt ( "Perform backup on drive {$drive -> Name} ({$drive -> VolumeName}) ?",
+									[ 'y', 'n' ], 'n', true ) ;
+						
+						if  ( $answer  !=  'y' )
+						   {
+							error_output ( "Backup cancelled." ) ;
+							exit ( ) ;
+						    }
+						
+						$TargetDrives	=  $possible_candidates [0] ;
+						break ;
+						
+					// More than one possible candidate found : ask the user to choose the right one
+					default :
+						$choices	=  range ( 1, $possible_candidate_count ) ;
+						$choices []	=  'q' ;
+						$index		=  1 ;
+						
+						output ( "Several drives may be suitable for backup, although they do not seem to have traces " .
+							 "of previous backups :" ) ;
+						
+						foreach  ( $possible_candidates  as  $drive )
+						   {
+							output ( "\t[$index] {$drive -> Name} ({$drive -> VolumeName})" ) ;
+							$index ++ ;
+						    }
+						
+						$answer		=  Console::Prompt ( "Choose a drive number for backup", $choices,
+											'q', true ) ;
+						
+						if  ( $answer  ==  'q' )
+						   {
+							error_output ( "Backup cancelled." ) ;
+							exit ( ) ;
+						    }
+						
+						$TargetDrives	=  $possible_candidates [ ( integer ) $answer ] ;
+				    }
+				break ;
+				
+			// One "good" candidate ; check if there are "possible" candidates
+			case	1 :
+				switch  ( $possible_candidate_count )
+				   {
+					// No possible candidate : automatically select this drive
+					case	0 :
+						$TargetDrives	=  $good_candidates [0] ;
+						break ;
+						
+					// At least 1 possible candidate ; display the list of choices between "good" and "possible" candidates
+					default :
+						output ( "The following drive seems to hold traces of previous backups :" ) ;
+						output ( "\t[1] {$good_candidates [0] -> Name} ({$good_candidates [0] -> VolumeName})" ) ;
+						output ( "The following drive(s) can also be used for backup purposes :" ) ;
+						$index	=  2 ;
+						
+						foreach  ( $possible_candidates  as  $drive ) 
+						   {
+							output ( "\t[$index] {$drive -> Name} ({$drive -> VolumeName})" ) ;
+							$index ++ ;
+						    }
+
+						$choices	=  range ( 1, $possible_candidate_count + 1 ) ;
+						$choices []	=  'q' ;
+						$answer		=  Console::Prompt ( "Choose a drive number for backup", $choices,
+											'q', true ) ;
+
+						if  ( $answer  ==  'q' )
+						   {
+							error_output ( "Backup cancelled." ) ;
+							exit ( ) ;
+						    }
+						
+						if  ( $answer  ==  1 )
+							$TargetDrives	=  $good_candidates [0] ;
+						else
+							$TargetDrives	=  $possible_candidates [ $answer - 2 ] ;
+						
+						break ;
+				    }
+				
+				break ;
+				
+			// More than one "good" candidate, and maybe "possible" candidates :
+			default :
+				output ( "The following drives seem to hold traces of previous backups :" ) ;
+				$index	=  1 ;
+				
+				foreach  ( $good_candidates  as  $drive )
+				   {
+					output ( "\t[$index] {$drive -> Name} ({$drive -> VolumeName})" ) ;
+					$index ++ ;
+				    }
+
+				if  ( $possible_candidate_count )
+				   {
+					output ( "The following drive(s) can also be used for backup purposes :" ) ;
+				
+					foreach  ( $possible_candidates  as  $drive ) 
+					   {
+						output ( "\t[$index] {$drive -> Name} ({$drive -> VolumeName})" ) ;
+						$index ++ ;
+					    }
+				    }
+				
+				$choices	=  range ( 1, $good_candidate_count + $possible_candidate_count + 1 ) ;
+				$choices []	=  'q' ;
+
+				$answer		=  Console::Prompt ( "Choose a drive number for backup", $choices,
+									'q', true ) ;
+						
+				if  ( $answer  ==  'q' )
+				   {
+					error_output ( "Backup cancelled." ) ;
+					exit ( ) ;
+				    }
+						
+				if  ( $answer  <=  $good_candidate_count )
+					$TargetDrives	=  $good_candidates [ $answer - 1 ] ;
+				else
+					$TargetDrives	=  $possible_candidates [ $answer - $good_candidate_count - 1 ] ;
+		    }
+	    }
+	
+
+	/*==============================================================================================================
+	
+	    ViewLog -
+	        Edits the specified log file, identified by its backup date (which can be partial) or its index.
+	
+	  ==============================================================================================================*/
+	function  ViewLog ( )
+	   {
+		global		$ViewLog ;
+		
+		$summaries	=  get_summaries ( $ViewLog ) ;
+		
+		if  ( ! count ( $summaries ) )
+			error ( "No match." ) ;
+		
+		$logs		=  [] ;
+		
+		foreach  ( $summaries  as  $i => $summary )
+		   {
+			if  ( file_exists ( $summary [ 'logfile' ] ) )
+				$logs []	=  '"' . $summary [ 'logfile' ] . '"' ;
+			else 
+				warning ( "Log file {$summary [ 'logfile' ]} does not exist any more." ) ;
+		    }
+		
+		if  ( ! count ( $logs ) )
+			error ( "Log summaries exist, but log file(s) do not exist." ) ;
+		
+		$editor		=  getenv ( "EDITOR" ) ;
+		
+		if  ( ! $editor )
+			$editor		=  "NOTEPAD.EXE" ;
+		
+		$shell		=  new WShell ( ) ;
+		$command	=  $editor . ' ' . implode ( ' ', $logs ) ;
+		$shell -> Execute ( $command ) ;
+	    }
+	
+	
+	/*==================================================================================================
+
+		Global constants and variables.
+
+	  ==================================================================================================*/
+	// Options coming from the HomeBackup .ini file
+	$PreferredDrive			=  false ;			// Preferred (= most probable) USB drive letter to be used
+	$TargetDirectory		=  false ;			// Target drive
+	$HistoryDataDirectory		=  false ;			// Directory for backup history data
+	$BackupGroups			=  [] ;				// List of backup groups (source/destination directories list)
+	$DefaultBackupGroup		=  false ;			// Default backup groups if none specified on the command line
+	$DefaultSyncBackupGroup		=  false ;
+	$DefaultIncrementalBackupGroup	=  false ;
+	$BackupHistory			=  [] ;				// Backup history
+	$BackupHistoryFile		=  false ;			// ...and its history summary file
+	$MaxHistoryLogs			=  100 ;			// Max number of backup files to be kept
+	$MaxHistorySummaries		=  200 ;			// Max number of history summaries
+	$DefaultBackup			=  false ;
+	
+	$CL 				=  new CLParser ( $Definitions ) ;
+	$BackupGroup			=  $CL -> backup_group ;
+	$BackupComment			=  $CL -> comment ;
+	$ConfigurationFile		=  $CL -> configuration_file ;
+	$DeleteLog			=  $CL -> delete_log ;
+	$DeleteLogUpto			=  $CL -> delete_log_upto ;
+	$Find				=  $CL -> find ;
+	$ListLastSummaries		=  ( count ( $CL -> list_last_summaries ) ) ?  $CL -> list_last_summaries [0] : PHP_INT_MAX ;
+	$ListSummaries			=  $CL -> list_summaries ;
+	$ListBackupGroup		=  $CL -> list_backup_group ;
+	$ListBackupGroups		=  $CL -> list_backup_groups ;
+	$BackupType			=  $CL -> backup_type ;
+	$BackupSince			=  $CL -> since ;
+	$TargetDrives			=  $CL -> target_drive ;
+	$ViewLog			=  $CL -> view_log ;
+	$ConfigurationData		=  false ;
+	$HadOption			=  false ;
+
+
+	/*==================================================================================================
+
+		Main program.
+
+	  ==================================================================================================*/
+	// Load settings
+	LoadSettings ( $ConfigurationFile ) ;
+	load_history ( ) ;
+
+	// Override target directory if one has been specified on the command line
+	if  ( $CL -> target_directory )
+		$TargetDirectory	=  $CL -> target_directory ;
+	
+	// Backup group
+	if  ( ! $BackupGroup )
+		$BackupGroup	=  ( $BackupType  ==  'sync' ) ?  $DefaultSyncBackupGroup : $DefaultIncrementalBackupGroup ;
+	
+	if  ( $BackupGroup )
+	   {
+		if  ( ! isset ( $BackupGroups [ strtolower ( $BackupGroup ) ] ) )
+			error ( "Undefined backup group \"$BackupGroup\"." ) ;
+	    }
+		
+	// -sync and -incremental options are synonyms for "-backup_type sync" and "-backup_type incremental", respectively
+	if  ( $CL -> sync )
+		$BackupType	=  "sync" ;
+	
+	if  ( $CL -> incremental )
+	   {
+		$BackupType	=  "incremental" ;
+		
+		// Get date of last backup if no starting date has been specified
+		if  ( ! $BackupSince )
+		   {
+			$found	=  false ;
+			$count	=  count ( $BackupHistory ) ;
+			
+			if  ( $count )
+			   {
+				for  ( $i = $count - 1 ; $i  >=  0 ; $i -- )
+				   {
+					$entry	=  $BackupHistory [$i] ;
+					
+					if  ( ! strcasecmp ( $entry [ 'group' ], $BackupGroup ) )
+					   {
+						$BackupSince	=  DateTime::GetDateTimeElements ( $entry [ 'start-time' ] ) ;
+						$found		=  true ;
+						break ;
+					    }
+				    }
+			    }
+			
+			if  ( ! $found )
+				error ( "Incremental backup selected, but no previous backup found in history for the \"$BackupGroup\" " .
+					"group and no backup start date has been specified with the -since parameter." ) ;
+		     }
+	    }
+	
+	// -delete_log, -delete_log_upto :
+	//	Deletes log files identified by their date/time or checksum, as show by the -list_backup_summaries option.
+	if  ( ! $HadOption  &&  $CL -> IsSpecified ( 'delete_log' ) )
+	   {
+		DeleteLog ( ) ;
+		$HadOption	=  true ;
+	    }
+	
+	if  ( ! $HadOption  &&  $DeleteLogUpto )
+	   {
+		DeleteLogUpto ( ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// -find :
+	//	Searches a file into the backup history.
+	if  ( ! $HadOption  &&  $CL -> find )
+	   {
+		FindFile ( $CL -> find ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// -list_last_summaries, list_summaries :
+	//	Shows last backup date and type.
+	if  ( ! $HadOption  &&  $CL -> IsSpecified ( 'list_last_summaries' ) )
+	   {
+		ListBackupSummaries ( $ListLastSummaries ) ;
+		$HadOption	=  true ;
+	    }
+	
+	if  ( ! $HadOption  &&  $CL -> IsSpecified ( 'list_summaries' ) )
+	   {
+		ListBackupSummaries ( $ListSummaries ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// -list_backup_group -
+	//	Lists the specified backup group entries.
+	if  ( ! $HadOption  &&  $ListBackupGroup )
+	   {
+		ListBackupGroup ( ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// -list_backup_groups -
+	//	Lists the available backup groups.
+	if  ( ! $HadOption  &&  $ListBackupGroups )
+	   { 
+		ListBackupGroups ( ) ;
+		$HadOption	=  true ;
+	    }
+
+	// -view_log :
+	//	Views a log file identified by its date/time or checksum, as show by the -list_backup_summaries option.
+	if  ( ! $HadOption  &&  $CL -> IsSpecified ( 'view_log' ) )
+	   {
+		ViewLog ( ) ;
+		$HadOption	=  true ;
+	    }
+		
+	// -backup :
+	//	Launch backup in incremental or sync mode.
+	if  ( ! $HadOption )
+	   {
+		if  ( $BackupType )
+		   {
+			SelectDrive ( ) ;
+		
+			switch  ( strtolower ( $BackupType ) )
+			   {
+				case	'incremental' :
+					verify_backup_sources ( $ConfigurationFile, $BackupGroups, $BackupGroup ) ;
+					PerformIncrementalBackup ( ) ;
+					remove_old_logs ( ) ;
+					save_history ( ) ;
+					break ;
+				
+				case	'sync' :
+					verify_backup_sources ( $ConfigurationFile, $BackupGroups, $BackupGroup ) ;
+					PerformSyncBackup ( ) ;
+					remove_old_logs ( ) ;
+					save_history ( ) ;
+					break ;
+				
+				default :
+					error ( "Invalid backup mode \"$BackupType\"" ) ;
+			    }
+		    }
+		else
+			error ( "Backup options may have been specified, but either the -incremental or -sync options are required." ) ;
+		
+		$HadOption	=  true ;
+	    }
+	

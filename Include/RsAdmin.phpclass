@@ -1,0 +1,915 @@
+<?php
+/**************************************************************************************************************
+
+    NAME
+        RsAdmin.phpclass
+
+    DESCRIPTION
+        Main class for remote server administration.
+
+    AUTHOR
+        Christian Vigh, 11/2014.
+
+    HISTORY
+    [Version : 1.0]    [Date : 2014/12/02]     [Author : CV]
+        Initial version.
+
+ **************************************************************************************************************/
+
+use  Thrak\System\Object ;
+use  Thrak\Processors\IniFile ;
+use  Thrak\Processors\VariableStore ;
+use  Thrak\IO\Path ;
+use  Thrak\IO\AsciiReport ;
+use  Thrak\Types\String ;
+use  Thrak\Database\Tables\StringStore ;
+use  Thrak\Database\Tables\ResolvedIps ;
+use  Thrak\Database\Tables\ResolvedDomains ;
+use  Thrak\Database\Query ;
+use  Thrak\Network\RfcProtocols\Whois ;
+use  Thrak\Network\RfcProtocols\WhoisDatabase ;
+use  Thrak\Network\NetworkHelpers ;
+
+
+require ( 'RsAdmin/RemoteServers.phpclass' ) ;
+require ( 'RsAdmin/LocalLog.phpclass' ) ;
+require ( 'RsAdmin/LogStringStore.phpclass' ) ;
+
+
+/*==============================================================================================================
+
+    RsAdmin -
+        Encapsulates all remote server management tasks.
+
+  ==============================================================================================================*/
+class  RsAdmin			extends  Object 
+   {
+	// Log file types
+	const	LOGTYPE_HTTP				=  0 ;						// Http access logs
+	const	LOGTYPE_MAIL				=  1 ;						// Mail logs
+	const	LOGTYPE_AUTH				=  2 ;						// Authentication logs
+	const	LOGTYPE_HTTP_ERROR			=  3 ;						// Http error logs
+	const	LOGTYPE_HTTP_ERROR_404			=  4 ;						// My special "error-redirect" log
+	const   LOGTYPE_SSH				=  5 ;						// My personal ssh connection log
+	
+	// Table names
+	const	TABLE_SERVERS				=  'servers' ;					// Table holding the list of administrated servers
+	const	TABLE_SERVER_DOMAINS			=  'server_domains' ;				// List of domains per server
+	const	TABLE_SERVER_LOGFILES			=  'server_logfiles' ;				// List of logfiles per domain and server
+	const	TABLE_SERVER_LOGFILE_ENTRIES		=  'server_logfile_entries' ;			// Logfile entries
+	const	TABLE_SERVER_LOGFILE_DATA		=  'server_logfile_data' ;			// Logfile data for each logfile entry
+	const	TABLE_SERVER_IPTABLES			=  'server_iptables' ;				// Iptable entries per server
+	const	TABLE_SERVER_STRING_STORE		=  'server_string_store' ;			// Global string store for domain data and logfile extractions
+	const   TABLE_SERVER_RESOLVED_IPS		=  'server_resolved_ips' ;			// Resolved ips
+	const   TABLE_WHOIS_INFORMATION			=  'whois_information' ;			// Whois data information
+	const	TABLE_WHOIS_INFORMATION_BLOCKS		=  'whois_information_blocks' ;			// Whois data information, by block
+	const   TABLE_WHOIS_INFORMATION_BLOCK_ENTRIES	=  'whois_information_block_entries' ;		// Whois data information, by keyword
+	const   TABLE_SERVER_IP_DOMAIN_ASSOCIATIONS	=  'server_ip_domain_associations' ;		// Associations between domains and ips
+	const   TABLE_SERVER_LOGENTRIES_STRING_STORE	=  'server_logfile_entries_string_store' ;	// String store for logfile entries
+	const	TABLE_WHOIS_MISSING_RANGES		=  'whois_missing_ranges' ;			// Missing ranges table, recomputed after each update
+
+	// Configuration file and .ini file object
+	protected		$ConfigurationFile ;
+	protected		$Configuration ;
+	
+	// Server configuration files path
+	protected		$ServerConfigurationFilesPath ;
+	// Unix (Cygwin) home directory that holds the SSH private and public keys
+	protected		$UnixHomeDirectory ;
+	// Server configuration files
+	public			$Servers ;
+	// String store object
+	public			$StringStore ;
+	// Database object
+	public			$Database ;
+	
+	
+	/*==============================================================================================================
+	
+	    Constructor -
+		Load rsadmin.ini and server.ini configuration parameters.
+	 
+	  ==============================================================================================================*/
+	public function  __construct  ( $configuration_file, $db = null )
+	   {
+		global		$argv ;
+		global		$Database ;
+
+
+		$this_program	=  pathinfo ( $argv [0], PATHINFO_FILENAME ) ;
+		
+		// Create configuration .ini file and say that all key values are to be expanded using the variables defined in the [Variables] section
+		$this -> ConfigurationFile		=  $configuration_file ;
+		$this -> Configuration			= 
+		$configuration				=  IniFile::LoadFromFile ( $configuration_file ) ;
+		$this -> Configuration -> SetVariableStore ( 'Variables', VariableStore::OPTION_DEFAULT | VariableStore::OPTION_USE_ENVIRONMENT_VARIABLES ) ;
+		$this -> Database			=  ( $db ) ?  $db : $Database ;
+		
+		// [Settings] section, ConfigurationDirectory key :
+		//	Path to the directory containing the servers .ini files.
+		$value	=  $configuration -> GetKey ( 'Settings', [ 'ConfigurationDirectory', 'ConfigurationDir' ] ) ;
+		
+		if  ( $value )
+		   {
+			if  ( ! file_exists ( $value ) )
+				error ( new \Thrak\System\FileNotFoundException ( "Path \"$value\" specified for the ConfigurationDirectory key " .
+					"in the [Settings] section of configuration file \"$configuration_file\" does not exist." ) ) ;
+			
+			if  ( ! is_dir ( $value ) )
+				error ( new \Thrak\System\FileNotFoundException ( "Path \"$value\" specified for the ConfigurationDirectory key " .
+					"in the [Settings] section of configuration file \"$configuration_file\" is not a directory." ) ) ;
+			
+			$this -> ServerConfigurationFilesPath	=  Path::RealPath ( $value ) ;
+		    }
+		else
+			    error ( new \Thrak\System\FileNotFoundException ( "The required ConfigurationDirectory key in the [Settings] section of " .
+					"configuration file \"$configuration_file\" is either empty or missing." ) ) ;
+		
+		// [Settings] section, Home key :
+		//	Path to the directory containing a Unix user home directory (typically, a directory for Cygwin user)
+		$value	=  $configuration -> GetKey ( 'Settings', 'Home' ) ;
+		
+		if  ( $value )
+		   {
+			if  ( ! file_exists ( $value ) )
+				error ( new \Thrak\System\FileNotFoundException ( "Path \"$value\" specified for the Home key " .
+					"in the [Settings] section of configuration file \"$configuration_file\" does not exist." ) ) ;
+			
+			if  ( ! is_dir ( $value ) )
+				error ( new \Thrak\System\FileNotFoundException ( "Path \"$value\" specified for the Home key " .
+					"in the [Settings] section of configuration file \"$configuration_file\" is not a directory." ) ) ;
+			
+			$this -> UnixHomeDirectory	=  Path::RealPath ( $value ) ;
+		    }
+		else
+			error ( new \Thrak\System\FileNotFoundException ( "The required Home key of the [Settings] section of " .
+					"configuration file \"$configuration_file\" is either empty or missing." ) ) ;
+		
+		// [Ovh] section :
+		//	Name, key and secret key for using ovh api.
+		$ovh_name	=  $configuration -> GetKey ( 'Ovh', 'Name' ) ;
+		
+		if  ( ! $ovh_name ) 
+			error ( new \Thrak\System\FileNotFoundException ( "The required Name key of the [Ovh] section of " .
+					"configuration file \"$configuration_file\" is either empty or missing." ) ) ;
+					
+		$ovh_key	=  $configuration -> GetKey ( 'Ovh', 'Key' ) ;
+		
+		if  ( ! $ovh_key ) 
+			error ( new \Thrak\System\FileNotFoundException ( "The required Key key of the [Ovh] section of " .
+					"configuration file \"$configuration_file\" is either empty or missing." ) ) ;
+					
+		$ovh_secret_key	=  $configuration -> GetKey ( 'Ovh', 'SecretKey' ) ;
+		
+		if  ( ! $ovh_secret_key ) 
+			error ( new \Thrak\System\FileNotFoundException ( "The required SecretKey key of the [Ovh] section of " .
+					"configuration file \"$configuration_file\" is either empty or missing." ) ) ;
+					
+		// [Servers] section :
+		//	Each key in this section is the name of a .ini file (without the .ini extension) located in the directory
+		//	specified by the ConfigurationDirectory key of the [Settings] section.
+		//	The key value is a boolean indicating whether the corresponding .ini file should be loaded or not.
+		//	It can also be a list of comma-separated script names that specify the programs that can or cannot be run
+		//	on the corresponding server. 
+		//	Each name can include wildcards ; a leading "~" means that the corresponding script is not concerned with
+		//	this server. All names are matched against the filename part of $argv[0].
+		$keys		=  $configuration -> GetKeys ( 'Servers' ) ;
+		$server_files	=  [] ;
+		
+		foreach  ( $keys  as  $key => $value )
+		   {
+			$path	=  $this -> ServerConfigurationFilesPath . '\\' . $key ;
+				
+			// Allow to specify a ".ini" string in the key
+			if  ( ! pathinfo ( $key, PATHINFO_EXTENSION ) )
+				$path	.=  ".ini" ;
+					
+			if  ( ! file_exists ( $path ) )
+				error ( new \Thrak\System\FileNotFoundException ( "Server configuration file \"$path\" does not exist ; " .
+					"check the \"$key\" key in the [Servers] section of configuration file \"$configuration_file\"." ) ) ;
+						
+			// An empty value is synonym to "false" 
+			if  ( ! trim ( $value ) )
+				$value	=  'false' ;
+
+			// Boolean value : the server entry is included (or not)
+			if  ( ( $bool = String::BooleanValue ( $value ) )  !==  null )
+			   {
+				if  ( $bool )
+					$server_files [ $key ]	=  $path ;
+			    }
+			// Comma-separated values : must match the current program name
+			// Exclusions are processed first
+			else
+			   {
+				$list		=  String::ExplodeAndTrim ( ',', $value ) ;
+				$exclusions	=  [] ;
+				$inclusions	=  [] ;
+
+				// Separate inclusions and exclusions
+				foreach  ( $list  as  $item )
+				   {
+					if  ( $item [0]  ==  '~' )
+						$exclusions []	=  trim ( substr ( $item, 1 ) ) ;
+					else
+						$inclusions []	=  trim ( $item ) ;
+				    }
+
+				// Process exclusions first
+				foreach (  $exclusions  as  $exclusion )
+				   {
+					if  ( String::Matches ( $this_program, $exclusion ) )
+						continue 2 ;
+				    }
+
+				// Then inclusions - if not inclusion is specified, assume it matches everything
+				$include	=  false ;
+
+				if  ( ! count ( $inclusions ) )
+					$include	=  true ;
+				else
+				   {
+					foreach  ( $inclusions  as  $inclusion )
+					   {
+						if  ( String::Matches ( $this_program, $inclusion ) )
+						   {
+							$include	=  true ;
+							continue ;
+						    }
+					    }
+				    }
+
+				if  ( $include )
+					$server_files [ $key ]	=  $path ;
+			    }
+		    }
+
+		// Create server configuration objects
+		$this -> Servers	=  new  RemoteServers ( $this -> Database ) ;
+		
+		foreach  ( $server_files  as  $server_name => $server_file )
+			$this -> Servers []	=  new  RemoteServer ( $server_name, $server_file, $this -> Configuration -> Variables, $this -> Database ) ;
+
+		// Create the string store object
+		$this -> StringStore				=  new  LogStringStore ( self::TABLE_SERVER_STRING_STORE, $this -> Database ) ;
+		$this -> StringStore -> UseCache		=  true ;
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    NAME
+	        FindServer - Searches for a server by name.
+	
+	    PROTOTYPE
+	        $list	=  $rsadmin -> FindServer ( $server ) ;
+	
+	    DESCRIPTION
+	        Locates a server entry by its name or aliases.
+	
+	    PARAMETERS
+	        $server (string) -
+	                Server name to be located, searched through each loaded server configuration name and aliases.
+	
+	    RETURN VALUE
+		A RemoteServer object or false if the specified server was not found.
+	
+	  ==============================================================================================================*/
+	public function  FindServer ( $searched_name )
+	   {
+		foreach  ( $this -> Servers  as  $server )
+		   {
+			if  ( $server -> IsNamedAs ( $searched_name ) )
+				return ( $server ) ;
+		    }
+			
+		return ( false ) ;
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    NAME
+	        FindServers - Searches for servers by name.
+	
+	    PROTOTYPE
+	        $list	=  $rsadmin -> FindServers ( $servers ) ;
+	
+	    DESCRIPTION
+	        Locates a list of servers by their names or aliases.
+	
+	    PARAMETERS
+	        $servers (string or array of strings) -
+	                Server name(s) to be located. Each name is searched through each loaded server configuration name
+	 		and aliases.
+	 		Wildcard characters (*, ? and character classes) can be specified.
+			Comparisons are case-insensitive.
+	
+	    RETURN VALUE
+	        The returned value is an array containing the main name(s) of the matched server(s).
+	 	Each name can later be used to index the $rsadmin -> Servers [] associative array.
+	
+	  ==============================================================================================================*/
+	public function  FindServers ( $searched_names = null )
+	   {
+		if  ( ! $searched_names  ||  ! count ( $searched_names ) )
+			$searched_names		=  [ '*' ] ;
+		else if  ( ! is_array ( $searched_names ) )
+			$searched_names		=  [ $searched_names ] ;
+		
+		$server_names	=  [] ;
+		
+		foreach  ( $searched_names  as  $searched_name )
+		   {
+			$found	=  false ;
+			
+			foreach  ( $this -> Servers  as  $server )
+			   {
+				if  ( $server -> IsNamedAs ( $searched_name ) )
+				   {
+					$server_names []	=  $server -> Host ;
+					$found			=  true ;
+				    }
+			    }
+			
+			if  ( ! $found )
+				error ( "Did not find a match for server \"$searched_name\"" ) ;
+		    }
+		
+		return ( $server_names ) ;
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    NAME
+	        FindServerDomains - Searches domains from servers by name.
+	
+	    PROTOTYPE
+	        $list	=  $rsadmin -> FindServerDomains ( $servers ) ;
+	
+	    DESCRIPTION
+	        Locates a list of server domains by their server names or aliases.
+	
+	    PARAMETERS
+	        $servers (string or array of strings) -
+	                Server name(s) to be located. Each name is searched through each loaded server configuration name
+	 		and aliases.
+	 		Wildcard characters (*, ? and character classes) can be specified.
+			Comparisons are case-insensitive.
+	
+	    RETURN VALUE
+	        The returned value is an array containing the main name(s) of the matched server domain(s).
+	
+	  ==============================================================================================================*/
+	public function  FindServerDomains ( $searched_names = null )
+	   {
+		if  ( ! $searched_names  ||  ! count ( $searched_names ) )
+			$searched_names		=  [ '*' ] ;
+		else if  ( ! is_array ( $searched_names ) )
+			$searched_names		=  [ $searched_names ] ;
+		
+		$server_names	=  [] ;
+		
+		foreach  ( $searched_names  as  $searched_name )
+		   {
+			$found	=  false ;
+			
+			foreach  ( $this -> Servers  as  $server )
+			   {
+				if  ( $server -> IsNamedAs ( $searched_name ) )
+				   {
+					foreach (  $server -> Domains  as  $domain ) 
+						$server_names []	=  $domain ;
+
+					$found			=  true ;
+				    }
+			    }
+			
+			if  ( ! $found )
+				error ( "Did not find a match for server \"$searched_name\"" ) ;
+		    }
+		
+		return ( $server_names ) ;
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    GetRemoteLogClass, GetLocalLogClass -
+	        Gets the name of the remote/local log class corresponding to a log type.
+	
+	  ==============================================================================================================*/
+	public function  GetRemoteLogClass ( $logtype )
+	   {
+		switch  ( $logtype )
+		   {
+			case	self::LOGTYPE_HTTP :
+				$class			=  'RemoteHttpLog' ;
+				break ;
+			
+			case	self::LOGTYPE_AUTH :
+				$class			=  'RemoteAuthLog' ;
+				break ;
+			
+			case	self::LOGTYPE_MAIL :
+				$class			=  'RemoteMailLog' ;
+				break ;
+
+			case	self::LOGTYPE_HTTP_ERROR :
+				$class			=  'RemoteHttpErrorLog' ;
+				break ;
+
+			case	self::LOGTYPE_HTTP_ERROR_404 :
+				$class			=  'RemoteHttpError404Log' ;
+				break ;
+
+			case	self::LOGTYPE_SSH :
+				$class			=  'RemoteSshLog' ;
+				break ;
+
+			default :
+				error ( new \Thrak\System\InvalidArgumentException ( "Invalid logfile type {$logtype}." ) ) ;
+		    }
+
+		return ( $class ) ;
+	    }
+
+	public function  GetLocalLogClass ( $logtype )
+	   {
+		switch  ( $logtype )
+		   {
+			case	self::LOGTYPE_HTTP :
+				$class			=  'LocalHttpLog' ;
+				break ;
+			
+			case	self::LOGTYPE_AUTH :
+				$class			=  'LocalAuthLog' ;
+				break ;
+			
+			case	self::LOGTYPE_MAIL :
+				$class			=  'LocalMailLog' ;
+				break ;
+
+			case	self::LOGTYPE_HTTP_ERROR :
+				$class			=  'LocalHttpErrorLog' ;
+				break ;
+
+			case	self::LOGTYPE_HTTP_ERROR_404 :
+				$class			=  'LocalHttpError404Log' ;
+				break ;
+
+			case	self::LOGTYPE_SSH :
+				$class			=  'LocalSshLog' ;
+				break ;
+
+			default :
+				error ( new \Thrak\System\InvalidArgumentException ( "Invalid logfile type {$logtype}." ) ) ;
+		    }
+
+		return ( $class ) ;
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    GetLocalLogInstance -
+	        Instanciates a LocalLog object of the specified logtype.
+	
+	  ==============================================================================================================*/
+	public function  GetLocalLogInstance ( $logtype )
+	   {
+		$class		=  $this -> GetLocalLogClass ( $logtype ) ;
+
+		return ( new $class ( $this -> StringStore, $this ) ) ;
+	    }
+
+
+	/*==============================================================================================================
+	
+	    NAME
+	        ListServers - Outputs information about the list of configured servers.
+	
+	    PROTOTYPE
+	        $rsadmin -> ListServers ( $server_names = null ) ;
+	
+	    DESCRIPTION
+	        Outputs information about the list of configured servers.
+	
+	    PARAMETERS
+	        $server_names (string or array of string) -
+	                Server name(s) to be located. Each name is searched through each loaded server configuration name
+	 		and aliases.
+	 		Wildcard characters (*, ? and character classes) can be specified.
+			Comparisons are case-insensitive.
+			If not specified, all the servers are listed.
+	
+	  ==============================================================================================================*/
+	public function  ListServers ( $server_names = null )
+	   {
+		if  ( ! $server_names  ||  ! is_array ( $server_names ) )
+			$server_names	=  $this -> FindServers ( $server_names ) ;
+		
+		$report		=  new AsciiReport
+		   (
+			[ 'member' => 'host'		, 'title' => 'Host'		, 'align' => 'left'						],
+			[ 'member' => 'ip'		, 'title' => 'IP'		, 'align' => 'left'						],
+			[ 'member' => 'aliases'		, 'title' => 'Aliases'		, 'align' => 'left'						],
+			[ 'member' => 'user'		, 'title' => 'User'		, 'align' => 'left'						],
+			[ 'member' => 'password'	, 'title' => 'Password'		, 'align' => 'left'	, 'width' => 30, 'overflow' => 'wrap'	],
+			[ 'member' => 'fingerprint'	, 'title' => 'Fingerprint'	, 'align' => 'left'						],
+			[ 'member' => 'encoding'	, 'title' => 'Type'		, 'align' => 'center'						]
+		    ) ;
+		$data		=  [] ;
+		
+		foreach  ( $server_names  as  $server_name )
+		   {
+			$server			=  $this -> Servers [ $server_name ] ;
+			$fingerprint		=  '' ;
+			$fingerprint_type	=  '' ;
+			
+			if  ( $server -> Fingerprint )
+				$fingerprint	=  $server -> Fingerprint ;
+
+			if  ( ( $server -> FingerprintType  &  SSH2_FINGERPRINT_SHA1 )  ==  SSH2_FINGERPRINT_SHA1 )
+				$fingerprint_type	=  "sha1" ;
+			else
+				$fingerprint_type	=  "md5" ;
+			
+			$row		=
+			   [
+				'host'		=>  $server -> Host,
+				'ip'		=>  $server -> Ip,
+				'aliases'	=>  implode ( "\n", $server -> Names -> ToArray ( ) ),
+				'user'		=>  $server -> User,
+				'password'	=>  $server -> Password,
+				'fingerprint'	=>  $fingerprint,
+				'encoding'	=>  $fingerprint_type
+			    ] ;
+			$data []	=  $row ;
+		    }
+		
+		echo $report -> Generate ( $data ) ;
+		echo $report -> Summary ( 'server' ) ;
+	    }
+		
+	
+	/*==================================================================================================
+
+	    QueryLog -
+		Performs an sql query on the downloaded logfile entries and optionnally displays the 
+	 	results. Returns the query results anyway.
+	 
+	 	The function accepts an associative array which has the following entries :
+	 	- labels (optional) :
+	 		When a listing is to be generated, the keys of this associative array are taken as
+	 		column name in the query results, while its values are taken as listing columns
+	 		titles.
+	 	- output (optional) :
+	 		When true, a listing is generated. The default value is false.
+	 	- option (optional) :
+	 		The command-line option associated to this query.
+	 	- parameters (optional) :
+	 		Array that defines the value of each query parameter. Each entry is an associative
+			array which has the following keys :
+	 		- name :
+	 			Parameter name.
+	 		- value :
+	 			Parameter value. Note that this value must be an array for the 'ORDER'
+	 			parameter.
+	 		- index :
+	 			Parameter index (in the case where the query contains several occurrences
+	 			of the same parameter, or if the parameter has a name). This entry is 
+				optional.
+	 	- query :
+	 		A parameterized query (see Thrak\Database\Query.phpclass).
+	 	- sort (optional) :
+	 		List of authorized column names for the 'ORDER' parameter.
+
+	  ==================================================================================================*/
+	function  QueryLog ( $query_data )
+	   {
+		$query	=  new Query ( $query_data [ 'query' ] ) ;
+
+		// Process query parameters, if any
+		if  ( isset ( $query_data [ 'parameters' ] )  &&  is_array ( $query_data [ 'parameters' ] ) )
+		   {
+			// Loop through each parameter name/value pair
+			foreach  ( $query_data [ 'parameters' ]  as  $parameter_data )
+			   {
+				// Ignore parameters with empty value
+				if  ( $parameter_data  ===  null )
+					continue ;
+				
+				$parameter_name		=  $parameter_data [ 'name' ] ;
+				$parameter_value	=  $parameter_data [ 'value' ] ;
+				$parameter_index	=  isset ( $parameter_data [ 'index' ] ) ?  $parameter_data [ 'index' ] : 0 ;
+				
+				// Special case for the 'ORDER' parameter : check that the specified column names are in the 'sort' entries
+				// of query data
+				if  ( ! strcasecmp ( $parameter_name, 'ORDER' )  &&  is_array ( $parameter_value ) )
+				   {
+					if  ( isset ( $query_data [ 'sort' ] )  &&  is_array ( $query_data [ 'sort' ] ) )
+					   {
+						// Create a temporary array with only field names (sort options may specify the ASC or DESC keywords)
+						$sort_names	=  [] ;
+			
+						foreach  ( $parameter_value  as  $sort_by )
+						   {
+							preg_match ( '/^ (?P<column> [^\t ]+) \s+ (?P<option> .*) $/imsx', $sort_by, $match ) ;
+							$column		=  $match [ 'column' ] ;
+							$option		=  $match [ 'option' ] ;
+							
+							if  ( strcasecmp ( $option, 'ASC' )  &&  strcasecmp ( $option, 'DESC' ) )
+							   {
+								if  ( isset ( $query_data [ 'option' ] ) )
+									$extra	=  " of the {$query_data [ 'option' ]} command-line option" ;
+								else 
+									$extra	=  '' ;
+							
+								error ( "Incorrect sort option '$option' for the \"$column\" column$extra.\n" ) ;
+							    }
+							
+							$sort_names []	=  $column ;
+						     }
+			
+						// Get the potential column names that may not be defined in the 'sort' entry of the query data
+						$extra_fields	=  array_diff ( $sort_names, $query_data [ 'sort' ] ) ;
+			
+						// Unknown column name(s) : complain
+						if  ( count ( $extra_fields ) )
+						   {
+							if  ( isset ( $query_data [ 'option' ] ) )
+								$extra	=  " for the {$query_data [ 'option' ]} command-line option" ;
+							else
+								$extra	=  '' ;
+							
+							error ( "Incorrect sort column name(s) \"" . implode ( ', ', $extra_fields ) . "\"$extra.\n" .
+								"Allowed field names are : " . implode ( ', ', $query_data [ 'sort' ] ) ) ;
+						    }
+				
+						// Everything is ok : set the ORDER parameter 
+						$query -> Set ( 'ORDER', implode ( ', ', $parameter_value ), $parameter_index ) ;
+					    }
+ 				     }
+				// Other cases : set the specified parameter
+				else
+					$query -> Set ( $parameter_name, $parameter_value, $parameter_index ) ;
+			    }
+		    }
+				
+		// Execute the query
+		$result		=  $query -> Execute ( ) ;
+
+		if  ( isset ( $query_data [ 'output' ] )  &&  $query_data [ 'output' ]  )
+		   {
+			if  ( count ( $result ) )
+			   {
+				if  ( isset ( $query_data [ 'labels' ] )  &&  is_array ( $query_data [ 'labels' ] ) )
+					$column_labels	=  $query_data [ 'labels' ] ;
+				else
+				   {
+					$column_labels	=  [] ;
+				
+					foreach ( array_keys ( $result [0] )  as  $column )
+						$column_labels [ $column ]	=  [ 'column' => $column ] ;
+				    }
+			
+				$report		=  new AsciiReport ( $column_labels ) ;
+				echo $report -> Generate ( $result ) ;
+				echo $report -> Summary ( 'row' ) ;
+			    }			
+			else
+				output ( "No result." ) ;
+		     }
+		
+		return ( $result ) ;
+ 	    }
+	
+	
+	/*==============================================================================================================
+	
+	    NAME
+	        ResolveIps - Resolves ips collected on remote servers.
+	
+	    PROTOTYPE
+	        $rsadmin -> ResolveIps ( $since = null, $verbose = true, $prefix = "\t" ) ;
+	
+	    DESCRIPTION
+	        Resolves the ip addresses collected through remote server logfiles.
+	
+	    PARAMETERS
+		$past (integer or string) -
+			Either a time value or a string that can be understood by the strtotime() function.
+			When specified, only entries older than the specified time or entries with no resolved ip will 
+			be updated.
+			If not specified, or if zero, all server logfile entries not having a resolved ip address will
+			be updated.
+			 
+	        $verbose (boolean) -
+	                When true, displays information on the console while the ip address resolving process is running.
+			 
+		$prefix (string) -
+   			When the $verbose parameter is true, prepends this prefix to every output line.
+	
+	  ==============================================================================================================*/
+	function  ResolveIps ( $past = false, $verbose = true, $prefix = "\t" )
+	   {
+		$string_store_table	=  self::TABLE_SERVER_STRING_STORE ;
+		$entries_table		=  self::TABLE_SERVER_LOGFILE_ENTRIES ;
+		$data_table		=  self::TABLE_SERVER_LOGFILE_DATA ;
+		$resolved_ips_table	=  self::TABLE_SERVER_RESOLVED_IPS ;
+		$ip_domain_associations	=  self::TABLE_SERVER_IP_DOMAIN_ASSOCIATIONS ;
+
+		output ( "Starting ip/domain resolution :" ) ;
+		$db		=  $this -> Database ;
+		$string_store	=  $this -> StringStore ;
+
+		// Extract ip addresses that are not yet resolved
+		$query		=  "
+					SELECT id, value
+					FROM $string_store_table
+					WHERE 
+						type = ". LogStringStore::LOGSTORE_IP . " AND
+						value <> '::1'  AND
+						value NOT LIKE '127.%' AND
+						NOT EXISTS
+						   (
+							SELECT serri_ip_id
+							FROM $resolved_ips_table
+							WHERE
+								serri_ip_id = id
+						    )
+					GROUP BY value
+				   " ;
+
+		$db -> SetSimpleQuery ( $query ) ;
+		$rows		=  $db -> LoadRows ( ) ;
+		$row_count	=  count ( $rows ) ;
+
+		// Loop through ip addresses
+		if  ( $row_count )
+		   {
+			output ( "\tResolving $row_count ips :" ) ;
+
+			foreach  ( $rows  as  $row ) 
+			   {
+				$ip		=  $row [ 'value' ] ;
+				echo ( "\t\t" . sprintf ( "%-39s : ", $ip ) ) ;
+				$domain		=  gethostbyaddr ( $ip ) ;
+				$domain_id	=  0 ;
+				$computer_id	=  0 ;
+
+				if  ( ! $domain  ||  $domain  ==  '.'  ||  $domain  ==  $ip  ||  ! strcasecmp ( $domain, 'unknown' ) )
+					output ( "N/A" ) ;
+				else if  ( strpos ( $domain, '.' )  ===  false ) 
+				   {
+					$computer_id	=  $string_store -> Insert ( LogStringStore::LOGSTORE_COMPUTER_NAME, $domain ) ;
+					output ( "$domain (computer)" ) ;
+				    }
+				else
+				   {
+					$domain_id	=  $string_store -> Insert ( LogStringStore::LOGSTORE_DOMAIN_NAME, $domain ) ;
+					output ( $domain ) ;
+				    }
+
+				$query	=  "
+						INSERT INTO $resolved_ips_table
+						SET 
+							serri_ip_id		=  {$row [ 'id' ]},
+							serri_domain_id		=  $domain_id,
+							serri_computer_name_id	=  $computer_id
+					   " ;
+				$db -> Execute ( $query ) ;
+			    }
+		    }
+
+		// Check domains that do not have an associated ip address
+		// The query below searches for all entries in the server_logfile_data table that have a type of "domain name" but
+		// no corresponding logfile entry data that have a type of "ip address"
+		$query		=  "
+					SELECT serld_parent_id, serld_string_store_id, value
+					FROM $data_table
+					LEFT JOIN $string_store_table ON
+						$string_store_table. id = $data_table. serld_string_store_id
+					WHERE	
+						serld_data_type = " . LogStringStore::LOGSTORE_DOMAIN_NAME . " AND
+						serld_flags = 0 AND
+						value <> 'unknown' AND
+						NOT EXISTS 
+						   (
+							SELECT {$data_table}_2. serld_parent_id
+							FROM $data_table AS {$data_table}_2
+							WHERE
+								{$data_table}_2. serld_parent_id = $data_table. serld_parent_id AND
+								{$data_table}_2. serld_data_type = " . LogStringStore::LOGSTORE_IP . "
+						    )
+					GROUP BY value
+				     " ;
+		$db -> SetSimpleQuery ( $query ) ;
+		$rows		=  $db -> LoadRows ( )  ;
+		$row_count	=  count ( $rows ) ;
+
+		if  ( $row_count )
+		   {
+			output ( "\tChecking that domain names have an ip address in $row_count data records :" ) ;
+			$parents_to_ip	=  [] ;
+
+			// Loop through parent ids
+			foreach ( $rows  as  $row )
+			   {
+				$parent_id	=  $row [ 'serld_parent_id' ] ;
+				$ssid		=  $row [ 'serld_string_store_id' ] ;
+				$ssvalue	=  $row [ 'value' ] ;
+
+				// If the current domain is not in our cache, try to locate an entry in the data table that
+				// has a row for an ip address
+				if  ( ! isset ( $parents_to_ip [ $parent_id ] ) )
+				   {
+					$query		=  "
+								SELECT serld_string_store_id, value
+								FROM $data_table
+								LEFT JOIN $string_store_table ON
+									$string_store_table. id = $data_table. serld_string_store_id
+								WHERE
+									serld_data_type = " . LogStringStore::LOGSTORE_IP . " AND
+									serld_parent_id IN
+									   (
+										SELECT serld_parent_id
+										FROM $data_table
+										WHERE
+											serld_parent_id <> $parent_id AND
+											serld_string_store_id = $ssid AND
+											serld_data_type = " . LogStringStore::LOGSTORE_DOMAIN_NAME . "
+									    )
+								LIMIT 1
+							   " ; 
+					$db -> SetSimpleQuery ( $query ) ;
+					$ip_row		=  $db -> LoadRow ( ) ;
+
+					// Ip row found : insert a LOGTYPE_IP entry for it in this row
+					if  ( $ip_row )
+					   {
+						$domain_row	=
+						   [
+							'ssid'		=>  $ip_row [ 'serld_string_store_id' ],
+							'ip'		=>  $ip_row [ 'value' ],
+							'domain'	=>  $ssvalue
+						    ] ;
+
+						$parents_to_ip [ $parent_id ]		=  $domain_row ;
+					
+						$query	=  "
+								INSERT INTO $data_table
+								SET 
+									serld_string_store_id	=  {$domain_row [ 'ssid' ]},
+									serld_parent_id		=  $parent_id,
+									serld_data_type		=  " . LogStringStore::LOGSTORE_IP . "
+							   " ;
+						$db -> Execute ( $query ) ;
+						output ( "\t\tFound     [" . sprintf ( "%-39s", $domain_row [ 'ip' ] ) . "] {$domain_row [ 'domain']}" ) ;
+					    }
+					// Ip not found : try to get it from hostname
+					else
+					   {
+						$retrieved_ip	=  NetworkHelpers::GetHostByName ( $ssvalue ) ;
+
+						// Hostname ip retrieved ; insert a new LOGTYPE_IP record for this logfile entry
+						if  ( $retrieved_ip )
+						   {
+							$ip_id	=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP, $retrieved_ip ) ;
+							$query	=  "
+									INSERT INTO $data_table
+									SET 
+										serld_string_store_id	=  $ip_id,
+										serld_parent_id		=  $parent_id,
+										serld_data_type		=  " . LogStringStore::LOGSTORE_IP . "
+								   " ;
+							$db -> Execute ( $query ) ;
+							output ( "\t\tRetrieved [$retrieved_ip]" ) ;
+						    }
+						// Ip REALLY not found
+						else
+							output ( "\t\tUNKNOWN   $ssvalue" ) ;
+					     }
+					    
+				    }
+				// Parent id found in the cache ; simply insert a missing LOGSTORE_IP row
+				else
+				   {
+					$query	=  "
+							INSERT INTO $data_table
+							SET 
+								serld_string_store_id	=  {$parents_to_ip [ $parent_id ] [ 'ssid' ]},
+								serld_parent_id		=  $parent_id,
+								serld_data_type		=  " . LogStringStore::LOGSTORE_IP . "
+						   " ;
+					$db -> Execute ( $query ) ;
+					output ( "\t\tCompleted [" . sprintf ( "%-39s", $domain_row [ 'ip' ] ) . "] {$domain_row [ 'domain']}" ) ;
+				    }
+			    }
+		    }
+	    }
+    } 
+
+

@@ -1,0 +1,196 @@
+<?php
+/**************************************************************************************************************
+
+    NAME
+        RemoteLogs.phpclass
+
+    DESCRIPTION
+        Encapsulates an array of remote log files. To be instanciated only when log contents needs to be
+	retrieved.
+
+    AUTHOR
+        Christian Vigh, 06/2015.
+
+    HISTORY
+    [Version : 1.0]    [Date : 2015/06/14]     [Author : CV]
+        Initial version.
+
+ **************************************************************************************************************/
+
+require_once ( 'RemoteLog.phpclass' ) ;
+
+
+use  Thrak\System\Object ;
+use  Thrak\Types\String ;
+
+
+/*==============================================================================================================
+
+    RemoteLogs class -
+        Handles an array of remote logs of a certain type for one server.
+
+  ==============================================================================================================*/
+class  RemoteLogs		extends		Object
+				implements	ArrayAccess, Countable, IteratorAggregate
+   {
+	// Logfile type for this array
+	public		$LogType ;
+	// Remote server
+	public		$Server ;
+	// Array of RemoteLog objects
+	protected	$LogFiles	=  [] ;
+	
+	
+	/*==============================================================================================================
+	
+	    Constructor -
+	        Retrieves the list of logfiles belonging to the specified type on the specified server.
+	
+	  ==============================================================================================================*/
+	public function  __construct ( $server, $logtype = self::LOGTYPE_HTTP )
+	   {
+		global		$RsAdmin ;
+		
+		if  ( is_string ( $server ) )
+			$server		=  $RsAdmin -> FindServer ( $server ) ;
+		
+		$this -> LogType	=  $logtype ;
+		$this -> Server		=  $server ;
+		$this -> __get_logs ( ) ;
+	    }
+	
+	
+	// __get_logs -
+	//	Retrieves the list of logfiles of the specified type on the specified server.
+	private function  __get_logs ( )
+	   {
+		global		$RsAdmin ;
+
+
+		$files		=  [] ;
+		$index		=  0 ;
+		
+		// Make sure a connection exists
+		if  ( ! $this -> Server -> IsConnected ( ) )
+			$this -> Server -> Connect ( false, true, true ) ;
+		
+		// Retrieve a handle to the remote filesystem
+		$fs		=  $this -> Server -> GetFileSystem ( ) ;
+		
+		// Log files location depend on the logfile type
+		switch  ( $this -> LogType )
+		   {
+			// Http logs : there is one entry per domain defined (remote server must have been configured
+			// to store its Apache log files into domain-specific directories)
+			case	RsAdmin::LOGTYPE_HTTP :
+				$log_directories	=  $this -> Server -> HttpLogs ;
+				break ;
+			
+			case	RsAdmin::LOGTYPE_AUTH :
+				$log_directories	=  $this -> Server -> AuthLogs ;
+				break ;
+			
+			case	RsAdmin::LOGTYPE_MAIL :
+				$log_directories	=  $this -> Server -> MailLogs ;
+				break ;
+
+			case	RsAdmin::LOGTYPE_HTTP_ERROR :
+				$log_directories	=  $this -> Server -> HttpLogs ;
+				break ;
+
+			case	RsAdmin::LOGTYPE_HTTP_ERROR_404 :
+				$log_directories	=  $this -> Server -> HttpLogs ;
+				break ;
+
+			case	RsAdmin::LOGTYPE_SSH :
+				$log_directories	=  $this -> Server -> SshLogs ;
+				break ;
+
+			default :
+				error ( new \Thrak\System\InvalidArgumentException ( "Invalid logfile type {$this -> LogType}." ) ) ;
+		    }
+		
+		$class	=  $RsAdmin -> GetRemoteLogClass ( $this -> LogType ) ;
+
+		// Loop through each logfile location defined for this server
+		foreach  ( $log_directories  as  $logdir )
+		   {
+			$rs	=  $fs -> opendir ( $logdir ) ;
+			
+			// Then loop through each file defined in this location
+			while  ( $file = $fs -> readdir ( $rs ) )
+			   {
+				if  ( ! $class::Matches ( $file ) )
+					continue ;
+
+				$path			=  "$logdir/$file" ;
+				$domain			=  $this -> Server -> Domains [ $index ] ;
+				$logfile		=  new  $class ( $path, $domain, $this -> Server ) ;
+				$this -> LogFiles []	=  $logfile ;
+			    }
+			
+			$index ++ ;
+		    }
+		
+		// Sort file names by domain then path
+		usort 
+		   (
+			$this -> LogFiles,
+			function ( $a, $b )
+			   {
+				$status		=  strcasecmp ( $a -> Domain, $b -> Domain ) ;
+				
+				if  ( $status )
+					return ( $status ) ;
+				
+				return ( strcmp ( $a -> Path, $b -> Path ) ) ;
+			    }
+		    ) ;
+	    }
+
+
+	// __dump_debuginfo -
+	//	Hides the Server member when dumping object contents.
+	public static function  __dump_debuginfo ( )
+	   {
+		return ( [ 'hidden' => [ 'Server' ] ] ) ;
+	    }
+	
+
+	/*==============================================================================================================
+	
+	    Optimize -
+	        Optimizes the mysql table used to store all logfile entries.
+	
+	  ==============================================================================================================*/
+	public function  Optimize ( )
+	   {
+		$this -> Server -> Database -> Execute ( "OPTIMIZE TABLE " . RsAdmin::TABLE_SERVER_LOGFILE_ENTRIES ) ;	
+	    }
+
+
+	/*==============================================================================================================
+	
+		Interfaces implementations.
+	
+	  ==============================================================================================================*/
+	public function  Count ( )
+	   { return ( count ( $this -> LogFiles ) ) ; }
+	
+	
+	public function  getIterator ( )
+	   { return ( new ArrayIterator ( $this -> LogFiles ) ) ; }
+	
+	
+	public function  offsetExists ( $offset )
+	   { return ( isset ( $this -> LogFiles [ $offset ] ) ) ; }
+	
+	public function  offsetGet ( $offset )
+	   { return ( $this -> LogFiles [ $offset ] ) ; }
+	
+	public function  offsetSet ( $offset, $value ) 
+	   { error ( new \Thrak\System\UnsupportedOperationException ( ) ) ; }
+	
+	public function  offsetUnset ( $offset )
+	   { error ( new \Thrak\System\UnsupportedOperationException ( ) ) ; }
+    }

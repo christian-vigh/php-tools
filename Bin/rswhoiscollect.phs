@@ -1,0 +1,676 @@
+<?php
+	//!phpcmd(Administration, 1.0, production) : Collects whois information from remote servers and updates the local database.
+	/**************************************************************************************************************
+
+	    NAME
+		rswhoiscollect.phs
+
+	    DESCRIPTION
+		Collects whois information from remote servers and updates the local database.
+
+	    AUTHOR
+		Christian Vigh, 08/2015.
+
+	    HISTORY
+	    [Version : 1.0]	[Date : 2015/08/19]     [Author : CV]
+		Initial version.
+
+	    [Version : 1.0.1]	[Date : 2015/11/29]     [Author : CV]
+		. Added the -list_configured_servers option.
+
+	 **************************************************************************************************************/
+	require ( "tools.phpinclude" ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Types\ArrayHelpers ;
+	use  Thrak\Types\String ;
+	use  Thrak\Types\String\Convert ;
+	use  Thrak\IO\Path ;
+	use  Thrak\IO\AsciiReport ;
+	use  Thrak\Processors\IniFile ;
+	use  Thrak\Processors\WhoisInformation ;
+	use  Thrak\Database\BufferedInsert ;
+	use  Thrak\Database\Tables\StringStore ;
+	use  Thrak\Internet\TLDList ;
+
+	
+	require ( "RsAdmin.phpclass" ) ;
+
+
+	/*==================================================================================================
+
+		Command line parameters.
+
+	  ==================================================================================================*/
+	$Definitions = <<<END
+<command allow-files="false">
+
+	<usage>
+		Collects whois information from remote servers and updates the local database.
+	</usage>
+	
+	<file name="configuration_file, cf" disposition="existing" default="thraktools://Data/rsadmin.ini">
+		Hosted servers parameters file.
+	</file>
+	
+	<flag name="keep_files, kf">
+		Normally, files are removed from the remote servers once they have been processed.
+		This options tels rsgetrandom to remove them after processing.
+	</flag>
+	
+	<flag name="list_configured_servers, lcs">
+		Lists the servers configured for this command.
+	</flag>
+
+	<flag name="list_partial_ranges, lpr">
+		This flag lists the partial ip address ranges that have been collected from the remote servers.
+	</flag>
+
+	<file name="load_unassigned_ips, lui" disposition="existing">
+		Loads unassigned ip ranges from the specified file to the local database. 
+		Only 256-ip blocks are taken into account.
+	</file>
+
+	<string name="servers, server, s" default="*" arguments="0..*">
+		Server name(s) on which collected random data is to be retrieved.
+		Wildcard characters are authorized, and search is performed on every server alias.
+	</string>
+	
+	<string name="server_path, sp" default="/server/data/whois">
+		Path on the remote server where the files containing whois data are stored.
+	</string>
+</command>
+END;
+
+	/*==================================================================================================
+
+	    CollectFiles -
+		Collects data from the specified server list.
+
+	  ==================================================================================================*/
+	function  CollectFiles ( $hosts, $server_path, $keepfiles )
+	   {
+		global		$RsAdmin ;
+		
+
+		$unassigned_ips		=  [] ;
+		$unassigned_filename	=  Path::GetTempDirectory ( ) . '/rswhoiscollect.' . uniqid ( ) . '.lst' ;
+		$unassigned_fp		=  fopen ( $unassigned_filename, "w" ) ;
+		
+		output ( "Collecting and checking whois data (new unassigned ip list saved to $unassigned_filename)..." ) ;
+		$total_host_files_processed	=  0 ;
+		$total_whois_entries		=  0 ;
+		
+		foreach  ( $hosts  as  $host )
+		   {
+			output ( "\tServer $host :" ) ;
+			
+			$server			=  $RsAdmin -> FindServer ( $host ) ;
+			$server -> Connect ( false, true, true ) ;
+			
+			$fs			=  $server -> GetFileSystem ( ) ;
+
+			try
+			   {
+				$rs			=  @$fs -> opendir ( $server_path ) ;
+			    }
+			catch ( Exception $e )
+			   {
+				$rs	=  null ;
+			    }
+
+			if  ( ! $rs ) 
+				continue ;
+
+			$host_files_processed	=  0 ;
+			$server_whois_entries	=  0 ;
+				
+			while  ( $path = $fs -> readdir ( $rs ) )
+			   {
+				$server_file			=  "$server_path/$path" ;
+
+				if  ( $fs -> is_file ( $server_file )  &&  String::Matches ( $path, 'whois.*.gz' ) )
+				   {
+					echo ( "\t\t$server_file..." ) ;
+				
+					$host_files_processed ++ ;
+					$total_host_files_processed ++ ;
+
+					$fp				=  $fs -> gzopen ( $server_file, 'r' ) ;
+					$contents			=  $fs -> gzread ( $fp ) ;
+					gzclose ( $fp ) ;
+
+					$lines				=  explode ( "\n", $contents ) ;
+					$whois_data			=  SplitWhoisData ( $lines ) ;
+
+					$count				=  count ( $whois_data ) ;
+					$server_whois_entries          +=  $count ;
+					$total_whois_entries           +=  $count ;
+
+					output ( "$count whois entries" ) ;
+
+					foreach  ( $whois_data  as  $data )
+					   {
+						$status		=  ProcessWhoisData ( $data [ 'ip' ], $data [ 'data' ] ) ;
+
+						if  ( $status ) 
+						   {
+							$unassigned_ips []	=  Convert::IpStringToInteger ( $data [ 'ip' ] ) ;
+							fputs ( $unassigned_fp, $data [ 'ip' ] . "\n" ) ;
+						    }
+					     }
+
+					echo ( "\n" ) ;
+
+					if  ( ! $keepfiles )
+						$fs -> unlink ( $server_file ) ;
+				    }
+			    }
+			
+			$fs -> closedir ( $rs ) ;
+			output ( "\t--> $server_whois_entries whois entries processed in $host_files_processed files." ) ;
+		    }
+
+		// Process unassigned ips
+		if  ( count ( $unassigned_ips )  >  255 )
+		   {
+			ProcessUnassignedIps ( $unassigned_ips ) ;
+			fclose ( $unassigned_fp ) ;
+			unlink ( $unassigned_filename ) ;
+		    }
+
+		output ( "--> $total_whois_entries total whois entries processed in $total_host_files_processed files on " . count ( $hosts ) . " servers." ) ;
+	    }
+	
+
+	/*==============================================================================================================
+	
+	    ListPartialRanges -
+	        Lists partial ranges collected from the remote servers.
+	
+	  ==============================================================================================================*/
+	function  ListPartialRanges ( )
+	   {
+		global		$UnprocessedIps ;
+
+		$ranges		=  ArrayHelpers::ToRanges ( $UnprocessedIps ) ;
+		$report		=  new AsciiReport 
+		   (
+			[ 'member' => 'low'	, 'title' => 'Ip low'	, 'align' => 'left'	],
+			[ 'member' => 'high'	, 'title' => 'Ip high'	, 'align' => 'left'	],
+			[ 'member' => 'count'	, 'title' => 'Count'	, 'align' => 'right'	]
+		    ) ;
+		$data		=  [] ;
+
+		foreach  ( $ranges  as  $range )
+		   {
+			$data []	=
+			   [
+				'low'		=>  Convert::IntegerToIpString ( $range [0] ),
+				'high'		=>  Convert::IntegerToIpString ( $range [1] ),
+				'count'		=>  number_format ( $range [1] - $range [0] + 1, 0, '.', ' ' )
+			    ] ;
+		    }
+
+		echo $report -> Generate ( $data ) ;
+		echo $report -> Summary ( 'partial range' ) ;
+	    }
+
+
+	/*==============================================================================================================
+	
+	    LoadUnassignedIps -
+	        Loads an unassigned ip list from the specified file and updates the local database.
+	
+	  ==============================================================================================================*/
+	function  LoadUnassignedIps ( $file )
+	   {
+		$contents	=  str_replace ( "\r", '', file_get_contents ( $file ) ) ;
+		$ips		=  explode ( "\n", $contents ) ;
+		$ipv4		=  [] ;
+
+		foreach ( $ips  as  $ip )
+			$ipv4 []	=  Convert::IpStringToInteger ( $ip ) ;
+
+		ProcessUnassignedIps ( $ipv4 ) ;
+	    }
+
+
+	/*==============================================================================================================
+	
+	    ProcessUnassignedIps -
+	        Takes a list of unassigned ip addresses (ie, ips that are not present in the local database) and creates
+		256-address blocks.
+	
+	  ==============================================================================================================*/
+	function  ProcessUnassignedIps ( $ips, $message = 'Adding missing ranges' )
+	   {
+		global		$Database, $UnprocessedIps ;
+
+
+		sort ( $ips ) ;
+		$collected_ranges	=  [] ;
+		$ip_count		=  count ( $ips ) ;
+
+		// Collect contiguous 256-ip address ranges
+		$start_ip		=  $ips [0] ;
+		$end_ip			=  $start_ip ;
+
+		for  ( $i  =  1 ; $i  <  $ip_count ; $i ++ )
+		   {
+			$ip	=  $ips [$i] ;
+
+			if  ( $ip  ==  $end_ip + 1 )
+			   {
+				if  ( $ip & 0xFF )
+					$end_ip			=  $ip ;
+				else
+				   {
+					$collected_ranges []	=  [ $start_ip, $end_ip ] ;
+					$start_ip		=  
+					$end_ip			=  $ip ;
+				    }
+			    }
+			else
+			   {
+				$collected_ranges []	=  [ $start_ip, $end_ip ] ;
+				$start_ip		=  
+				$end_ip			=  $ip ;
+			    }
+		    }
+
+		// Last range may not be complete
+		if  ( ! ( $start_ip & 0xFF ) )
+			$collected_ranges []	=  [ $start_ip, $end_ip ] ;
+
+		// Dispatch between missing ranges and incomplete ranges (typically, the first and last ones)
+		$ranges		=  [] ;
+
+		foreach  ( $collected_ranges  as  $collected_range )
+		   {
+			if  ( $collected_range [1] - $collected_range [0]  ==  255 )
+			   {
+				$low	=  Convert::IntegerToIpString ( $collected_range [0] ) ;
+				$high	=  Convert::IntegerToIpString ( $collected_range [1] ) ;
+
+				$ranges []	=  [ $low, $high ] ;
+			    }
+			else
+			   {
+				for  ( $i = $collected_range [0] ; $i  <  $collected_range [1] ; $i ++ )
+					$UnprocessedIps []	=  $i ;
+			    }
+		    }
+
+		output ( "$message :" ) ;
+
+		// Add missing ranges
+		$flags		=  WhoisInformation::WHOIS_FLAGS_PROVIDER | WhoisInformation::WHOIS_FLAGS_UNALLOCATED_RANGE ;
+
+		foreach  ( $ranges  as  $range )
+		   {
+			$low		=  $range [0] ;
+			$high		=  $range [1] ;
+
+			// Ignore ranges that are larger than 256 elements - this is a paranoid check
+			$lowip		=  Convert::IpStringTointeger ( $range [0] ) ;
+			$highip		=  Convert::IpStringTointeger ( $range [1] ) ;
+
+			if  ( $highip - $lowip  >  255 )
+				error ( "Range greater than 256!" ) ;
+
+			$query		=  "
+						INSERT IGNORE INTO whois_information
+						SET
+							whoi_last_update	=  NOW(),
+							whoi_last_whois_update  =  NOW(),
+							whoi_ip_low		=  '$low',
+							whoi_ip_high		=  '$high',
+							whoi_ipv4_low		=  INET_ATON( whoi_ip_low ),
+							whoi_ipv4_high		=  INET_ATON( whoi_ip_high ),
+							whoi_flags		=  $flags,
+							whoi_country		=  ''
+					   " ;
+					
+			$Database -> Execute ( $query ) ;	
+			output ( "\t$low - $high" ) ;
+		    }
+	    }
+
+
+	/*==============================================================================================================
+	
+	    ProcessWhoisData -
+	        Analyzes the specified whois output.
+	
+	  ==============================================================================================================*/
+	function  ProcessWhoisData ( $ip, $text )
+	   {
+		global		$Database ;
+
+
+		// Get a whois information instance
+		$whois			=  WhoisInformation::GetInstance ( $ip, $text, false ) ;
+		$ipv4			=  Convert::IpStringToInteger ( $ip ) ;
+		$set_last_update	=  false ;
+		
+		if  ( ! $whois )
+		   {
+			echo '0' ;
+			return ( false ) ;
+		    }
+
+		// Check if at least one address range is defined for this whois information
+		if  ( count ( $whois -> Ranges ) )
+		   {
+			$range		=  $whois -> Ranges [0] -> GetIpRange ( ) ;
+			$ipv4_low	=  Convert::IpStringToInteger ( $range [0] ) ;
+			$ipv4_high	=  Convert::IpStringToInteger ( $range [1] ) ;
+			$ip_low		=  $range [0] ;
+			$ip_high	=  $range [1] ;
+		    }
+		// Otherwise, the range will itself be the supplied ip address - may correspond to an unallocated range
+		else
+		   {
+			$ipv4_low	=  
+			$ipv4_high	=  $ipv4 ;
+			$ip_low		=
+			$ip_high	=  $ip ;
+		    }
+
+		// Check if we find something 
+		// Note that, although not perfect, the FORCE INDEX clause gives significative performance improvements, since
+		// the mysql optimizer (as of mysql 5.6) chooses not to use any index and performs a full table scan
+		$query		=  "
+					SELECT 
+						whoi_id,
+						whoi_flags,
+						whoi_last_update,
+						whoi_ipv4_low,
+						whoi_ipv4_high
+					FROM whois_information 
+					FORCE INDEX( whoi_ipv4_low )
+					WHERE
+						( whoi_flags & " . WhoisInformation::WHOIS_FLAGS_PROVIDER . " )  <>  0 AND
+						$ipv4_low = whoi_ipv4_low AND
+						$ipv4_high = whoi_ipv4_high 
+				   " ;
+
+		$Database -> SetSimpleQuery ( $query ) ;
+		$row		=  $Database -> LoadRow ( ) ;
+
+		// Ignore ips that fall into "holes" in the local database
+		if  ( ! $row ) 
+		   {
+			echo '?' ;
+			return ( true ) ;
+		    }
+		// An unallocated range has been found for this ip, so do nothing
+		// (unallocated ranges in the local database have a width of at most 256 addresses)
+		else if  ( ( $row [ 'whoi_flags' ]  &  WhoisInformation::WHOIS_FLAGS_SERVER_NOT_FOUND ) )
+		   {
+			echo 'x' ;
+			$set_last_update	=  true ;
+		    }
+		// Other cases
+		else
+		   {
+			$update		=  $whois -> GetUpdateTime ( ) ;
+			$update_string	=  gmdate ( 'Y-m-d H:i:s', $update ) ;
+
+			// Do nothing if last local database update is newer than last whois information update
+			if  ( ! $update  ||  $update_string  <  $row [ 'whoi_last_update' ] )
+			   {
+				$set_last_update	=  true ;
+				echo '.' ;
+			    }
+			// When updated but ip range remains the same, delete the original entries and recreate them with new data
+			else if  ( $ipv4_low  ==  $row [ 'whoi_ipv4_low' ]  &&  $ipv4_high  ==  $row [ 'whoi_ipv4_high' ] )
+			   {
+				UpdateWhoisEntry ( $ip_low, $ip_high, $whois, $row [ 'whoi_id' ] ) ;
+				echo "!" ;
+			    }
+			else
+			   {
+				echo "**** NEW RANGE\n" ;
+				dump ( $row ) ;
+				output ( $whois -> Contents ) ;
+				output ( "****************** UNHANDLED CASE" ) ;
+				exit ;
+			    }
+		    }
+
+		// Update last whois update date if needed
+		if  ( $set_last_update )
+			$Database -> Execute ( "UPDATE whois_information SET whoi_last_update = NOW() WHERE whoi_id = {$row [ 'whoi_id' ]}" ) ;
+
+		return ( false ) ;
+	    }
+
+
+	/*==============================================================================================================
+	
+	    SplitWhoisData -
+	        Splits whois information.
+	
+	  ==============================================================================================================*/
+	function  SplitWhoisData ( $lines )
+	   {
+		$line_count	=  count ( $lines ) ;
+		$parts		=  [] ;
+		$part		=  [] ;
+		$ip		=  '' ;
+		$index		=  0 ;
+		$separator		=  '/^whois \s+ (?P<ip> [0-9a-f:\-.]+)/imsx' ;
+
+		for  ( $i = 0 ; $i  <  $line_count ; $i ++ )
+		   {
+			$line	=  $lines [$i] ;
+
+			if  ( preg_match ( $separator, $line ) )
+			   {
+				$index	=  $i ;
+				break ;
+			    }
+		    }
+
+		for  ( $i = $index ; $i  <  $line_count ; $i ++ )
+		   {
+			$line	=  trim ( $lines [$i] ) ;
+
+			if  ( preg_match ( $separator, $line, $match ) )
+			   {
+				if  ( count ( $part ) )
+				   {
+					$parts []	=  [ 'ip' => $ip, 'data' => implode ( "\n", $part ) ] ;
+					$part		=  [] ;
+					$ip		=  $match [ 'ip' ] ;
+				    }
+				else
+					$ip		=  $match [ 'ip' ] ;
+			    }
+			else
+				$part []	=  $line ;
+		    }
+
+		if  ( count ( $part ) )
+			$parts []	=  [ 'ip' => $ip, 'data' => implode ( "\r\n", $part ) ] ;
+
+		return ( $parts ) ;
+	    }
+
+
+	/*==================================================================================================
+
+	    UpdateWhoisEntry -
+		Updates an entry in the whois database, or creates it if $id is false.
+
+	  ==================================================================================================*/
+	function  UpdateWhoisEntry ( $ip_low, $ip_high, $whois, $id = false ) 
+	   {
+		global		$WhoisStringStore, $Database ;
+
+
+		$entry_buffer		=  new BufferedInsert
+		   (
+			'whois_information_block_entries',
+			[
+				'whoibe_information_id',
+				'whoibe_block_id',
+				'whoibe_type',
+				'whoibe_common_type',
+				'whoibe_keyword_id',
+				'whoibe_text_id',
+				'whoibe_value_id'
+			 ],
+			8192
+		    ) ;
+
+		foreach  ( $whois  as  $range )
+		   {
+			if  ( $id )
+			   {
+				$Database -> Execute ( "DELETE FROM whois_information WHERE whoi_id = $id" ) ;
+				$Database -> Execute ( "DELETE FROM whois_information_blocks WHERE whoib_information_id = $id" ) ;
+				$Database -> Execute ( "DELETE FROM whois_information_block_entries WHERE whoibe_information_id = $id" ) ;
+			    }
+
+			// Create the top-level information
+			$country	=  $range -> GetCountry ( ) ;
+			$update_time	=  $range -> GetUpdateTime ( ) ;
+
+			if  ( $update_time )
+				$last_update	=  "'" . date ( 'Y-m-d H:i:s', $update_time ) . "'" ;
+			else
+				$last_update	=  'NOW()' ; 
+
+
+			$data		=  $Database -> Escape ( $whois -> Contents ) ;
+			$query		=  "
+						INSERT IGNORE INTO whois_information
+						SET
+							whoi_last_update	=  NOW(),
+							whoi_last_whois_update	=  $last_update,
+							whoi_ip_low		=  '$ip_low',
+							whoi_ip_high		=  '$ip_high',
+							whoi_ipv4_low		=  INET_ATON( whoi_ip_low ),
+							whoi_ipv4_high		=  INET_ATON( whoi_ip_high ),
+							whoi_flags		=  {$whois -> Flags},
+							whoi_country		=  '$country',
+							whoi_text		=  '$data'
+					   " ;
+			$Database -> Execute ( $query ) ;
+			$information_id			=  $Database -> GetLastInsertId ( ) ;
+
+			// Insert records into the whois_information_blocks table
+			foreach  ( $range  as  $block )
+			   {
+				$query	=  "
+						INSERT INTO whois_information_blocks
+						SET
+							whoib_information_id	=  $information_id,
+							whoib_type		=  {$block -> Type}
+					   " ;
+
+				$Database -> Execute ( $query ) ;
+				$block_id	=  $Database -> GetLastInsertId ( ) ;
+
+				foreach  ( $block  as  $entry )
+				   {
+					$keyword_id	=  $WhoisStringStore -> Insert ( WhoisInformation::WHOIS_STRING_STORE_KEYWORD, $entry -> Keyword ) ;
+					$text_id	=  $WhoisStringStore -> Insert ( WhoisInformation::WHOIS_STRING_STORE_TEXT, $entry -> Text ) ;
+					$value_id	=  $WhoisStringStore -> Insert ( WhoisInformation::WHOIS_STRING_STORE_VALUE, 
+									serialize ( $entry -> Value ) ) ;
+
+					// Insert records into the whois_information_block_entries table
+					$row		=  
+					   [
+							'whoibe_information_id'	=>  $information_id,
+							'whoibe_block_id'	=>  $block_id,
+							'whoibe_type'		=>  $entry -> Type,
+							'whoibe_common_type'	=>  $entry -> CommonType,
+							'whoibe_keyword_id'	=>  $keyword_id,
+							'whoibe_text_id'	=>  $text_id,
+							'whoibe_value_id'	=>  $value_id
+					     ] ;
+
+					$entry_buffer -> Add ( $row ) ;
+				    }
+			    }
+		    }
+	    }
+
+
+	/*==================================================================================================
+
+		Global constants and variables.
+
+	  ==================================================================================================*/
+	$CL 			=  new  CLParser ( $Definitions ) ;
+	$ConfigurationFile	=  $CL -> configuration_file ;
+	$KeepFiles		=  $CL -> keep_files ;
+	$ListConfiguredServers	=  $CL -> list_configured_servers ;
+	$ListPartialRanges	=  $CL -> list_partial_ranges ;
+	$LoadUnassignedIps	=  $CL -> load_unassigned_ips ;
+	$Servers		=  $CL -> servers ;
+	$ServerPath		=  $CL -> server_path ;
+	
+	$RsAdmin		=  new RsAdmin ( $ConfigurationFile ) ;
+	$ServerList		=  $RsAdmin -> FindServers ( $Servers ) ;
+	$HadOption		=  false ;
+	$WhoisStringStore	=  new  StringStore ( 'whois_string_store', 'String store for whois data information', 16384, 32 ) ;
+	$UnprocessedIps		=  [] ;
+	$UnprocessedIpFile	=  'thraktools://Data/rswhoiscollect.unprocessed.txt' ;
+
+	
+	/*==================================================================================================
+
+		Main program.
+
+	  ==================================================================================================*/
+
+	// Load unprocessed ips 
+	if  ( file_exists ( $UnprocessedIpFile ) )
+	   {
+		$contents		=  file_get_contents ( $UnprocessedIpFile ) ;
+		$lines			=  explode ( "\n", $contents ) ;
+		
+		foreach  ( $lines  as  $line )
+		   {
+			$line	=  trim ( $line ) ;
+
+			if  ( $line  &&  is_numeric ( $line ) )
+				$UnprocessedIps []	=  $line ;
+		    }
+	    }
+
+	// -list_partial_ranges :
+	//	Lists the partial ranges (ie, ranges less than 256) collected from the remote servers.
+	if  ( ! $HadOption  &&  $ListPartialRanges )
+	   {
+		ListPartialRanges ( ) ;
+		$HadOption	=  true ;
+	    }
+
+	// -load_unassigned_ips :
+	//	Loads unassigned ip list from the specified file, generated by a previous invocation of rswhoiscollect that failed.
+	if  ( ! $HadOption  &&  $LoadUnassignedIps )
+	   {
+		LoadUnassignedIps ( $LoadUnassignedIps ) ;
+		$HadOption	=  true ;
+	    }
+
+	// -list_configured_servers :
+	//	Lists the servers configured for this command.
+	if  ( ! $HadOption  &&  $ListConfiguredServers ) 
+	   {
+		$RsAdmin -> ListServers ( ) ;
+		$HadOption	=  true ;
+	    }
+
+	// No option specified : retrieve collected whois data from remote servers
+	if  ( ! $HadOption )
+	   {
+		CollectFiles ( $ServerList, $ServerPath, $KeepFiles ) ;	
+		$HadOption	=  true ;
+	    }

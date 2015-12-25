@@ -1,0 +1,406 @@
+<?php
+/**************************************************************************************************************
+
+    NAME
+        RemoteLog.phpclass
+
+    DESCRIPTION
+        Encapsulates remote logs copied to the local database.
+
+    AUTHOR
+        Christian Vigh, 06/2015.
+
+    HISTORY
+    [Version : 1.0]    [Date : 2015/06/14]     [Author : CV]
+        Initial version.
+
+ **************************************************************************************************************/
+
+use  Thrak\System\Object ;
+use  Thrak\Types\String ;
+use  Thrak\Database\BufferedInsert ;
+use  Thrak\IO\LogFileContents ;
+
+
+/*==============================================================================================================
+
+    RemoteLog class -
+        Encapsulates a remote log that may be copied to the local database.
+
+  ==============================================================================================================*/
+abstract class  RemoteLog		extends  Object 
+   {
+	// Remote log path
+	public		$Path ;
+	// Id of the logfile entry, in the server_logfiles table
+	public		$LogFileId ;
+	// Last update time for this file, and last line number processed
+	public		$LastUpdate ;
+	public		$LastLineNumber ;
+	// Domain where this file is hosted
+	public		$Domain ;
+	// Id of the domain, in the server_domains tables
+	public		$DomainId ;
+	// RemoteServer object
+	public		$Server ;
+	// stat() information for this logfile (numeric indexes are removed)
+	public		$Stat					=  [] ;
+	// Logfile type
+	public		$LogType ;
+	// Timestampg start column and length
+	public		$TimestampStart ;
+	public		$TimestampLength ;
+	public		$MessageStart ;
+	// Log entries string store object
+	public		$LogEntriesStringStore ;
+	
+	
+	/*--------------------------------------------------------------------------------------------------------------
+	 
+	    Constructor -
+	        Builds the object and retrieves stat() information for the remote logfile.
+		Creates the appropriate entries in the server, server_domains and server_logfiles tables.
+	
+	 *-------------------------------------------------------------------------------------------------------------*/
+	public function  __construct ( $path, $domain, $server, $logtype, $timestamp_column, $timestamp_length, $message_start )
+	   {
+		parent::__construct ( ) ;
+
+		$this -> Path			=  $path ;
+		$this -> Domain			=  $domain ;
+		$this -> Server			=  $server ;
+		$this -> TimestampStart		=  $timestamp_column ;
+		$this -> TimestampLength	=  $timestamp_length ;
+		$this -> MessageStart		=  $message_start ;
+		$this -> LogType		=  $logtype ;
+
+		$fs			=  $server -> GetFileSystem ( ) ;
+		
+		// Get stat() information for this remote file, and remove numeric keys
+		$stat			=  $fs -> stat ( $path ) ;
+		
+		foreach  ( $stat  as  $key => $value )
+		   {
+			if  ( ! is_numeric ( $key ) )
+				$this -> Stat [ $key ]	=  $value ;
+		    }
+		
+		// Create an entry in the "servers" table if needed
+		$this -> Server -> Database -> Execute ( "INSERT IGNORE INTO " . RsAdmin::TABLE_SERVERS . " ( ser_name ) VALUES ( '{$server -> Host}' )" ) ;
+		$this -> Server -> Database -> SetQuery ( "SELECT ser_id FROM " . RsAdmin::TABLE_SERVERS . " WHERE ser_name = '{$server -> Host}'" ) ;
+		$server_id	=  ( integer ) $this -> Server -> Database -> LoadValue ( ) ;
+		
+		// Create an entry for the current domain
+		$this -> Server -> Database -> Execute ( "INSERT IGNORE INTO " . RsAdmin::TABLE_SERVER_DOMAINS . 
+								" ( serd_server_id, serd_domain ) VALUES ( $server_id, '$domain' )" ) ;
+		$this -> Server -> Database -> SetQuery ( "SELECT serd_id FROM " . RsAdmin::TABLE_SERVER_DOMAINS . 
+								" WHERE serd_server_id = $server_id AND serd_domain = '$domain'" ) ;
+		$this -> DomainId	=  ( integer ) $this -> Server -> Database -> LoadValue ( ) ;
+
+		// Create an entry for this logfile path
+		$this -> Server -> Database -> Execute 
+		   ("
+			INSERT IGNORE INTO " . RsAdmin::TABLE_SERVER_LOGFILES . " 
+				( serl_domain_id, serl_path, serl_logfile_type ) 
+				VALUES ( {$this -> DomainId}, '{$this -> Path}', {$this -> LogType} )
+		    ") ;
+
+		// Retrieve logfile id and last update
+		$this -> Server -> Database -> SetQuery 
+		   ("
+			SELECT serl_id, serl_last_update, serl_last_line_number
+			FROM " . RsAdmin::TABLE_SERVER_LOGFILES . "
+			WHERE 
+				serl_domain_id = {$this -> DomainId} AND 
+				serl_path = '{$this -> Path}'
+		    " ) ;
+		$row			=  $this -> Server -> Database -> LoadRow ( ) ;
+		$this -> LogFileId	=  ( integer ) $row [ 'serl_id' ] ;
+		$this -> LastUpdate	=  ( integer ) strtotime ( $row [ 'serl_last_update' ] ) ;
+		$this -> LastLineNumber	=  ( integer ) $row [ 'serl_last_line_number' ] ;
+
+		// Create the string store object for log message entries
+		$this -> LogEntriesStringStore			=  new LogStringStore ( RsAdmin::TABLE_SERVER_LOGENTRIES_STRING_STORE, $this -> Server -> Database ) ;
+		$this -> LogEntriesStringStore -> UseCache	=  true ;
+	    }
+
+	
+	// __dump_debuginfo -
+	//	Hides the Server member when the object is dumped.
+	public static function  __dump_debuginfo ( )
+	   {
+		return ( [ 'hidden' => [ 'Server' ] ] ) ;
+	    }
+	
+	
+	/*--------------------------------------------------------------------------------------------------------------
+	 
+	    GetContents -
+	        Get logfile contents. Handles the case where the logfile is gzipped.
+	 
+	 *-------------------------------------------------------------------------------------------------------------*/
+	protected function  GetContents ( $last_update, $verbose = false )
+	   {
+		if  ( $verbose )
+			echo "[" ;
+
+		$fs	=  $this -> Server -> GetFileSystem ( ) ;
+		
+		// Uncompress if necessary before getting file content
+		$extension	=  pathinfo ( $this -> Path, PATHINFO_EXTENSION ) ;
+		
+		if  ( $extension  ==  'gz' )
+		   {
+			$fp		=  $fs -> gzopen ( $this -> Path, 'r' ) ;
+			$contents	=  $fs -> gzread ( $fp ) ;
+			$fs -> gzclose ( $fp ) ;
+		    }
+		else
+			$contents	=  $fs -> file_get_contents ( $this -> Path ) ;
+		
+		if  ( $verbose )
+			echo number_format ( strlen ( $contents ), 0, '.', ' ' ) . ' bytes]' ;
+
+		$log		=  new LogFileContents ( $contents, $this -> TimestampStart, $this -> TimestampLength ) ;
+		$offset		=  $log -> FindGE ( $last_update ) ;
+
+		if  ( $offset )
+			$contents	=  substr ( $contents, $offset ) ;
+
+		$lines		=  explode ( "\n", $contents ) ;
+
+		return ( $lines ) ;
+	    }
+
+
+	/*--------------------------------------------------------------------------------------------------------------
+	 
+	    Matches -
+	        Returns true if the specified pattern matches a log file name(to be implemented by derived classes).
+	 
+	 *-------------------------------------------------------------------------------------------------------------*/
+	public static function  Matches ( $filename )
+	   {
+		return ( String::Matches ( $filename, '*.log' )  ||  String::Matches ( $filename, '*.log.gz' ) ) ;
+	    }
+
+
+	/*--------------------------------------------------------------------------------------------------------------
+	 
+	    Update -
+	        Retrieves logfile contents from the remote servers, and updates the server_logfile_entries with file
+		contents.
+		The server_string_store table is used to store long strings, such as http request and user agent string.
+		Returns the number of new records.
+	 
+	 *-------------------------------------------------------------------------------------------------------------*/
+	public function  Update ( $insert_buffer_size = 4096, $verbose = true, $prefix = "\t" )
+	   {
+		$server_logfile_id	=  $this -> LogFileId ;
+		$last_update		=  $this -> LastUpdate ;
+		$last_line_number	=  $this -> LastLineNumber ;
+		$last_found_update	=  $last_update ;
+		$last_update_as_string	=  date ( 'Y-m-d H:i:s', $last_update ) ;
+		$new_records		=  0 ;
+		$skipped_records	=  0 ;
+		$db			=  $this -> Server -> Database ;
+
+		if  ( $verbose )
+			output ( "$prefix" . '[' . "$last_update_as_string" . "] {$this -> Path} :" ) ;
+
+		// If the specified logfile is newer than the last checked one, retrieve its contents
+		$stat	=  $this -> Stat ;
+		
+		if  ( $stat [ 'mtime' ]  >  $last_update )
+		   {
+			if  ( $verbose )
+				echo "$prefix\t" ;
+
+			$contents		=  $this -> GetContents ( $last_update_as_string, $verbose ) ;
+
+			// Create a buffered insert object
+			$inserter	=  new BufferedInsert 
+			   ( 
+				RsAdmin::TABLE_SERVER_LOGFILE_ENTRIES,
+				[ 'serle_logfile_id', 'serle_logfile_type', 'serle_date', 'serle_message_id' ], 
+				$insert_buffer_size 
+			    ) ;
+			
+			// Loop through logfile lines
+			$line_index	=  0 ;
+
+			foreach  ( $contents  as  $line )
+			   {
+				$line		=  trim ( $line ) ;
+				$line_index ++ ;
+
+				// Ignore empty lines
+				if  ( ! $line )
+					continue ;
+
+				// Get timestamp and message parts
+				$date		=  substr ( $line, $this -> TimestampStart, $this -> TimestampLength ) ;
+				$timestamp	=  strtotime ( $date ) ;
+				$message	=  substr ( $line, $this -> MessageStart ) ;
+
+				// No mercy for invalid timestamps
+				if  ( $timestamp  ===  false )
+					error ( new \Thrak\System\ParseException ( "Invalid timestamp value '$date' found in the following log line :\n\t$line" ) ) ;
+				
+				// Ignore lines that are older than the last update				
+				if  ( /*$line_index  <  $last_line_number  ||*/  $timestamp  <  $last_update )
+				   {
+					if  ( $verbose )
+						echo 'x' ;
+
+					$skipped_records ++ ;
+					continue ;
+				    }
+
+				// Create a new message entry in the log entries string store, if needed
+				$message_id	=  $this -> LogEntriesStringStore -> Insert ( 0, $message ) ;
+
+				// Insert new log entry
+				$flush_status	=  $inserter -> Add
+				   ([
+					'serle_logfile_id'	=>  $server_logfile_id,
+					'serle_logfile_type'	=>  $this -> LogType,
+					'serle_date'		=>  date ( 'Y-m-d H:i:s', $timestamp ),
+					'serle_message_id'	=>  $message_id
+				     ]) ;
+
+				if  ( $verbose )
+					echo ( ( $flush_status ) ?  '^' : '.' ) ;
+				
+				$new_records ++ ;
+				
+				// Log entries are not necessarily in strict chronological order
+				if  ( $timestamp  >  $last_found_update )
+					$last_found_update	=  $timestamp ;
+			    }
+			
+			$inserter -> Flush ( ) ;
+			$db -> Execute 
+			   ( 
+				"UPDATE " . RsAdmin::TABLE_SERVER_LOGFILES . "
+				 SET 
+					serl_last_update = NOW(), 
+					serl_last_line_number = $line_index 
+				WHERE 
+					serl_id = $server_logfile_id" 
+			    ) ;
+		    }
+		
+		if  ( $verbose )
+		   {
+			if  ( $new_records  ||  $skipped_records )
+				echo "\n" ;
+				
+			output ( "$prefix\t" . number_format ( $new_records, 0, '.', ' ' ) . " records added." ) ;
+		    }
+
+		return ( $new_records ) ;
+	    }
+    }
+
+
+/*==============================================================================================================
+
+    RemoteHttpLog -
+        Encapsulates an http access log.
+
+  ==============================================================================================================*/
+class	RemoteHttpLog		extends RemoteLog 
+   {
+	public function  __construct ( $path, $domain, $server ) 
+	   { parent::__construct ( $path, $domain, $server, RsAdmin::LOGTYPE_HTTP, 1, 19, 22 ) ; }
+
+
+	public static function  Matches ( $logfile )
+	   { return ( String::Matches ( $logfile, 'access.*' ) ) ; }
+    }
+
+
+/*==============================================================================================================
+
+    RemoteAuthLog -
+        Encapsulates an ssh authentication log.
+
+  ==============================================================================================================*/
+class	RemoteAuthLog		extends RemoteLog 
+   {
+	public function  __construct ( $path, $domain, $server ) 
+	   { parent::__construct ( $path, $domain, $server, RsAdmin::LOGTYPE_AUTH, 0, 14, 16 ) ; }
+
+
+	public static function  Matches ( $logfile )
+	   { return ( String::Matches ( $logfile, 'auth.*' ) ) ; }
+    }
+
+
+/*==============================================================================================================
+
+    RemoteMailLog -
+        Encapsulates a postfix log.
+
+  ==============================================================================================================*/
+class	RemoteMailLog		extends RemoteLog 
+   {
+	public function  __construct ( $path, $domain, $server ) 
+	   { parent::__construct ( $path, $domain, $server, RsAdmin::LOGTYPE_MAIL, 0, 14, 16 ) ; }
+
+
+	public static function  Matches ( $logfile )
+	   { return ( String::Matches ( $logfile, 'mail.*' ) ) ; }
+    }
+
+
+/*==============================================================================================================
+
+    RemoteHttpErrorLog -
+        Encapsulates an http error log.
+
+  ==============================================================================================================*/
+class	RemoteHttpErrorLog		extends RemoteLog 
+   {
+	public function  __construct ( $path, $domain, $server, $logtype = RsAdmin::LOGTYPE_HTTP_ERROR ) 
+	   { parent::__construct ( $path, $domain, $server, $logtype, 1, 24, 27 ) ; }
+
+
+	public static function  Matches ( $logfile )
+	   { return ( String::Matches ( $logfile, 'error.log*' ) ) ; }
+    }
+
+
+/*==============================================================================================================
+
+    RemoteHttpError404Log -
+        Encapsulates my customized http error 404 log.
+
+  ==============================================================================================================*/
+class	RemoteHttpError404Log		extends RemoteHttpErrorLog 
+   {
+	public function  __construct ( $path, $domain, $server ) 
+	   { parent::__construct ( $path, $domain, $server, RsAdmin::LOGTYPE_HTTP_ERROR_404 ) ; }
+
+
+	public static function  Matches ( $logfile )
+	   { return ( String::Matches ( $logfile, 'error.404.*' ) ) ; }
+    }
+
+
+/*==============================================================================================================
+
+    RemoteSshLog -
+        Encapsulates my customized interactive ssh connection log.
+
+  ==============================================================================================================*/
+class	RemoteSshLog		extends RemoteLog 
+   {
+	public function  __construct ( $path, $domain, $server ) 
+	   { parent::__construct ( $path, $domain, $server, RsAdmin::LOGTYPE_SSH, 1, 19, 22 ) ; }
+
+
+	public static function  Matches ( $logfile )
+	   { return ( String::Matches ( $logfile, 'ssh.*' ) ) ; }
+    }

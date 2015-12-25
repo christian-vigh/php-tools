@@ -1,0 +1,71 @@
+<?php
+
+	//!phpcmd(Utilities, 2.0) : Executes php commands.
+	/***************************************************************************************************
+
+	    NAME
+		px.phs
+
+	    DESCRIPTION
+		Executes php commands.
+
+	    AUTHOR
+	     	Christian Vigh, 07/2015.
+
+	    HISTORY
+	    [Version : 1.0]	[Date : 2015/07/30]	[Author : CV]
+	     	Initial version.
+
+
+	 ***************************************************************************************************/
+	require ( "tools.phpinclude" ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Types\String ;
+	use  Thrak\IO\Path ;
+
+
+	/*===========================================================================================
+
+		Command-line definitions.
+
+	  ===========================================================================================*/
+	$Definitions = <<<END
+<command name="px">
+	<usage>
+		Executes php commands for testing purposes.
+	</usage>
+
+	<unnamed>
+		<string arguments="1..*" value-text="command(s)">
+			List of commands to be executed.
+		</string>
+	</unnamed>
+</command>
+END;
+
+
+	/*===========================================================================================
+
+		Main program.
+
+	  ===========================================================================================*/
+
+	// Get command-line parameters
+	$CL 		=  new CLParser ( $Definitions ) ;
+	$Commands	=  $CL -> Files ;
+	$Use		=
+	   [
+		'use  Thrak\Types\String',
+		'use  Thrak\IO\Path'
+	    ] ;
+
+	$command	=  implode ( '; ', $Commands ) ;
+	$uses		=  implode ( ";\n", $Use ) . ";\n" ;
+
+	if  ( substr ( $command, 0, 1 )  ==  ':' )
+		$command	=  "dump ( " . substr ( $command, 1 ) . " )" ;
+
+	$exec	=  "$uses\n$command ;" ;
+
+	eval ( $exec ) ;

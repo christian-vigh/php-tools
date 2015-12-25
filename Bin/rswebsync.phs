@@ -1,0 +1,944 @@
+<?php
+	//!phpcmd(Administration, 1.0, production) : Syncs local and remote websites.
+	/**************************************************************************************************************
+	
+	    NAME
+	        rswebsync.phs
+	
+	    DESCRIPTION
+	        Synchronizes local and remote websites.
+	
+	    AUTHOR
+	        Christian Vigh, 10/2015.
+	
+	    HISTORY
+	    [Version : 1.0]    [Date : 2015/10/11]     [Author : CV]
+	        Initial version.
+
+	    [Version : 1.0.1]	[Date : 2015/11/29]     [Author : CV]
+		. Added the -list_configured_servers option.
+	
+	 **************************************************************************************************************/
+	require ( "tools.phpinclude" ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Types\String ;
+	use  Thrak\IO\Path ;
+	use  Thrak\IO\AsciiReport ;
+	use  Thrak\IO\Console ;
+	use  Thrak\Processors\IniFile ;
+
+	require ( "RsAdmin.phpclass" ) ;
+
+
+	/*==================================================================================================
+
+		Command line parameters.
+
+	  ==================================================================================================*/
+	$Definitions = <<<END
+<command allow-files="false">
+
+	<usage>
+		Synchronization tool between remote websites and local version.		
+	</usage>
+	
+	<file name="configuration_file, cf" disposition="existing" default="thraktools://Data/rswebsync.ini">
+		Parameters file for web synchronization.
+	</file>
+
+	<string name="diff, d" value-text="domain">
+		Shows the list of what is to be synchronized for the specified domain.
+	</string>
+
+	<flag name="force, f">
+		Certain operations, like synchronization, require user confirmation. This flags overrides this
+		behavior and assumes a 'yes' answer to all prompts.
+	</flag>
+	
+	<flag name="list_configured_servers, lcs">
+		Lists the servers configured for this command.
+	</flag>
+
+	<flag name="list_domains, ld">
+		Lists the available domains with their aliases.
+	</flag>
+
+	<string name="list_domain_parameters, ldp" value-text="domain">
+		Lists the parameters of the specified domain.
+	</string>
+	
+	<file name="server_configuration_file, scf" disposition="existing" default="thraktools://Data/rsadmin.ini">
+		Hosted servers parameters file.
+	</file>
+	
+	<string name="sync, s" value-text="domain">
+		Synchronizes the local version with the remote version of a domain.
+	</string>
+
+	<flag name="verbose, v">
+		Display verbose information.
+	</flag>
+</command>
+END;
+
+
+	/*==================================================================================================
+
+		Support functions.
+
+	  ==================================================================================================*/
+
+	//  ini_error_xxx -
+	//	Error functions when getting ini file values
+	function  ini_error ( $inifile, $section, $key, $message )
+	   {
+		error ( "File $inifile, section [$section], key $key : $message" ) ;
+	    }
+
+
+	function  ini_error_missing ( $inifile, $section, $key )
+	   {
+		ini_error ( $inifile, $section, $key, "Key value is either empty or key is missing." ) ;
+	    }
+
+
+	function  ini_error_section ( $inifile, $section, $message )
+	   {
+		error ( "File $inifile, section [$section] : $message" ) ;
+	    }
+
+
+	//  check_domain_unicity -
+	//	Checks that the specified domain alias is unique within the .ini file
+	function  check_domain_unicity ( $inifile, $domain, $alias )
+	   {
+		global		$Domains ;
+
+		foreach  ( $Domains  as  $current_domain_name => $defined_domain )
+		   {
+			foreach  ( $defined_domain [ 'names' ]  as  $name )
+			   {
+				if  ( ! strcmp ( $name, $alias ) )
+					ini_error ( $inifile, $domain, 'Aliases',
+						"Alias \"$alias\" is already defined for domain \"$current_domain_name\"" ) ;
+			    }
+		    }
+	    }
+
+
+	// check_directory -
+	//	Retrieves the specified key, which must hold a valid directory. 
+	//	Creates the directory if it does not exist.
+	//	Complains if the directory could not be created.
+	function  check_directory ( $iniconf, $inifile, $section, $key )
+	   {
+		$value	=  $iniconf -> GetKey ( $section, $key ) ;
+
+		if  ( ! $value )
+			ini_error_missing ( $inifile, $section, $key ) ;
+
+		if  ( ! file_exists ( $value ) )
+		   {
+			if  ( ! @mkdir ( $value, 0777, true ) )
+				ini_error ( $inifile, $section, $key, "Could not create directory $value" ) ;
+		    }
+
+		return ( $value ) ;
+	    }
+
+
+	// get_exclusions -
+	//	Retrieves the list of exclusions specified for the given key.
+	function  get_exclusions ( $iniconf, $inifile, $section, $key, $merge_with =  [] )
+	   {
+		$value		=  $iniconf -> GetKey ( $section, $key ) ;
+		$list		=  explode ( "\n", $value ) ;
+		$exclusions	=  [] ;
+
+		foreach ( $list  as  $item )
+		   {
+			$item	=  trim ( $item ) ;
+
+			if  ( ! $item )
+				continue ;
+
+			$exclusions []	=  $item ;
+		    }
+
+		return ( array_merge ( $exclusions, $merge_with ) ) ;
+	    }
+
+
+	// is_excluded -
+	//	Checks if the current path is excluded.
+	function  is_excluded ( $root, $current_path, $exclusions )
+	   {
+		$path_without_root	=  substr ( $current_path, strlen ( $root ) + 1 ) ;
+
+		foreach  ( $exclusions  as  $exclusion )
+		   {
+			if  ( $exclusion [0]  ==  '/' ) 
+			   {
+				$exclusion_path		=  "$root$exclusion" ;
+
+				if  ( ! strncmp ( $current_path, $exclusion_path, strlen ( $exclusion_path ) ) )
+					return ( true ) ;
+
+				if  ( String::Matches ( $path_without_root, $exclusion_path ) )
+					return ( true ) ;
+			    }
+			else if  ( strpos ( $current_path, $exclusion )  !==  false ) 
+				return ( true ) ;
+			else if  ( String::Matches ( $path_without_root, $exclusion ) )
+				return ( true ) ;
+		    }
+
+		return ( false ) ;
+	    }
+
+
+	// walkdir - 
+	//	Walks through a directory tree
+	function  walkdir ( $path, $exclusions, &$array, $root )
+	   {
+		$rs		=  @opendir ( $path ) ;
+
+		if  ( ! $rs )
+			error ( "opendir( $path ) failed." ) ;
+
+		$root_length	=  strlen ( $root ) ;
+
+		while  ( ( $file = readdir ( $rs ) ) )
+		   {
+			if  ( $file  ==  '.'  ||  $file  ==  '..'  ||  $file  ==  '.git' ) 
+				continue ;
+
+			$current_path	=  "$path/$file" ;
+
+			if  ( is_excluded ( $root, $current_path, $exclusions ) )
+				continue ;
+
+			$stat		=  stat ( $current_path ) ;
+			$group_entry	=  $stat [ 'gid' ] ;
+			$user_entry	=  $stat [ 'uid' ] ;
+			$group		=  $group_entry [ 'name' ] ;
+			$user		=  $user_entry [ 'name' ] ;
+			$relative_path	=  substr ( $current_path, $root_length + 1 ) ;
+
+			$array []	=  $relative_path . ';' . $stat [ 'mode' ] . ';' . $stat [ 'nlink' ] . ';' . $stat [ 'uid' ] . ';' . $user . ';' .
+					   $stat [ 'gid' ] . ';' . $group . ';' . $stat [ 'size' ] . ';' . 
+					   $stat [ 'atime' ] . ';' . $stat [ 'mtime' ] . ';' . $stat [ 'ctime' ] ;
+
+			if  ( is_dir ( $current_path ) )
+				walkdir ( $current_path, $exclusions, $array, $root ) ;
+		    }
+
+		closedir ( $rs ) ;
+	    }
+
+
+
+	/*==================================================================================================
+
+		Remote support functions.
+
+	  ==================================================================================================*/
+
+	// execute_command -
+	//	Executes a remote command.
+	function  execute_command ( $server, $command, &$output = null )
+	   {
+		$status		=  $server -> Execute ( $command, $output ) ;
+		
+		return ( $status ) ;
+	    }
+
+
+	// find_domain -
+	//	Tries to locate the specified domain, either by its full name or one of its aliases.
+	function  find_domain  ( $domain, $error_if_not_found = true )
+	   {
+		global		$Domains ;
+
+		foreach  ( $Domains  as  $entry )
+		   {
+			foreach (  $entry [ 'names' ]  as  $name )
+			   {
+				if  ( ! strcasecmp ( $name, $domain ) )
+					return ( $entry ) ;
+			    }
+		    }
+
+		if  ( $error_if_not_found )
+			error ( "Domain \"$domain\" not found." ) ;
+		else
+			return ( false ) ;
+	    }
+
+
+	// get_local_snapshot -
+	//	Retrieves a snapshot of local files.
+	function  get_local_snapshot ( $domain_entry )
+	   {
+		global		$Verbose ;
+
+		if  ( $Verbose )
+			echo ( "Getting local snapshot..." ) ;
+
+		$exclusions	=  array_merge ( $domain_entry [ 'local-exclusions' ], $domain_entry [ 'exclusions' ] ) ;
+		walkdir ( $domain_entry [ 'local-path' ], $exclusions, $array, $domain_entry [ 'local-path' ] ) ;
+		sort ( $array ) ;
+
+		$csv	=   tocsv ( $array ) ;
+
+		if  ( $Verbose )
+			output ( 'done' ) ;
+
+		return ( $csv ) ;
+	    }
+
+
+	// get_remote_snapshot -
+	//	Retrieves a snapshot of remote server files.
+	function  get_remote_snapshot ( $domain_entry, $rebuild_tree )
+	   {
+		global		$Settings, $Verbose ;
+
+
+		if  ( $Verbose )
+			echo ( "Getting remote snapshot..." ) ;
+
+		$server		=  $domain_entry [ 'server' ] ;
+		$domain		=  $domain_entry [ 'names' ] [0] ;
+		$fs		=  $server -> GetFileSystem ( ) ;
+		$script		=  $Settings [ 'script-directory' ] . '/findfiles.php' ;
+		$sequence	=  rand ( 1, PHP_INT_MAX ) ;
+		$remote_script	=  '/tmp/.rswb_' . $sequence ;
+		$remote_output  =  '/tmp/.rswb.out.gz' ;
+
+
+		if  ( ! file_exists ( $script ) ) 
+			error ( "Local script $script not found." ) ;
+
+		$script_contents	=  file_get_contents ( $script ) ;
+		$exclusions		=  [] ;
+
+		foreach  ( $domain_entry [ 'exclusions' ]  as  $exclusion )
+			$exclusions []	=  '"' . str_replace ( '"', "\\\"", trim ( $exclusion ) ) . '"' ;
+
+		$script_contents	=  str_replace
+		   (
+			[ '__OUTPUT__', '__PATH__', '__EXCLUSIONS__' ],
+			[ $remote_output, $domain_entry [ 'remote-path' ], implode ( ",\n\t\t", $exclusions ) ],
+			$script_contents
+		    ) ;
+
+		$fs -> file_put_contents ( $remote_script, $script_contents ) ;
+
+		$status		=  $server -> Execute ( "php $remote_script" ) ;
+		$server -> Reconnect ( ) ;
+		$fs		=  $server -> GetFileSystem ( ) ;
+
+		switch  ( $status )
+		   {
+			case	1 :
+				error ( "Domain $domain : root path {$domain_entry [ 'remote-path' ]} does not exist." ) ;
+
+			case	2 :
+				error ( "Domain $domain : unable to open output file \"$remote_output\"." ) ;
+
+			case    3 :
+				error ( "Domain $domain : opendir() failed." ) ;
+		    }
+
+		$contents	=  $fs -> file_get_contents ( $remote_output ) ;
+		$data		=  gzdecode ( $contents ) ;
+
+		$csv	=  tocsv ( explode ( "\n", $data ) ) ;
+
+		if  ( $Verbose )
+			output ( "done" ) ;
+
+		return ( $csv ) ;
+	    }
+
+
+	// tocsv -
+	//	Converts a snapshots to a csv array.
+	function  __cmpcsv__ ( $a, $b )
+	   {
+		return ( strcmp ( $a [ 'path' ], $b [ 'path' ] ) ) ;
+	    }
+
+
+	function  tocsv ( $array )
+	   {
+		$result		=  [] ;
+
+		foreach (  $array  as  $line )
+		   {
+			$items	=  explode ( ';', $line ) ;
+			$row	= 
+			   [
+				'path'		=>  Path::ToUnix ( $items [0] ),
+				'mode'		=>  $items [1],
+				'nlink'		=>  $items [2],
+				'uid'		=>  ( integer ) $items [3],
+				'user'		=>  $items [4],
+				'gid'		=>  ( integer ) $items [5],
+				'group'		=>  $items [6],
+				'size'		=>  ( integer ) $items [7],
+				'atime'		=>  date ( 'Y-m-d H:i:s', $items [8] ),
+				'mtime'		=>  date ( 'Y-m-d H:i:s', $items [9] ),
+				'ctime'		=>  date ( 'Y-m-d H:i:s', $items [10] ),
+			    ] ;
+
+			$result []	=  $row ;
+		    }
+
+		usort ( $result, '__cmpcsv__' ) ;
+		return ( $result ) ;
+	    }
+
+
+	// snapshot_diff -
+	//	Performs a difference between two snapshots.
+	//	This is much simpler than a real diff algorithm, since the input arrays are already sorted.
+	function  snapshot_diff ( $snap1, $snap2 )
+	   {
+		$snap1_count	=  count ( $snap1 ) ;
+		$snap2_count	=  count ( $snap2 ) ;
+		$diff		=  [] ;
+
+		$i1 = $i2 = 0 ;
+
+		// Continue while there a remaining elements, either in $snap1 or $snap2
+		while  ( true )
+		   {
+			// Stop when all the elements of $snap1 AND $snap2 are exhausted
+			if  ( $i1  >=  $snap1_count  &&  $i2  >=  $snap2_count )
+				break ;
+
+			// Get current element from $snap1 and $snap2 ; note that one of them may be null (but not both)
+			// if all the corresponding $snapx elements have been processed
+			$v1	=  ( $i1  <  $snap1_count ) ?  $snap1 [$i1] : null ;
+			$v2	=  ( $i2  <  $snap2_count ) ?  $snap2 [$i2] : null ;
+
+			// All the values from $snap1 have been processed ; this means that all remaining elements of $snap2
+			// are new compared to the local version of $snap1
+			if  ( $v1  ===  null )
+			   {
+				$diff []	=  [ 'operation' => 'remote-new', 'local' => null, 'remote' => $v2 ] ;
+				$i2 ++ ;
+			    }
+			// All the values from $snap2 have been processed ; this means that all remaining elements of $snap1
+			// are new compared to the remote version of $snap2
+			else if  ( $v2  ===  null )
+			   {
+				$diff []	=  [ 'operation' => 'local-new', 'local' => $v1, 'remote' => null ] ;
+				$i1 ++ ;
+			    }
+			// Paths are equal (file exists on both local and remote) ; compare now :
+			// - modification time
+			// - creation time
+			// - size (note that if sizes differ, the local version will always be considered as the right one)
+			else
+			   {
+				$cmpresult	=  strcmp ( $v1 [ 'path' ], $v2 [ 'path' ] ) ;
+
+				if  ( $cmpresult  <  0 )
+				   {
+					$diff []	=  [ 'operation' => 'local-new', 'local' => $v1, 'remote' => null ] ;
+					$i1 ++ ;
+				    }
+				else if  ( $cmpresult  >  0 )
+				   {
+					$diff []	=  [ 'operation' => 'remote-new', 'local' => null, 'remote' => $v2 ] ;
+					$i2 ++ ;
+				    }
+				else 
+				   {
+					if  ( ! ( $v1 [ 'mode' ]  &  S_IFDIR ) )
+					   {
+						if  ( $v1 [ 'mtime' ]  >  $v2 [ 'mtime' ] )
+							$diff []	=  [ 'operation' => 'mtime', 'local' => $v1, 'remote' => $v2 ] ;
+						else if  ( $v1 [ 'size' ]  !=  $v2 [ 'size' ] )
+							$diff []	=  [ 'operation' => 'size', 'local' => $v1, 'remote' => $v2 ] ;
+					    }
+
+					$i1 ++ ; 
+					$i2 ++ ;
+				    }
+			    }
+		    }
+
+		return ( $diff ) ;
+	    }
+
+
+	/*==================================================================================================
+
+	    LoadParameters -
+		Loads configuration parameters.
+
+	  ==================================================================================================*/
+	function  LoadParameters ( $inifile )
+	   {
+		global	$Settings, $Domains, $RsAdmin ;
+
+
+		$iniconf	=  IniFile::LoadFromFile ( $inifile ) ;
+
+		// [Settings] section, DataDirectory and ScriptDirectory keys
+		//	Directory where rswebsync will put its data files, and where script files dedicated for remote
+		//	execution are located.
+		$Settings [ 'data-directory' ]		=  check_directory ( $iniconf, $inifile, 'Settings', 'DataDirectory' ) ;
+		$Settings [ 'script-directory' ]	=  check_directory ( $iniconf, $inifile, 'Settings', 'ScriptDirectory' ) ;
+
+		// [Settings] section, User & Group keys -
+		//	User & group to be set remotely when creating/updating files.
+		$Settings [ 'user' ]	=  $iniconf -> GetKey ( 'Settings', 'User' , 'www-data' ) ;
+		$Settings [ 'group' ]	=  $iniconf -> GetKey ( 'Settings', 'Group', 'www-data' ) ;
+
+		// [Settings] section, DirectoryPermissions and FilePermissions keys -
+		//	Permissions to be used when creating/updating directories & files.
+		//	Permission mode validity is not checked since it can be any expression accepted by the chmod command.
+		$Settings [ 'directory-permissions' ]	=  $iniconf -> GetKey ( 'Settings', 
+			[ 'DirectoryPermissions', 'DirPermissions', 'DirPerms', 'DirPerm', 'DirectoryPermission' ], '700' ) ;
+		$Settings [ 'file-permissions' ]	=  $iniconf -> GetKey ( 'Settings', 
+			[ 'FilePermissions', 'FilePerms', 'FilePerm', 'FilePermission' ], '600' ) ;
+
+		// Get exclusions, if any (at the [Settings] section level, they can be shared by every domain section)
+		$Settings [ 'exclusions' ]		=  get_exclusions ( $iniconf, $inifile, 'Settings', 'Exclusions' ) ;
+		
+		// Max file list snapshots to preserve, per server
+		$value	=  $iniconf -> GetKey ( 'Settings', 'MaxSnapshots', 31 ) ;
+
+		if  ( ! is_numeric ( $value )  ||  $value  <  1 )
+			ini_error ( $inifile, 'Settings', 'MaxSnapshots', "Invalid positive integer value \"$value\"" ) ;
+
+		$Settings [ 'max-snapshots' ]	=  ( integer ) $value ;
+
+		// Get list of [Domains]
+		$domain_list		=  $iniconf -> GetKeys ( 'Domains', false ) ;
+		
+		if  ( ! $domain_list )
+			ini_error_section ( $inifile, 'Domains', 'Section does not exist or does not reference any domain definition section.' ) ;
+
+		// Loop through domains
+		foreach  ( array_keys ( $domain_list )  as  $domain_name )
+		   {
+			if  ( ! $iniconf -> IsSectionDefined ( $domain_name ) )
+				ini_error_section ( $inifile, $domain_name, 'Section is referenced in the [Domains] section, but does not exist.' ) ;
+
+			$domain_name	=  strtolower ( $domain_name ) ;
+
+			if  ( isset ( $Domains [ $domain_name ] ) )
+				ini_error_section ( $inifile, $domain_name, "Domain $domain_name specified more than once" ) ;
+
+			$new_domain	=  [] ;
+			$domain_names	=  [ $domain_name ] ;
+
+			// Get domain aliases
+			$value		=  $iniconf -> GetKey ( $domain_name, [ 'Aliases', 'Alias', 'Names', 'Name' ] ) ;
+
+			if  ( $value )
+			   {
+				$names	=  explode ( ',', $value ) ;
+
+				if  ( $names )
+				   {
+					foreach  ( $names  as  $name )
+					   {
+						$name	=  strtolower ( trim ( $name ) ) ;
+
+						// Silently ignore duplicate domain names in the Aliases list for that domain
+						if  ( in_array ( $name, $domain_names ) )
+							continue ;
+
+						// But fail if one alias is used by another domain
+						check_domain_unicity ( $inifile, $domain_name, $name ) ;
+						$domain_names []	=  $name ;
+					    }
+				    }
+			    }
+
+			$new_domain [ 'names' ]		=  $domain_names ;
+
+			// User, Group, DirectoryPermissions and FilePermissions default to those specified in the
+			// [Settings] section if they are not specified in the domain section.
+			$new_domain [ 'user' ]		=  $iniconf -> GetKey ( $domain_name, 'User' , $Settings [ 'user'  ] ) ;
+			$new_domain [ 'group' ]		=  $iniconf -> GetKey ( $domain_name, 'Group', $Settings [ 'group' ] ) ;
+
+			$new_domain [ 'directory-permissions' ]	=  $iniconf -> GetKey ( $domain_name, 
+				[ 'DirectoryPermissions', 'DirPermissions', 'DirPerms', 'DirPerm', 'DirectoryPermission' ],
+				$Settings [ 'directory-permissions' ] ) ;
+			$new_domain [ 'file-permissions' ]	=  $iniconf -> GetKey ( $domain_name, 
+				[ 'FilePermissions', 'FilePerms', 'FilePerm', 'FilePermission' ], 
+				$Settings [ 'file-permissions' ] ) ;
+
+			// Server entry
+			$value	=  $iniconf -> GetKey ( $domain_name, 'Server' ) ;
+
+			if  ( ! $value )
+				ini_error_missing ( $inifile, $domain_name, 'Server' ) ;
+
+			$server =  $RsAdmin -> FindServer ( $value ) ;
+
+			if  ( ! $server )
+				ini_error ( $inifile, $domain_name, 'Server', "Server \"$server\" does not exist." ) ;
+
+			$new_domain [ 'server' ]	=  $server ;
+
+			// LocalPath entry
+			$value =  $iniconf -> GetKey ( $domain_name, 'LocalPath' ) ;
+
+			if  ( ! $value )
+				ini_error_missing ( $inifile, $domain_name, 'LocalPath' ) ;
+
+			if  ( ! is_dir ( $value ) )
+				ini_error ( $inifile, $domain_name, 'LocalPath', "Path \"$value\" is not a valid directory." ) ;
+
+			$new_domain [ 'local-path' ]	=  Path::ToUnix ( $value ) ;
+
+			// RemotePath entry
+			$value =  $iniconf -> GetKey ( $domain_name, 'RemotePath' ) ;
+
+			if  ( ! $value )
+				ini_error_missing ( $inifile, $domain_name, 'RemotePath' ) ;
+
+			$new_domain [ 'remote-path' ]	=  Path::ToUnix ( $value ) ;
+
+			// MergeGlobalExclusions entry -
+			//	Indicates whether exclusions specified in the [Settings] section should be merged with the ones
+			//	specified in this domain section.
+			//	The default is true/
+			$merge	=  $iniconf -> GetBooleanKey ( $domain_name, 'MergeGlobalExclusions', true ) ;
+
+			// Exclusions specific to this domain entry
+			$new_domain [ 'exclusions' ]		=  get_exclusions ( $iniconf, $inifile, $domain_name, 'Exclusions',
+									( $merge ) ?  $Settings [ 'exclusions' ] : [] ) ;
+			$new_domain [ 'local-exclusions' ]	=  get_exclusions ( $iniconf, $inifile, $domain_name, 'LocalExclusions' ) ;
+
+			// All done, add this new domain to the list of existing ones
+			$Domains [ $domain_name ]	=  $new_domain ;
+		    }
+	    }
+
+
+	/*==================================================================================================
+
+		Parameter handling functions.
+
+	  ==================================================================================================*/
+	
+	// Diff -
+	//	Shows the list of what is to be synchronized for the specified domain.
+	function  Diff ( $domain, $summary = true, $rebuild_tree = false, $local_snapshot = false, $remote_snapshot = false, $diff = false ) 
+	   {
+		$domain_entry	=  find_domain ( $domain ) ;
+
+		if  ( ! $domain_entry [ 'server' ] -> IsConnected ( ) ) 
+			$domain_entry [ 'server' ] -> Connect ( false, true, true ) ;
+
+		if  ( ! $remote_snapshot )
+			$remote_snapshot	=  get_remote_snapshot ( $domain_entry, $rebuild_tree ) ;
+
+		if  ( ! $local_snapshot )
+			$local_snapshot		=  get_local_snapshot ( $domain_entry ) ;
+
+		if  ( $diff  ===  false )
+			$diff			=  snapshot_diff ( $local_snapshot, $remote_snapshot ) ;
+
+		$report			=  new AsciiReport 
+		   (
+			[ 'member' => 'path'	, 'title' => 'Path'				],
+			[ 'member' => 'diff'	, 'title' => 'Diff'				],
+			[ 'member' => 'mode'	, 'title' => 'Mode'				],
+			[ 'member' => 'size'	, 'title' => 'Size'	, 'align' => 'right'	],
+			[ 'member' => 'mtime'	, 'title' => 'Modified'				]
+		    ) ;
+		$data			=  [] ;
+
+		foreach  ( $diff  as  $diff_entry )
+		   {
+			$row	=  [] ;
+
+			switch  ( $diff_entry [ 'operation' ] )
+			   {
+				case	'local-new' :
+					$row [ 'path' ]		=  $diff_entry [ 'local' ] [ 'path' ] ;
+					$row [ 'diff' ]		=  'new' ;
+					$row [ 'mode' ]		=  Path::FileModeToString ( $diff_entry [ 'local' ] [ 'mode' ] ) ;
+					$row [ 'size' ]		=  number_format ( $diff_entry [ 'local' ] [ 'size' ], 0, '.', ' ' ) ;
+					$row [ 'mtime' ]	=  $diff_entry [ 'local' ] [ 'mtime' ] ;
+					break ;
+
+				case	'remote-new' :
+					$row [ 'path' ]		=  $diff_entry [ 'remote' ] [ 'path' ] ;
+					$row [ 'diff' ]		=  'remote new' ;
+					$row [ 'mode' ]		=  Path::FileModeToString ( $diff_entry [ 'remote' ] [ 'mode' ] ) ;
+					$row [ 'size' ]		=  number_format ( $diff_entry [ 'remote' ] [ 'size' ], 0, '.', ' ' ) ;
+					$row [ 'mtime' ]	=  $diff_entry [ 'remote' ] [ 'mtime' ] ;
+					break ;
+
+				case	'size' :
+					$row [ 'path' ]		=  $diff_entry [ 'local' ] [ 'path' ] . "\n -> " .
+								   $diff_entry [ 'remote' ] [ 'path' ] ;
+					$row [ 'diff' ]		=  'size' ;
+					$row [ 'mode' ]		=  Path::FileModeToString ( $diff_entry [ 'local' ] [ 'mode' ] ) . "\n" .
+								   Path::FileModeToString ( $diff_entry [ 'remote' ] [ 'mode' ] );
+					$row [ 'size' ]		=  number_format ( $diff_entry [ 'local' ] [ 'size' ], 0, '.', ' ' ) . "\n" .
+								   number_format ( $diff_entry [ 'remote' ] [ 'size' ], 0, '.', ' ' ) ;
+					$row [ 'mtime' ]	=  $diff_entry [ 'local' ] [ 'mtime' ] . "\n" . 
+								   $diff_entry [ 'remote' ] [ 'mtime' ];
+					break ;
+
+				case	'mtime' :
+					$row [ 'path' ]		=  $diff_entry [ 'local' ] [ 'path' ] . "\n -> " .
+								   $diff_entry [ 'remote' ] [ 'path' ] ;
+					$row [ 'diff' ]		=  'mtime' ;
+					$row [ 'mode' ]		=  Path::FileModeToString ( $diff_entry [ 'local' ] [ 'mode' ] ) . "\n" .
+								   Path::FileModeToString ( $diff_entry [ 'remote' ] [ 'mode' ] );
+					$row [ 'size' ]		=  number_format ( $diff_entry [ 'local' ] [ 'size' ], 0, '.', ' ' ) . "\n" .
+								   number_format ( $diff_entry [ 'remote' ] [ 'size' ], 0, '.', ' ' ) ;
+					$row [ 'mtime' ]	=  $diff_entry [ 'local' ] [ 'mtime' ] . "\n" . 
+								   $diff_entry [ 'remote' ] [ 'mtime' ];
+					break ;
+
+				default :
+					error ( "Unhandled diff operation '{$diff_entry [ 'operation' ]}', see the snapshot_diff() function" ) ;
+			    }
+
+			$data []	=  $row ;
+		    }
+
+		if  ( count ( $data ) )
+			echo  $report -> Generate ( $data ) ;
+
+		if  ( $summary ) 
+			echo $report -> Summary ( "difference" ) ;
+
+		return ( count ( $data ) ) ;
+	    }
+
+
+	// ListDomains -
+	//	Lists the available domains together with their aliases.
+	function  ListDomains ( )
+	   {
+		global	$Domains ;
+
+
+		output ( "Defined domains :" ) ;
+
+		foreach  ( $Domains  as  $domain )
+			output ( "\t. " . implode ( ', ', $domain [ 'names' ] ) ) ;
+	    }
+
+
+	// ListDomainParameters -
+	//	Lists the parameters of the specified domain.
+	function  ListDomainParameters ( $domain )
+	   {
+		$domain_entry	=  find_domain ( $domain ) ;
+		$report		=  new AsciiReport
+		   (
+			[ 'member' => 'name' , 'title' => 'Parameter' ],
+			[ 'member' => 'value', 'title' => 'Value', 'align' => 'left' ]
+		    ) ;
+
+		$aliases	=  $domain_entry [ 'names' ] ;
+		$name		=  array_shift ( $aliases ) ;
+
+		output ( "Parameters for domain $name (" . implode ( ', ', $aliases ) . ") :" ) ;
+		$data		=
+		   [
+			[ 'name' => 'Server'			, 'value' => implode ( "\n", $domain_entry [ 'server' ] -> Names -> ToArray ( ) ) ],
+			[ 'name' => 'Local path'		, 'value' => $domain_entry [ 'local-path' ] ],
+			[ 'name' => 'Remote path'		, 'value' => $domain_entry [ 'remote-path' ] ],
+			[ 'name' => 'User'			, 'value' => $domain_entry [ 'user' ] ],
+			[ 'name' => 'Group'			, 'value' => $domain_entry [ 'group' ] ],
+			[ 'name' => 'File permissions'		, 'value' => $domain_entry [ 'file-permissions' ] ],
+			[ 'name' => 'Directory permissions'	, 'value' => $domain_entry [ 'directory-permissions' ] ], 
+			[ 'name' => 'Exclusions'		, 'value' => implode ( "\n", $domain_entry [ 'exclusions' ] ) ]
+		    ] ;
+
+		echo $report -> Generate ( $data ) ;
+	    }
+
+
+	// Synchronize -
+	//	Performs a synchronization between the local and remote paths.
+	function  Synchronize ( $domain, $rebuild_tree ) 
+	   {
+		global	$Force ;
+
+
+		// Get domain definition for the specified domain and establish an ssh connection if needed
+		$domain_entry	=  find_domain ( $domain ) ;
+
+		if  ( ! $domain_entry [ 'server' ] -> IsConnected ( ) )
+			$domain_entry [ 'server' ] -> Connect ( false, true, true ) ;
+
+		// Performs a differential snapshot on local and remote contents
+		$remote_snapshot	=  get_remote_snapshot ( $domain_entry, $rebuild_tree ) ;
+		$local_snapshot		=  get_local_snapshot ( $domain_entry ) ;
+		$diff			=  snapshot_diff ( $local_snapshot, $remote_snapshot ) ;
+
+		// Display the results and asks for a confirmation if the -force option has not been specified
+		$diff_count		=  Diff ( $domain, false, $rebuild_tree, $local_snapshot, $remote_snapshot, $diff ) ;
+
+		if  ( ! $Force )
+		   {
+			if  ( $diff_count )
+				$answer		=  Console::Prompt ( "Do you want to synchronize the above files ?", [ 'y', 'n' ], 'n', true ) ;
+			else
+				$answer		=  '*' ;
+
+			if  ( $answer  !=  'y' )
+			   {
+				if  ( $answer  ==  'n' )
+					output ( "Synchronization cancelled." ) ;
+				else
+					output ( "Remote host is up-to-date." ) ;
+
+				return ;
+			    }
+		    }
+
+		// Loop through snapshot entries
+		$remote_path	=  $domain_entry [ 'remote-path' ] ;
+		$local_path	=  $domain_entry [ 'local-path' ] ;
+		$fs		=  $domain_entry [ 'server' ] -> GetFileSystem ( ) ;
+
+		foreach  ( $diff  as  $diff_entry ) 
+		   {
+			$operation		=  $diff_entry [ 'operation' ] ;
+			$remote_name		=  $remote_path . '/' . $diff_entry [ 'remote' ] [ 'path' ] ;
+			$local_name		=  $local_path  . '/' . $diff_entry [ 'local'  ] [ 'path' ] ;
+			$new_remote_name	=  $remote_path . '/' . $diff_entry [ 'local' ] [ 'path' ] ;
+
+			switch  ( $operation )
+			   {
+				case	'local-new'  :
+					if  ( $diff_entry [ 'local' ] [ 'mode' ]  &  S_IFDIR ) 
+					   {
+						output ( "new dir  : " . $diff_entry [ 'local' ] [ 'path' ] ) ;
+						$fs -> mkdir ( $new_remote_name ) ;
+					    }
+					else
+					   {
+						output ( "new file : " . $diff_entry [ 'local' ] [ 'path' ] ) ;
+						$fs -> send ( $local_name, $new_remote_name ) ;
+					    }
+
+					$permissions		=  ( $diff_entry [ 'local' ] [ 'mode' ]  &  S_IFDIR ) ? 
+									$domain_entry [ 'directory-permissions' ] : $domain_entry [ 'file-permissions' ] ;
+					$fs -> chmod ( $remote_name, $permissions ) ;
+					break ;
+
+				case	'mtime' :
+					if  ( ! ( $diff_entry [ 'local' ] [ 'mode' ]  &  S_IFDIR ) )
+					   {
+						output ( "newer    : " . $diff_entry [ 'local' ] [ 'path' ] ) ;
+						$fs -> send ( $local_name, $remote_name ) ;
+						$fs -> chmod ( $remote_name, $diff_entry [ 'remote' ] [ 'mode' ] ) ;
+					    }
+
+					break ;
+
+				case	'size' :
+					if  ( ! ( $diff_entry [ 'local' ] [ 'mode' ]  &  S_IFDIR ) )
+					   {
+						output ( "size     : " . $diff_entry [ 'local' ] [ 'path' ] ) ;
+						$fs -> send ( $local_name, $remote_name ) ;
+						$fs -> chmod ( $remote_name, $diff_entry [ 'remote' ] [ 'mode' ] ) ;
+					    }
+
+					break ;
+
+				case	'remote-new' :
+					output ( "rem new  : " . $diff_entry [ 'remote' ] [ 'path' ] ) ;
+					break ;
+
+				default :
+					error ( $diff_entry [ 'local' ] [ 'path' ] . ": operation '$operation' ignored" ) ;
+			    }
+		    }
+	    }
+
+
+	/*==================================================================================================
+
+		Global constants and variables.
+
+	  ==================================================================================================*/
+	$CL 				=  new  CLParser ( $Definitions ) ;
+	$ConfigurationFile		=  $CL -> configuration_file ;
+	$Diff				=  $CL -> diff ;
+	$Force				=  $CL -> force ;
+	$ListConfiguredServers		=  $CL -> list_configured_servers ;
+	$ListDomains			=  $CL -> list_domains ;
+	$ListDomainParameters		=  $CL -> list_domain_parameters ;
+	$RebuildTree			=  true ;
+	$ServerConfigurationFile	=  $CL -> server_configuration_file ;
+	$Sync				=  $CL -> sync ;
+	$Verbose			=  $CL -> verbose ;
+
+	$HadOption			=  false ;
+	$Settings			=  [] ;
+	$Domains			=  [] ;
+
+	
+	/*==================================================================================================
+
+		Main program.
+
+	  ==================================================================================================*/
+	$RsAdmin			=  new RsAdmin ( $ServerConfigurationFile ) ;
+	LoadParameters ( $ConfigurationFile ) ;
+
+	// -list_domains :
+	//	Lists the defined domains together with their aliases
+	if  ( ! $HadOption  &&  $ListDomains )
+	   {
+		ListDomains ( ) ;
+		$HadOption	=  true ;
+	    }
+
+	// -list_domain_paremeters :
+	//	Lists the parameters of the specified domain.
+	if  ( ! $HadOption  &&  $ListDomainParameters )
+	   {
+		ListDomainParameters ( $ListDomainParameters ) ;
+		$HadOption	=  true ;
+	    }
+
+
+	// -diff :
+	//	Performs a difference between local and remote versions.
+	if  ( ! $HadOption  &&  $Diff )
+	   {
+		Diff ( $Diff, true, $RebuildTree ) ;
+		$HadOption	=  true ;
+	    }
+
+
+	// -sync :
+	//	Synchronizes local with remote version.
+	if  ( ! $HadOption  &&  $Sync )
+	   {
+		Synchronize ( $Sync, $RebuildTree ) ;
+		$HadOption	=  true ;
+	    }
+
+	// -list_configured_servers :
+	//	Lists the servers configured for this command.
+	if  ( ! $HadOption  &&  $ListConfiguredServers ) 
+	   {
+		$RsAdmin -> ListServers ( ) ;
+		$HadOption	=  true ;
+	    }
+

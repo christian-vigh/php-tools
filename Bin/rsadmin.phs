@@ -1,0 +1,307 @@
+<?php
+	//!phpcmd(Administration, 2.0, unfinished) : Remote OVH servers administration.
+	/***************************************************************************************************
+
+	    NAME
+		rsadmin.phs
+
+	    DESCRIPTION
+		Mount remote server Samba resource.
+
+	    AUTHOR
+	     	Christian Vigh, 11/2014.
+
+	    HISTORY
+	    [Version : 1.0]	[Date : 2014/11/02]	[Author : CV]
+	     	Initial version.
+
+	 ***************************************************************************************************/
+	require ( "tools.phpinclude" ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Types\String ;
+	use  Thrak\IO\Path ;
+	use  Thrak\IO\AsciiReport ;
+	use  Thrak\Processors\IniFile ;
+	use  Thrak\Processors\Csv ;
+
+	
+	require ( "RsAdmin.phpclass" ) ;
+
+	/*==================================================================================================
+
+		Command line parameters.
+
+	  ==================================================================================================*/
+	$Definitions = <<<END
+<command name="rsadmin" allow-files="false">
+
+	<usage>
+		Administrates remote hosted servers.
+	</usage>
+	
+	<flag name="check_fingerprints, cfp">
+		checks the fingerprints of the server(s) specified after the -servers option.
+	</flag>
+
+	<file name="configuration_file, cf" disposition="existing" default="thraktools://Data/rsadmin.ini">
+		Hosted servers parameters file.
+	</file>
+	
+	<string name="execute, x, e">
+		Executes the specified command.
+	</string>
+	
+	<flag name="list_servers, ls">
+		Outputs the currently defined server list.
+	</flag>
+	
+	<string name="retrieve_fingerprint, rfp" arguments="1..2">
+		Retrieves the SHA1 fingerprint for the specified server.
+		The optional second argument is the fingerprint type : either md5 or sha1. Default is sha1.
+	</string>
+	
+	<string name="servers, server, s" default="*" arguments="0..*">
+		Server name(s) on which iptables management is to be operated.
+		Wildcard characters are authorized, and search is performed on every server alias.
+	</string>
+	
+</command>
+END;
+
+	/**************************************************************************************************************
+	 **************************************************************************************************************
+	 **************************************************************************************************************
+	 ******                                                                                                  ******
+	 ******                                                                                                  ******
+	 ******                                      HELPER FUNCTIONS                                            ******
+	 ******                                                                                                  ******
+	 ******                                                                                                  ******
+	 **************************************************************************************************************
+	 **************************************************************************************************************
+	 **************************************************************************************************************/
+
+	
+	
+	/**************************************************************************************************************
+	 **************************************************************************************************************
+	 **************************************************************************************************************
+	 ******                                                                                                  ******
+	 ******                                                                                                  ******
+	 ******                                 PARAMETER HANDLING FUNCTIONS                                     ******
+	 ******                                                                                                  ******
+	 ******                                                                                                  ******
+	 **************************************************************************************************************
+	 **************************************************************************************************************
+	 **************************************************************************************************************/
+
+	/*==============================================================================================================
+	
+	    ExecuteCommand -
+	        Executes a command on the specified server(s).
+	
+	  ==============================================================================================================*/
+	function  ExecuteCommand ( $hosts, $command )
+	   {
+		global		$RsAdmin ;
+		
+		
+		$host_count	=  count ( $hosts ) ;
+		
+		foreach  ( $hosts  as  $host )
+		   {
+			$server		=  $RsAdmin -> FindServer ( $host ) ;
+			$server -> Connect ( false, true, true ) ;
+		
+			if  ( $host_count  ==  1 )
+			   {
+				$status		=  $server -> Execute ( $command ) ;
+			    }
+			else
+			   {
+				echo ( "[$host]\n\t" ) ;
+				
+				$output		=  null ;
+				$status		=  $server -> Execute 
+				   ( 
+					$command, $output, null,
+					function  ( $data )
+					   {
+						$data	=  str_replace ( "\n", "\n\t", $data ) ;
+						
+						echo ( $data ) ;
+					    }
+				    ) ;
+			    }
+
+			output ( "[status = $status]" ) ;
+		    }
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    CheckFingerprints -
+	        Checks the fingerprints of the specified hosts.
+	
+	  ==============================================================================================================*/
+	function  CheckFingerprints ( $hosts )
+	   {
+		global		$RsAdmin ;
+		
+		
+		$report		=  new  AsciiReport 
+		   (
+			[ 'member' => 'host'	, 'title' => 'Host'						],
+			[ 'member' => 'local'	, 'title' => 'Local fingerprint'				],
+			[ 'member' => 'remote'	, 'title' => 'Remote fingerprint'				],
+			[ 'member' => 'match'	, 'title' => 'Match?'			, 'align' => 'center'	]
+		    ) ;
+		$data		=  [] ;
+		
+		foreach  ( $hosts  as  $host )
+		   {
+			$server		=  $RsAdmin -> FindServer ( $host ) ;
+			
+			$server -> Connect ( false, false, false ) ;
+			$fingerprint	=  $server -> GetFingerprint ( ) ;
+			$server -> Disconnect ( ) ;
+			
+			$data []	=  
+			   [
+				'host'		=>  $server -> Host,
+				'local'		=>  $server -> Fingerprint,
+				'remote'	=>  $fingerprint,
+				'match'		=>  ( strcasecmp ( $fingerprint, $server -> Fingerprint ) ) ?  'no' : 'yes' 
+			    ] ;
+		    }
+		
+		echo $report -> Generate ( $data ) ;
+		echo $report -> Summary ( 'server' ) ;
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    RetrieveFingerprint -
+	        Retrieves the fingerprint of the specified host.
+	
+	  ==============================================================================================================*/
+	function  RetrieveFingerprint ( $host_and_type )
+	   {
+		global		$RsAdmin ;
+		
+		
+		if  ( count ( $host_and_type )  ==  1 )
+		   {
+			$fingerprint_type_string	=  "sha1" ;
+			$fingerprint_type		=  SSH2_FINGERPRINT_SHA1 ;
+		    }
+		else
+		   {
+			switch  ( strtolower ( $host_and_type [1] ) )
+			   {
+				case	'md5' :
+					$fingerprint_type_string	=  "md5" ;
+					$fingerprint_type		=  SSH2_FINGERPRINT_MD5 ;
+					break ;
+					
+				case	'sha1' :
+					$fingerprint_type_string	=  "sha1" ;
+					$fingerprint_type		=  SSH2_FINGERPRINT_SHA1 ;
+					break ;
+					
+				default :
+					error ( "Invalid fingerprint type {$host_and_type [1]} for parameter -retrieve_fingerprint ; authorized values " .
+						"are : md5, sha1" ) ;
+			    }
+		    }
+		
+		$server		=  $RsAdmin -> FindServer ( $host_and_type [0] ) ;
+		
+		if  ( ! $server )
+			error ( "Unknown server \"{$host_and_type [0]}\"" ) ;
+		
+		$fingerprint_type	|=  SSH2_FINGERPRINT_HEX ;
+
+		$server -> Connect ( false, false, false ) ;
+		$result		=  $server -> GetFingerprint ( ) ;
+		$server -> Disconnect ( ) ;
+		
+		output ( "$fingerprint_type_string fingerprint for host {$host_and_type [0]} : $result" ) ;
+	    }
+	
+	
+	/*==================================================================================================
+
+		Global constants and variables.
+
+	  ==================================================================================================*/
+	$CL 			=  new  CLParser ( $Definitions ) ;
+	$CheckFingerprints	=  $CL -> check_fingerprints ;
+	$ConfigurationFile	=  $CL -> configuration_file ;
+	$ExecuteCommand		=  $CL -> execute ;
+	$ListServers		=  $CL -> list_servers ;
+	$RetrieveFingerprint	=  $CL -> retrieve_fingerprint ;
+	$Servers		=  $CL -> servers ;	
+	
+	$RsAdmin		=  new RsAdmin ( $ConfigurationFile ) ;
+	$ServerList		=  $RsAdmin -> FindServers ( $Servers ) ;
+	$HadOption		=  false ;
+
+$server = $RsAdmin -> FindServer ( $ServerList [0] ) ;
+$server -> Connect ( false, true, true ) ;
+$fs	=  $server -> GetFileSystem ( ) ;
+
+dump ( $fs -> getcwd () ) ;
+$fs -> chdir ( '/zz' ) ;
+$rs	=  $fs -> opendir ( '/root' ) ;
+
+while ( $path = $fs -> readdir ( $rs ) )
+	output ( "PATH = $path" ) ;
+
+$fs -> closedir ( $rs ) ;
+
+exit ;
+	
+	/*==================================================================================================
+
+		Main program.
+
+	  ==================================================================================================*/
+	// -check_fingerprints :
+	//	Checks the fingerprints of the specified servers.
+	if  ( $CL ->  check_fingerprints )
+	   {
+		CheckFingerprints ( $ServerList ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// -execute :
+	//	Executes the specified command.
+	if  ( $ExecuteCommand )
+	   {
+		ExecuteCommand ( $ServerList, $ExecuteCommand ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// -list_servers :
+	//	Displays information about configured remote servers.
+	if (  ! $HadOption  &&  $ListServers )
+	   {
+		$RsAdmin -> ListServers ( $ServerList ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// -retrieve_fingerprint :
+	// Retrieves  fingerprint for the specified host.
+	if  ( $CL -> IsSpecified ( 'retrieve_fingerprint' ) )
+	   {
+		RetrieveFingerprint ( $RetrieveFingerprint ) ;
+		$HadOption	=  true ;
+	    }
+	
+
+	// No argument specified : display help
+	if  ( ! $HadOption )
+		$CL -> DisplayHelp ( ) ;

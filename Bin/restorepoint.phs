@@ -1,0 +1,198 @@
+<?php
+	/**************************************************************************************************************
+
+	    NAME
+		restorepoint.phs
+
+	    DESCRIPTION
+		Manages Windows restore points.
+
+	    AUTHOR
+		Christian Vigh, 06/2015.
+
+	    HISTORY
+	    [Version : 1.0]    [Date : 2015/06/10]     [Author : CV]
+		Initial version.
+
+	 **************************************************************************************************************/
+	require ( "tools.phpinclude" ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Types\String ;
+	use  Thrak\Types\String\Convert ;
+	use  Thrak\IO\Path ;
+	use  Thrak\IO\AsciiReport ;
+	use  Thrak\Windows\SystemRestorePoints ;
+	use  Thrak\Windows\SystemRestorePoint ;
+	
+	
+	/*==================================================================================================
+
+		Command line parameters.
+
+	  ==================================================================================================*/
+	$Definitions = <<<END
+<command name="restorepoint" allow-files="false">
+
+	<usage>
+		Manages Windows system restore points.
+	</usage>
+	
+	<string name="create, c" arguments="0..1">
+		Creates a System Restore point. 
+	</string>
+		
+	<flag name="list_restore_points, lrp, l">
+		Lists the current restore points.
+	</flag>
+	
+	<flag name="show_ui, su, s">
+		Launches the System Restore user interface.
+	</flag>
+</command>
+END;
+
+	
+	/*==================================================================================================
+
+	    ListRestorePoints -
+		Displays the list of restore points.
+
+	  ==================================================================================================*/
+	function  ListRestorePoints ( $restore_points ) 
+	   {
+		$report		=  new AsciiReport 
+		   ( 
+			[ 'member' => 'sequence'		, 'title' => 'Seq.'			, 'align' => 'right'	],
+			[ 'member' => 'description'		, 'title' => 'Description'					],
+			[ 'member' => 'created'			, 'title' => 'Created'						],
+			[ 'member' => 'event-type'		, 'title' => 'Event type'		, 'align' => 'left'	],
+			[ 'member' => 'restore-point-type'	, 'title' => 'Restore point type'	, 'align' => 'left'	]
+		    ) ;
+		$data		=  [] ;
+		
+		foreach  ( $restore_points  as  $restore_point ) 
+		   {
+			$event_type		=  '' ;
+			$restore_point_type	=  '' ;
+			
+			switch  ( $restore_point -> EventType )
+			   {
+				case  SystemRestorePoints::EVENT_BEGIN_NESTED_SYSTEM_CHANGE :  
+					$event_type	=  'EVENT_BEGIN_NESTED_SYSTEM_CHANGE' ;
+					break ;
+					
+				case  SystemRestorePoints::EVENT_BEGIN_SYSTEM_CHANGE :  
+					$event_type  =  'EVENT_BEGIN_SYSTEM_CHANGE' ;
+					break ;
+					
+				case  SystemRestorePoints::EVENT_END_NESTED_SYSTEM_CHANGE :  
+					$event_type  =  'EVENT_END_NESTED_SYSTEM_CHANGE' ;
+					break ;
+					
+				case  SystemRestorePoints::EVENT_END_SYSTEM_CHANGE :  
+					$event_type	=  'EVENT_END_SYSTEM_CHANGE' ;
+					break ;
+					
+				default	:  
+					$event_type	=  $restore_point -> EventType ;
+			    }
+
+			switch ( $restore_point -> RestorePointType )
+			   {
+				case  SystemRestorePoints::RESTORE_POINT_APPLICATION_INSTALL :  
+					$restore_point_type	=  'RESTORE_POINT_APPLICATION_INSTALL' ;
+					break ;
+					
+				case  SystemRestorePoints::RESTORE_POINT_APPLICATION_UNINSTALL :  
+					$restore_point_type	=  'RESTORE_POINT_APPLICATION_UNINSTALL' ;
+					break ;
+					
+				case  SystemRestorePoints::RESTORE_POINT_RESTORED :  
+					$restore_point_type	=  'RESTORE_POINT_RESTORED' ;
+					break ;
+					
+				case  SystemRestorePoints::RESTORE_POINT_PLANNED :  
+					$restore_point_type	=  'RESTORE_POINT_PLANNED' ;
+					break ;
+					
+					
+				case  SystemRestorePoints::RESTORE_POINT_DEVICE_DRIVER_INSTALL :  
+					$restore_point_type	=  'RESTORE_POINT_DEVICE_DRIVER_INSTALL' ;
+					break ;
+					
+				case  SystemRestorePoints::RESTORE_POINT_MODIFY_SETTINGS :  
+					$restore_point_type	=  'RESTORE_POINT_MODIFY_SETTINGS' ;
+					break ;
+					
+					
+				case  SystemRestorePoints::RESTORE_POINT_CANCELLED_OPERATION :  
+					$restore_point_type	=  'RESTORE_POINT_CANCELLED_OPERATION' ;
+					break ;
+					
+				case  SystemRestorePoints::RESTORE_POINT_WINDOWS_UPDATE :  
+					$restore_point_type	=  'RESTORE_POINT_WINDOWS_UPDATE' ;
+					break ;
+				
+				default :
+					$restore_point_type	=  $restore_point -> RestorePointType ;
+			    }
+			
+			$row		=
+			   [
+				'sequence'		=>  $restore_point -> SequenceNumber,
+				'description'		=>  Convert::ToCli ( $restore_point -> Description ),
+				'created'		=>  date ( 'Y-m-d H:i:s', $restore_point -> CreationTime ),
+				'event-type'		=>  $event_type,
+				'restore-point-type'	=>  $restore_point_type 
+			    ] ;
+			$data []	=  $row ;
+		    }
+		
+		echo  $report -> Generate ( $data ) ;
+		echo  $report -> Summary ( "restore point" ) ;
+	    }
+	
+	
+	/*==================================================================================================
+
+		Main program.
+
+	  ==================================================================================================*/
+	$CL 			=  new  CLParser ( $Definitions ) ;
+	$ListRestorePoints	=  $CL -> list_restore_points ;
+	$ShowUI			=  $CL -> show_ui ;
+	$CreateRestorePoint	=  $CL -> create ;
+
+	$RestorePoints		=  new SystemRestorePoints ( ) ;
+	$HadOption		=  false ;
+	
+	
+	// -create :
+	//	Creates a system restore point.
+	if  ( ! $HadOption  &&  $CL -> IsSpecified ( 'create' ) )
+	   {
+		if  ( count ( $CreateRestorePoint ) )
+			$title	=  $CreateRestorePoint [0] ;
+		else
+			$title	=  "User-defined restore point - " . date ( 'Y/m/d H:i:s' ) ;
+		
+		$RestorePoints -> Create ( $title ) ;
+	    }
+	
+	// -list_restore_points :
+	//	Shows the currently defined System Restore Points.
+	if  ( ! $HadOption  &&  $ListRestorePoints )
+	   {
+		ListRestorePoints ( $RestorePoints ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// -show_ui :
+	//	Launches the System Restore Point user interface.
+	if  ( ! $HadOption  &&  $ShowUI )
+	   {
+		$RestorePoints -> ShowUI ( ) ;
+		$HadOption	=  true ;
+	    }
+	

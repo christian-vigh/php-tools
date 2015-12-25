@@ -1,0 +1,409 @@
+<?php
+	//!phpcmd(Administration, 1.0, production) : Windows knowledge base management tool.
+	/**************************************************************************************************************
+
+	    NAME
+		winkb.phs
+
+	    DESCRIPTION
+		A small management tool for windows knowledge base patches.
+
+	    AUTHOR
+		Christian Vigh, 11/2015.
+
+	    HISTORY
+	    [Version : 1.0]    [Date : 2015/11/21]     [Author : CV]
+		Initial version.
+
+	 **************************************************************************************************************/
+	require ( "tools.phpinclude" ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Types\String ;
+	use  Thrak\Types\ArrayHelpers ;
+	use  Thrak\IO\Path ;
+	use  Thrak\IO\AsciiReport ;
+	use  Thrak\IO\Console ;
+	use  Thrak\Processors\IniFile ;
+	use  Thrak\Windows\WShell ;
+	use  Thrak\Windows\Wmi ;
+
+	require ( "RsAdmin.phpclass" ) ;
+
+
+	/*==================================================================================================
+
+		Command line parameters.
+
+	  ==================================================================================================*/
+	$Definitions = <<<END
+<command allow-files="true" min-files="0" max-files="1" value-text="hotfix#" value-help="Filter on hotfix ids">
+
+	<usage>
+		Windows knowledge base management tool.
+	</usage>
+	
+	<file name="configuration_file, cf" disposition="existing" default="thraktools://Data/winkb.ini">
+		Parameters file for winkb.
+	</file>
+
+	<flag name="blacklist, b">
+		Lists the blacklisted hotfixes.
+	</flag>
+
+	<flag name="list, l">
+		Lists the KB fixes currently installed.
+	</flag>
+
+	<flag name="list_by_date, lbd">
+		Lists the different updates grouped by date.
+	</flag>
+
+	<flag name="list_types, lt">
+		Lists the different update types.
+	</flag>
+
+	<flag name="list_users, lu">
+		Lists the different users used by Windows Update.
+	</flag>
+
+	<sort-options name="sort_by, sb" default="date asc">
+		Sorts by the specified field name(s). Only available for the -list parameter.
+
+		<case name="name, n, id, i" field="HotFixID">
+			Sort by KB hotfix id.
+		</case>
+
+		<case name="date, d" field="InstalledOn">
+			Sort by installation date.
+		</case>
+
+		<case name="type, t" field="Description">
+			Sort by hotfix type.
+		</case>
+
+		<case name="user, u" field="InstalledBy">
+			Sort by installer user.
+		</case>
+	</sort-options>
+
+	<flag name="rebuild, r">
+		Rebuilds the cache file that contains the list of KB hotfixes.
+	</flag>
+</command>
+END;
+
+
+	/*==================================================================================================
+
+		Support functions.
+
+	  ==================================================================================================*/
+
+	// getkbdata -
+	//	Gets the list of KB patches.
+	function  getkbdata ( $settings, $rebuild = false )
+	   {
+		if  ( ! $rebuild  &&  $settings [ 'cache-file' ]  &&  file_exists ( $settings [ 'cache-file' ] ) )
+		   {
+			$result		=  unserialize ( file_get_contents ( $settings [ 'cache-file' ] ) ) ;
+			$old_date	=  date ( 'Y-m-d', $result [ 'updated' ] ) ;
+			$new_date	=  strtotime ( $old_date . ' + ' . $settings [ 'cache-rebuild-interval' ] ) ;
+			$now		=  date ( 'Y-m-d' ) ;
+
+			if  ( $new_date  <  $now )
+				$rebuild	=  true ;
+		    }
+		else
+			$rebuild	=  true ;
+		
+		if  ( $rebuild )
+		   {
+			echo ( "Rebuilding cache..." ) ;
+
+			$wmi		=  new Wmi ( ) ;
+			$items		=  $wmi -> Query ( "SELECT * FROM Win32_QuickFixEngineering" ) ;
+			$kbdata		=  [] ;
+		
+			foreach  ( $items  as  $item )
+			   {
+				$date		=  $item -> InstalledOn ;
+
+				if  ( preg_match ( '#(?P<month> \d+) / (?P<day> \d+ ) / (?P<year> \d+) #imsx', $date, $match ) )
+					$date	=  sprintf ( '%04d', $match [ 'year'  ] ) . '-' . 
+						   sprintf ( '%02d', $match [ 'month' ] ) . '-' . 
+						   sprintf ( '%02d', $match [ 'day'   ] ) ;
+				else
+					$date	=  '0000-00-00' ;
+
+				$item -> InstalledOn	=  $date ;
+				$kbdata	[]		=  $item -> ToArray ( ) ;
+			    }
+
+			$result		=
+			   [
+				'data'		=>  $kbdata,
+				'updated'	=>  time ( )
+			    ] ;
+
+			file_put_contents ( $settings [ 'cache-file' ], serialize ( $result ) ) ;
+			output ( "done" ) ;
+		    }
+
+
+		return ( $result ) ;
+	    }
+
+
+	/*==================================================================================================
+
+	    LoadSettings -
+		Loads settings from the specified configuration object.
+
+	  ==================================================================================================*/
+	function  LoadSettings ( $configuration_file, $ini )
+	   {
+		$settings	=  [] ;
+
+		// Cache file and automatic cache rebuild interval
+		$value				=  $ini -> GetKey ( 'Settings', 'CacheFile' ) ;
+		$settings [ 'cache-file' ]	=  ( $value ) ?  $value : false ;
+
+		$value				=  $ini -> GetKey ( 'Settings', 'RebuildCacheEvery' ) ;
+
+		if  ( ! $value ) 
+			$settings [ 'cache-rebuild-interval' ]	=  false ;
+		else if  ( ! String::IsDateString ( $value ) )
+			error ( "The value \"$value\" for the \"RebuildCacheEvery\" key of the [Settings] section of configuration file \"" .
+				"$configuration_file\" is not a valid date/time specification." ) ;
+		else
+			$settings [ 'cache-rebuild-interval' ]	=  $value ;
+
+		// Blacklisted KB fixes 
+		$settings [ 'blacklist' ]	=  array_keys ( $ini -> GetKeys ( 'Blacklist' ) ) ;
+		
+		return ( $settings ) ;
+	    }
+
+
+	/*==================================================================================================
+
+	    ListKb -
+		Lists the installed KB hotfixes.
+
+	  ==================================================================================================*/
+	function  ListKb ( $settings, $kbdata, $sort_options, $blacklisted, $filter = false )
+	   {
+		ArrayHelpers::MultiSort ( $kbdata, $sort_options, true ) ;
+		$report =  new AsciiReport
+		   (
+			[ 'member' => 'HotFixID'	, 'title' => 'Hotfix'	],
+			[ 'member' => 'Description'	, 'title' => 'Type'	],
+			[ 'member' => 'InstalledOn'	, 'title' => 'Date'	],
+			[ 'member' => 'InstalledBy'	, 'title' => 'User'	],
+			[ 'member' => 'Caption'		, 'title' => 'Url'	]
+		    ) ;
+
+		if  ( $blacklisted )
+		   {
+			$data	=  [] ;
+
+			foreach  ( $kbdata  as  $entry )
+			   {
+				foreach  ( $settings [ 'blacklist' ]  as  $blacklisted_entry )
+				   {
+					if  (  ! strcasecmp ( $entry [ 'HotFixID' ], $blacklisted_entry ) )
+					   {
+						$data []	=  $entry ;
+						break ;
+					    }
+				    }
+			    }
+		    }
+		else if  ( $filter )
+		   {
+			$data	=  [] ;
+
+			foreach  ( $kbdata  as  $entry )
+			   {
+				if  ( stripos ( $entry [ 'HotFixID' ], $filter )  !==  false )
+					$data []	=  $entry ;
+			    }
+		    }
+		else
+			$data	=  $kbdata ;
+
+		$report -> Generate ( $data, true ) ;
+		echo $report -> Summary ( ( $blacklisted ) ?  'blacklisted hotfix' : 'hotfix' ) ;
+	    }
+
+
+	/*==================================================================================================
+
+	    ListKbByDate -
+		Lists the installed KB hotfixes grouped by date.
+
+	  ==================================================================================================*/
+	function  ListKbByDate ( $settings, $kbdata )
+	   {
+		$report =  new AsciiReport
+		   (
+			[ 'member' => 'date'		, 'title' => 'Date'							],
+			[ 'member' => 'list'		, 'title' => 'Hotfixes'		, 'width' => '80', 'overflow' => 'wrap'	]
+		    ) ;
+
+		$kbgrouped	=  [] ;
+		$max_length	=  0 ;
+
+		foreach  ( $kbdata  as  $kbitem )
+		   {
+			$length		=  strlen ( $kbitem [ 'HotFixID' ] ) ;
+
+			if  ( $length  >  $max_length ) 
+				$max_length	=  $length ;
+		    }
+
+		foreach  ( $kbdata  as  $kbitem )
+		   {
+			$date	=  $kbitem [ 'InstalledOn' ] ;
+			$hotfix	=  str_pad ( $kbitem [ 'HotFixID' ], $max_length, ' ', STR_PAD_RIGHT ) ;
+
+			if  ( isset ( $kbgrouped [ $date ] ) )
+				$kbgrouped [ $date ] [] =  $hotfix ;
+			else
+				$kbgrouped [ $date ]	=  [ $hotfix ] ;
+		    }
+
+		ksort ( $kbgrouped ) ;
+		$data	=  [] ;
+
+		foreach  ( $kbgrouped  as  $date => $fixes )
+			$data []	=  [ 'date' => $date, 'list' => implode ( ', ', $fixes ) ] ;
+
+		$report -> Generate ( $data, true ) ;
+		echo $report -> Summary ( 'Windows update' ) ;
+	    }
+
+
+	/*==================================================================================================
+
+	    ListTypes -
+		Lists the different installation types.
+
+	  ==================================================================================================*/
+	function  ListTypes ( $settings, $kbdata )
+	   {
+		$list	=  [] ;
+
+		foreach  ( $kbdata  as  $item )
+		   {
+			$entry	=  $item [ 'Description' ] ;
+
+			if  ( ! isset ( $list [ $entry ] ) )
+				$list [ $entry ] =  1 ;
+		    }
+
+		ksort ( $list ) ;
+		output ( array_keys ( $list ) ) ;
+	    }
+
+
+	/*==================================================================================================
+
+	    ListUsers -
+		Lists the different installation Users.
+
+	  ==================================================================================================*/
+	function  ListUsers ( $settings, $kbdata )
+	   {
+		$list	=  [] ;
+
+		foreach  ( $kbdata  as  $item )
+		   {
+			$entry	=  $item [ 'InstalledBy' ] ;
+
+			if  ( ! isset ( $list [ $entry ] ) )
+				$list [ $entry ] =  1 ;
+		    }
+
+		ksort ( $list ) ;
+		output ( array_keys ( $list ) ) ;
+	    }
+
+
+	/*==================================================================================================
+
+		Global constants and variables.
+
+	  ==================================================================================================*/
+	$CL 			=  new  CLParser ( $Definitions ) ;
+	$ConfigurationFile	=  $CL -> configuration_file ;
+	$Blacklist		=  $CL -> blacklist ;
+	$List			=  $CL -> list ;
+	$ListByDate		=  $CL -> list_by_date ;
+	$ListUsers		=  $CL -> list_users ;
+	$ListTypes		=  $CL -> list_types ;
+	$SortOptions		=  $CL -> sort_by ;
+	$Rebuild		=  $CL -> rebuild ;
+	$Filters		=  $CL -> Files ;
+
+	$ConfigurationData	=  IniFile::LoadFromFile ( $ConfigurationFile ) ;
+	$Settings		=  LoadSettings ( $ConfigurationFile, $ConfigurationData ) ;
+	$HadOption		=  false ;
+
+
+	/*==================================================================================================
+
+		Main program.
+
+	  ==================================================================================================*/
+	$KBData			=  getkbdata ( $Settings, $Rebuild ) ;
+	
+	// -list :
+	//	Lists the installed hotfixes
+	if  ( ! $HadOption  &&  $List )
+	   {
+		ListKb ( $Settings, $KBData [ 'data' ], $SortOptions, false, ( $Filters ) ?  $Filters [0] : false ) ;
+		$HadOption	=  true ;
+	    }
+
+	
+	// -blacklist :
+	//	Lists only the blacklisted hotfixes
+	if  ( ! $HadOption  &&  $Blacklist )
+	   {
+		ListKb ( $Settings, $KBData [ 'data' ], $SortOptions, true ) ;
+		$HadOption	=  true ;
+	    }
+
+
+	// -list_by_date :
+	//	Lists the installed hotfixes grouped by date
+	if  ( ! $HadOption  &&  $ListByDate )
+	   {
+		ListKbByDate ( $Settings, $KBData [ 'data' ] ) ;
+		$HadOption	=  true ;
+	    }
+
+	
+	// -list_types :
+	//	Lists hotfix types.
+	if  ( ! $HadOption  &&  $ListTypes )
+	   {
+		ListTypes ( $Settings, $KBData [ 'data' ] ) ;
+		$HadOption	=  true ;
+	    }
+
+	
+	// -list_users :
+	//	Lists the users utilized during installations.
+	if  ( ! $HadOption  &&  $ListUsers )
+	   {
+		ListUsers ( $Settings, $KBData [ 'data' ] ) ;
+		$HadOption	=  true ;
+	    }
+
+	
+	// Display help if no option specified
+	if  ( ! $HadOption  &&  ! $Rebuild )
+		$CL -> DisplayHelp ( ) ;

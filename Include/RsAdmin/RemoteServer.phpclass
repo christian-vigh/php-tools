@@ -1,0 +1,706 @@
+<?php
+/**************************************************************************************************************
+
+    NAME
+        RemoteServer.phpclass
+
+    DESCRIPTION
+        Remote server administration class.
+
+    AUTHOR
+        Christian Vigh, 01/2015.
+
+    HISTORY
+    [Version : 1.0]    [Date : 2015/01/06]     [Author : CV]
+        Initial version.
+
+ **************************************************************************************************************/
+
+require_once ( 'RemoteLogs.phpclass' ) ;
+
+use  Thrak\System\Object ;
+use  Thrak\Windows\Windows ;
+use  Thrak\Processors\IniFile ;
+use  Thrak\Types\AssociativeArray ;
+use  Thrak\Types\String ;
+use  Thrak\Network\Ssh\SshSession ;
+use  Thrak\Network\Ssh\SshAuthentication ;
+use  Thrak\Network\Ssh\SshPublicKeyAuthentication ;
+use  Thrak\Network\Ssh\SshPasswordAuthentication ;
+
+
+/*==============================================================================================================
+
+    RemoteServer class -
+        Holds the parameter for a remote server definition.
+
+  ==============================================================================================================*/
+class  RemoteServer	extends  Object 
+   {
+	// Configuration file & data
+	public		$ConfigurationFile ;
+	public		$Configuration ;
+	// Server name and aliases
+	public		$Url ;
+	public		$Host ;
+	public		$Ip ;
+	public		$Names ;
+	// Targeted server ; identical to $Ip unless the RealTarget key is specified
+	public		$TargetServer ;
+	// Server main user and password
+	public		$User ;
+	public		$Password ;
+	// Ssh connections parameters and default ssh connection
+	public		$DefaultSshConnection ;
+	public		$SshParameters		=  [] ;
+	// Fingerprint stuff
+	public		$Fingerprint ;
+	public		$FingerprintType ;
+	// Active session
+	public		$Session		=  null ;
+	// Domains 
+	public		$Domains ;
+	// Http data root
+	public		$HttpRoot		=  null ;
+	// Http log directories
+	public		$HttpLogs		=  [] ;
+	// Http root directories for hosted domains
+	public		$HttpSites		=  [] ;
+	// Mail log directories
+	public		$MailLogs ;
+	// Auth log directories
+	public		$AuthLogs		=  [] ;
+	// (my personal) SSH log directories
+	public		$SshLogs		=  [] ;
+	// Database object
+	public		$Database ;
+	
+	
+	/*==============================================================================================================
+	
+	    Constructor -
+	        Loads the .ini file for the specified server.
+	
+	  ==============================================================================================================*/
+	public function  __construct ( $name, $configuration_file, $variables, $db = null )
+	   {
+		global		$Database ;
+		
+		// Create configuration .ini file and say that all key values are to be expanded using the variables defined in the [Variables] section
+		$this -> ConfigurationFile		=  $configuration_file ;
+		$this -> Database			=  ( $db ) ?  $db : $Database ;
+		$this -> Configuration			= 
+		$configuration				=  IniFile::LoadFromFile ( $configuration_file ) ;
+		$this -> Configuration -> SetVariableStore ( $variables, 'Variables' ) ;
+		
+		// Server name & aliases
+		$this -> Names		=  new AssociativeArray ( ) ;
+		$this -> Names []	=  $name ;
+
+		// [Settings] section, Url key :
+		//	Domain name.
+		$value	=  $configuration -> GetKey ( 'Settings', 'Url' ) ;
+			
+		if  ( ! $value )
+			error ( new \Thrak\System\RuntimeException ( "The \"Url\" key in the [Settings] section of configuration file \"$configuration_file\" " .
+					"does not exist." ) ) ;
+		
+		$url_parts		=  parse_url ( $value ) ;
+
+		if  ( ! isset ( $url_parts [ 'host' ] ) )
+			error ( new \Thrak\System\RuntimeException ( "The \"Url\" key in the [Settings] section of configuration file \"$configuration_file\" " .
+					"does not specify a valid domain name." ) ) ;
+		
+		$url_scheme		=  isset ( $url_parts [ 'scheme' ] ) ?  $url_parts [ 'scheme' ] : 'http' ;
+		$url_domain		=  $url_parts [ 'host' ] ;
+		
+		$this -> Host		=  $url_domain ;
+		$this -> Url		=  "$url_scheme://$url_domain" ;
+		
+		$this -> Names []	=  $this -> Url ;
+		$this -> Names []	=  $this -> Host ;
+		
+		// [Settings] section, Ip address :
+		//	Ip address of target host.
+		$value	=  $configuration -> GetKey ( 'Settings', 'Ip' ) ;
+		
+		if  ( ! $value )
+			error ( new \Thrak\System\RuntimeException ( "The \"Ip\" key in the [Settings] section of configuration file \"$configuration_file\" " .
+					"does not exist." ) ) ;
+	
+		if  ( ! String::IsIpAddress ( $value ) )
+			error ( new \Thrak\System\RuntimeException ( "The \"Ip\" key in the [Settings] section of configuration file \"$configuration_file\" " .
+					"is not a valid ip address." ) ) ;
+		
+		$this -> Ip		=  $value ;
+		$this -> Names []	=  $value ;
+
+		// [Settings] section, TargetServer key :
+		//	Allows to specify a target server in place of the real one (useful if accessing the server
+		//	must be done through a gateway)
+		$value	=  $configuration -> GetKey ( 'Settings', 'TargetServer' ) ;
+
+		if  ( $value ) 
+			$this -> TargetServer	=  $value ;
+		else
+			$this -> TargetServer	=  $this -> Host ;
+		
+		// [Settings] section, Aliases key :
+		//	Additional aliases for this host.
+		$value	=  $configuration -> GetKey ( 'Settings', [ 'Names', 'Name', 'Aliases' ] ) ;
+		
+		if  ( $value )
+		   {
+			$aliases	=  String::ExplodeAndTrim ( ',', $value ) ;
+			
+			foreach  ( $aliases  as  $alias )
+			   {
+				if  ( ! $this -> Names -> iin_array ( $alias ) )
+					$this -> Names []	=  $alias ;
+			    }
+		    }
+
+		// [Settings] section, HttpRoot key :
+		//	Http root directory on the remote server.
+		$value	=  $configuration -> GetKey ( 'Settings', 'HttpRoot' ) ;
+		
+		if  ( $value )
+			$this -> HttpRoot	=  $value ;
+		else
+			$this -> HttpRoot	=  '/var/www' ;
+
+		// [Settings] section, Domains key :
+		//	Hosted domain names, that must reside under the HttpRoot directory.
+		$value	=  $configuration -> GetKey ( 'Settings', 'Domains' ) ;
+		
+		if  ( $value )
+		   {
+			if  ( strcasecmp ( $value, 'none' ) )
+				$this -> Domains	=  explode ( ' ', $value ) ;
+		    }
+		else
+			error ( "The \"Domain\" key in the [Settings] section of configuration file \"$configuration_file\" " .
+				"is either missing or does not contain any domain name." ) ;
+		
+		// [Settings] section, HttpLogs key :
+		//	Http logs on the remote server. Must be a subdirectory of each listed domain, or an absolute path
+		//	common to all domains.
+		$value	=  $configuration -> GetKey ( 'Settings', 'HttpLogs' ) ;
+		
+		if  ( $value ) 
+		   {
+			if  ( $value [0]  ==  '/' )
+			   {
+				$this -> HttpLogs []	=  $value ;
+			    }
+			else
+			   {
+				foreach  ( $this -> Domains  as  $item )
+					$this -> HttpLogs []	=  $this -> HttpRoot . '/' . $item . '/' . $value ;
+			    }
+		    }
+		else
+		   {
+			$this -> HttpLogs []	=  '/var/log/apache2' ;
+		    }
+		
+		// [Settings] section, MailLogs key :
+		//	Mail logs on the remote server. Must be a subdirectory of each listed domain, or an absolute path
+		//	common to all domains.
+		$value	=  $configuration -> GetKey ( 'Settings', 'MailLogs' ) ;
+
+		if  ( $value ) 
+		   {
+			if  ( $value [0]  ==  '/' )
+			   {
+				$this -> MailLogs []	=  $value ;
+			    }
+			else
+			   {
+				foreach  ( $this -> Domains  as  $item )
+					$this -> AuthLogs []	=  $this -> HttpRoot . '/' . $item . '/' . $value ;
+			    }
+		    }
+		else
+		   {
+			$this -> MailLogs []	=  '/var/log' ;
+		    }
+
+		// [Settings] section, AuthLogs key :
+		//	Auth logs on the remote server. Must be a subdirectory of each listed domain, or an absolute path
+		//	common to all domains.
+		$value	=  $configuration -> GetKey ( 'Settings', 'AuthLogs' ) ;
+
+		if  ( $value ) 
+		   {
+			if  ( $value [0]  ==  '/' )
+			   {
+				$this -> AuthLogs []	=  $value ;
+			    }
+			else
+			   {
+				foreach  ( $this -> Domains  as  $item )
+					$this -> AuthLogs []	=  $this -> HttpRoot . '/' . $item . '/' . $value ;
+			    }
+		    }
+		else
+		   {
+			$this -> AuthLogs []	=  '/var/log' ;
+		    }
+
+		// [Settings] section, SshLogs key :
+		//	Ssh logs on the remote server. Must be a subdirectory of each listed domain, or an absolute path
+		//	common to all domains.
+		$value	=  $configuration -> GetKey ( 'Settings', 'SshLogs' ) ;
+
+		if  ( $value ) 
+		   {
+			if  ( $value [0]  ==  '/' )
+			   {
+				$this -> SshLogs []	=  $value ;
+			    }
+			else
+			   {
+				foreach  ( $this -> Domains  as  $item )
+					$this -> AuthLogs []	=  $this -> HttpRoot . '/' . $item . '/' . $value ;
+			    }
+		    }
+		else
+		   {
+			$this -> SshLogs []	=  '/var/log' ;
+		    }
+
+		// [Settings] section, HttpSites key :
+		//	Http site directories on the remote server. Can be either a relative path, in which case 
+		//	the HttpRoot and Domain name will be used to build the final path, or an absolute path.
+		//	If no value is specified, the default value will be '/var/www/domain name'.
+		$value	=  $configuration -> GetKey ( 'Settings', 'HttpSites' ) ;
+		
+		if  ( $value ) 
+		   {
+			if  ( $value [0]  ==  '/' )
+			   {
+				foreach  ( $this -> Domains  as  $item )
+					$this -> HttpSites []	=  $value ;
+			    }
+			else
+			   {
+				foreach  ( $this -> Domains  as  $item )
+					$this -> HttpSites []	=  $this -> HttpRoot . '/' . $item . '/' . $value ;
+			    }
+		    }
+		else
+		   {
+			foreach  ( $this -> Domains  as  $item ) 
+				$this -> HttpSites []	=  '/var/www' ;
+		    }
+		
+		// [Settings] section, User and Password keys :
+		//	Default user and password for this host.
+		$value	=  $configuration -> GetKey ( 'Settings', 'User' ) ;
+		
+		if  ( ! $value )
+			error ( new \Thrak\System\RuntimeException ( "The \"User\" key in the [Settings] section of configuration file \"$configuration_file\" " .
+					"does not exist." ) ) ;
+		
+		$this -> User	=  $value ;
+		
+		$value	=  $configuration -> GetKey ( 'Settings', 'Password' ) ;
+		
+		if  ( ! $value )
+			error ( new \Thrak\System\RuntimeException ( "The \"Password\" key in the [Settings] section of configuration file \"$configuration_file\" " .
+					"does not exist." ) ) ;
+		
+		$this -> Password	=  $value ;
+		
+		// [Ssh:*] sections -
+		//	Sections that can be used for SSH connection.
+		$this -> SshParameters	=  new  AssociativeArray ( ) ;
+		$ssh_keys		=  $configuration -> GetSections ( 'Ssh \s* : \s* (?P<section> .*)' ) ;
+		
+		foreach  ( $ssh_keys  as  $ssh_key )
+		   {
+			$this -> __load_ssh_parameters ( $configuration_file, $configuration, $ssh_key [ 'match' ] [ 'section' ], $ssh_key [ 'match' ] [0] ) ;
+		    }
+		
+		// [Settings] section, DefaultSshConnection parameter :
+		//	Default Ssh connection to be used. If not specified, the first available connection parameters are used.
+		$value	=  $configuration -> GetKey ( 'Settings', 'DefaultSshConnection' ) ;
+		
+		if  ( $value )
+		   {
+			if  ( ! isset ( $this -> SshParameters [ strtolower ( $value ) ] ) )
+				error ( new \Thrak\System\RuntimeException ( "The value \"$value\" specified by the \"DefaultSshConnection\" key " .
+						"in the [Settings] section of configuration file \"$configuration_file\" does not reference a valid SSH connection." ) ) ;
+		    }
+		else
+			$value	=  $this -> SshParameters -> keyname ( 0 ) ;
+		
+		$this -> DefaultSshConnection	=  $value ;
+		
+		// [Settings] section, Fingerprint and FingerprintType values
+		$value		=  $configuration -> GetKey ( 'Settings', 'Fingerprint' ) ;
+		
+		if (  $value )
+			$this -> Fingerprint	=  $value ;
+		
+		$value		=  $configuration -> GetKey ( 'Settings', 'FingerprintType' ) ;
+		
+		if  ( $value )
+		   {
+			switch  ( strtolower ( $value ) )
+			   {
+				case	"md5"	:  $this -> FingerprintType	=  SSH2_FINGERPRINT_MD5  ; break ;
+				case	"sha1"	:  $this -> FingerprintType	=  SSH2_FINGERPRINT_SHA1 ; break ;
+				default :
+					error ( new \Thrak\System\RuntimeException ( "The value \"$value\" specified by the \"FingerprintType\" key " .
+							"in the [Settings] section of configuration file \"$configuration_file\" " .
+							"should be one of the following values : md5, sha1." ) ) ;
+			    }
+		    }
+		else 
+			$this -> FingerprintType	=  SSH2_FINGERPRINT_MD5 ;
+		
+		$this -> FingerprintType	|=  SSH2_FINGERPRINT_HEX ;
+		
+		// Warn if no fingerprint is defined for this host
+		if  ( ! $this -> Fingerprint )
+			warning ( "No fingerprint defined for host {$this -> Host}" ) ;
+	    }
+
+	
+	// __load_ssh_parameters -
+	//	Reads parameters defined in the server .ini file for a particular section.
+	private function  __load_ssh_parameters  ( $configuration_file, $configuration, $section_key, $section_name )
+	   {
+		// User name
+		$user		=  $configuration -> GetKey ( $section_name, 'User' ) ;
+		
+		if  ( ! $user )
+			error ( new \Thrak\System\RuntimeException ( "Empty or missing username for the \"User\" key " .
+					"in the [$section_name] section of configuration file \"$configuration_file\"." ) ) ;
+		
+		// Password 
+		$password	=  $configuration -> GetKey ( $section_name, 'Password' ) ;
+		
+		// Port
+		$port		=  $configuration -> GetKey ( $section_name, 'Port' ) ;
+		
+		if  ( ! $port )
+			$port	=  22 ;
+		
+		// Authentication mode
+		$value		=  $configuration -> GetKey ( $section_name, 'AuthenticationMode' ) ;
+		
+		switch  ( strtolower ( $value ) )
+		   {
+			case	'key'	:  
+				$auth_mode	=  SshAuthentication::SSH_AUTHENTICATION_PUBKEY_FILE ; 
+				break ;
+				
+			case	'user'	:  
+			case	'password' : 
+				$auth_mode	=  SshAuthentication::SSH_AUTHENTICATION_PASSWORD ; 
+				break ;
+				
+			default :
+				error ( new \Thrak\System\RuntimeException ( "The value \"$value\" specified by the \"AuthenticationMode\" key " .
+						"in the [$section_name] section of configuration file \"$configuration_file\" is invalid : " .
+						"the only authorized values are \"key\" (authentication by private key) or \"user\" (authentication by username/password." ) ) ;
+		    }
+		
+		// Private key file
+		$private_key	=  $configuration -> GetKey ( $section_name, [ 'PrivateKeyFile', 'PrivateKey' ] ) ;
+		
+		if  ( $auth_mode  ==  SshAuthentication::SSH_AUTHENTICATION_PUBKEY_FILE  &&  $private_key  &&  ! file_exists ( $private_key ) )
+				error ( new \Thrak\System\RuntimeException ( "The private key file \"$private_key\" specified by the \"PrivateKey\" key " .
+						"in the [$section_name] section of configuration file \"$configuration_file\" does not exist" ) ) ;
+		
+		// Public key file
+		$public_key	=  $configuration -> GetKey ( $section_name, [ 'PublicKeyFile', 'PublicKey' ] ) ;
+		
+		if  ( $auth_mode  ==  SshAuthentication::SSH_AUTHENTICATION_PUBKEY_FILE  &&  $public_key  &&  ! file_exists ( $public_key ) )
+				error ( new \Thrak\System\RuntimeException ( "The public key file \"$public_key\" specified by the \"PublicKey\" key " .
+						"in the [$section_name] section of configuration file \"$configuration_file\" does not exist" ) ) ;
+
+		// Ssh parameters array
+		$ssh_array	=
+		   [
+			'section-key'	=>  $section_key,
+			'section-name'	=>  $section_name,
+			'user'		=>  $user, 
+			'password'	=>  $password,
+			'port'		=>  $port,
+			'auth-mode'	=>  $auth_mode,
+			'private-key'	=>  $private_key,
+			'public-key'	=>  $public_key
+		    ] ;
+		
+		$this -> SshParameters [ strtolower ( $section_key ) ]		=  $ssh_array ;
+	    }
+
+	
+	// __get_authentication_object -
+	//	Creates an SshAuthentication object based on the configuration parameters supplied by the specified
+	//	Ssh connection.
+	private function  __get_authentication_object ( $parameters ) 
+	   {
+		if  ( $parameters [ 'auth-mode' ]  ===  SshAuthentication::SSH_AUTHENTICATION_PASSWORD )
+			$object		=  new  SshPasswordAuthentication ( $this -> Session, $parameters [ 'user' ], $parameters [ 'password' ] ) ;
+		else if  ( $parameters [ 'auth-mode' ]  ===  SshAuthentication::SSH_AUTHENTICATION_PUBKEY_FILE )
+			$object		=  new  SshPublicKeyAuthentication ( $this -> Session,
+							$parameters [ 'user' ], $parameters [ 'public-key' ], $parameters [ 'private-key' ] ) ;
+		else
+			error ( "Undefined Ssh session name \"{$parameters [ 'section-name' ]}\"" ) ;
+			
+		return ( $object ) ;
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    NAME
+	        Connect - Establishes a connection.
+	
+	    PROTOTYPE
+	        $server -> Connect ( $ssh_session_name = false, $authenticate = false, $check_fingerprint = false ) ;
+	
+	    DESCRIPTION
+	        Establishes a connection with this server.
+	
+	    PARAMETERS
+	        $ssh_session_name (string) -
+	                Ssh session name. If null, the $DefaultSshConnection property value is used.
+	  
+	 	$authenticate (boolean or string) -
+	 		If true, an authentication will be established using the ssh connection specified in the
+			DefaultSshConnection key of the [Settings] section.
+			A string specifies the name of an ssh connection defined in the server configuration file.
+	  
+	 	$check_fingerprint (boolean) -
+	 		If true and a fingerprint has been specified in the server configuration file, the host fingerprint
+	 		will be checked. An error will be issued if both fingerprints differ.
+	
+	  ==============================================================================================================*/
+	public function  Connect ( $ssh_session_name = false, $authenticate = false, $check_fingerprint = false )
+	   {
+		if  ( ! $this -> Session )
+			$this -> GetSession ( $ssh_session_name ) ;
+		
+		$this -> Session -> Connect ( ) ;
+		
+		if  ( $check_fingerprint  &&  $this -> Fingerprint )
+		   {
+			$fingerprint	=  $this -> Session -> Connection -> GetFingerprint ( $this -> FingerprintType ) ;
+			
+			if  ( strcasecmp ( $fingerprint, $this -> Fingerprint ) )
+				error ( new \Thrak\Network\Ssh\SshConnectionException ( "Fingerprint mismatch for host {$this -> Host} : " .
+						"Stored value = {$this -> Fingerprint}, host value = $fingerprint" ) ) ;
+		    }
+		
+		if  ( $authenticate )
+		   {
+			if  ( $authenticate  ===  true )
+				$session_name	=  $this -> DefaultSshConnection ;
+			else
+				$session_name	=  $authenticate ;
+		
+			$key	=  strtolower ( $session_name ) ;
+		
+			if  ( ! isset ( $this -> SshParameters [ $key ] ) )
+				error ( new \Thrak\Network\Ssh\SshConnectionException ( "Invalid session name \"$session_name\" specified for authentication." ) ) ;
+		
+			$object		=  $this -> __get_authentication_object ( $this -> SshParameters [ $key ] ) ;
+			$this -> Session -> Authenticate ( $object ) ;
+		    }
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    NAME
+	        Disconnect - Disconnects from the current server.
+	
+	    PROTOTYPE
+	        $server -> Disconnect ( ) ;
+	
+	    DESCRIPTION
+	        Disconnect from the current server.
+	
+	  ==============================================================================================================*/
+	public function  Disconnect ( )
+	   {
+		$this -> Session -> Disconnect ( ) ;
+	    }
+
+	
+	/*==============================================================================================================
+	
+	    NAME
+	        Reconnect - Reconnects to the current server.
+	
+	    PROTOTYPE
+	        $server -> Reconnect ( ) ;
+	
+	    DESCRIPTION
+	        Reconnects to the current server.
+	
+	  ==============================================================================================================*/
+	public function  Reconnect ( )
+	   {
+		$this -> Session -> Reconnect ( ) ;
+	    }
+
+	
+	/*==============================================================================================================
+	
+	    NAME
+	        Execute - Executes a command on a remote server.
+	
+	    PROTOTYPE
+	        $status		=  $server -> Execute ( $command, &$output = null, $env = null ) ;
+	
+	    DESCRIPTION
+	        See SshSession::Execute().
+	
+	  ==============================================================================================================*/
+	public function  Execute ( $command, &$output = null, $env = null, $callback = null )
+	   {
+		$status		=  $this -> Session -> Execute ( $command, $output, $env, $callback ) ;
+		
+		return ( $status ) ;
+	    }
+	
+
+	/*==============================================================================================================
+	
+	    NAME
+	        GetFingerprint - Retrieves the fingerprint for this host.
+	
+	    PROTOTYPE
+	        $fingerprint	=  $server -> GetFingerprint ( ) ;
+	
+	    DESCRIPTION
+	        Retrieves the fingerprint for this host.
+	
+	    RETURN VALUE
+	        Returns the host fingerprint, using the flags specified in the $FingerprintType property.
+
+	  ==============================================================================================================*/
+	public function  GetFingerprint ( )
+	   {
+		return ( $this -> Session -> Connection -> GetFingerprint ( $this -> FingerprintType ) ) ;
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    NAME
+	        GetFileSystem - Returns an SSH2 filesystem.
+	
+	    PROTOTYPE
+	        $filesystem	=  $server -> GetFileSystem ( ) ;
+	
+	    DESCRIPTION
+	        Returns an object giving access to the remote server using SFTP.
+	
+	    RETURN VALUE
+	        An SshFileSystem object.
+	
+	  ==============================================================================================================*/
+	public function  GetFileSystem ( )
+	   {
+		return ( $this -> Session -> GetFileSystem ( ) ) ;
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    NAME
+	        GetSession - Instantiates a session.
+	
+	    PROTOTYPE
+	        $session	=  $server -> GetSession ( $ssh_session_name = false ) ;
+	
+	    DESCRIPTION
+	        Instantiates a session object, without connecting to the remote server.
+	
+	    PARAMETERS
+	        $ssh_session_name (string) -
+	                Name of the Ssh session, as defined in the configuration file in the [Ssh:*] sections.
+	 		If no session name is given, then the one specified in the DefaultSshConnection key of the 
+	 		[Settings] section will be returned.
+	
+	    RETURN VALUE
+	        An SshSession object.
+	
+	  ==============================================================================================================*/
+	public function  GetSession ( $ssh_session_name = false )
+	   {
+		// Get default ssh connection name if none specified
+		if  ( ! $ssh_session_name )
+			$ssh_session_name	=  $this -> DefaultSshConnection ;
+		
+		// Issue an error if no session name was specified
+		if (  ! $ssh_session_name )
+			error ( new \Thrak\Network\Ssh\SshSessionException ( "No session name specified for server {$this -> Host}" ) ) ;
+		
+		$lc_name	=  strtolower ( $ssh_session_name ) ;
+		
+		// Create the session if defined in the server configuration file
+		if  ( isset ( $this -> SshParameters [ $lc_name ] ) )
+		   {
+			$session			=  new SshSession ( $this -> TargetServer, $this -> SshParameters [ $lc_name ] [ 'port' ] ) ;
+			$this -> Session		=  $session ;
+		    }
+		else
+			error ( "Ssh session \"$ssh_session_name\" does not exist for server {$this -> TargetServer}" ) ;
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    NAME
+	        IsNamedAs - Checks if the server has the specified name.
+	
+	    PROTOTYPE
+	        $status		=  $server -> IsNamedAs ( $name ) ;
+	
+	    DESCRIPTION
+	        Checks if the server has the specified name within its list of name and aliases.
+	
+	    PARAMETERS
+	        $name (string) -
+	                Name to be checked. This name can contain wildcard characters.
+	
+	    RETURN VALUE
+	        True if the server has the specified name as one of its aliases, false otherwise.
+	
+	  ==============================================================================================================*/
+	public function  IsNamedAs ( $name )
+	   {
+		foreach  ( $this -> Names  as  $server_name )
+		   {
+			if  ( String::Matches ( $server_name, $name ) )
+				return ( true ) ;
+		    }
+		
+		return ( false ) ;
+	    }
+
+	
+	/*==============================================================================================================
+	
+	        Various properties.
+	
+	  ==============================================================================================================*/
+	public function  IsConnected ( )
+	   {
+		return ( $this -> Session  &&  $this -> Session -> IsConnected ( ) ) ;
+	    }
+
+	public function  IsAuthenticated ( )
+	   {
+		return ( $this -> Session  &&  $this -> Session -> IsAuthenticated ( ) ) ;
+	    }
+   }

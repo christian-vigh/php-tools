@@ -1,0 +1,163 @@
+<?php
+/**************************************************************************************************************
+
+    NAME
+        RemoteServers.phpclass
+
+    DESCRIPTION
+        An array that contains RemoteServer objects.
+
+    AUTHOR
+        Christian Vigh, 01/2015.
+
+    HISTORY
+    [Version : 1.0]    [Date : 2015/01/06]     [Author : CV]
+        Initial version.
+
+ **************************************************************************************************************/
+
+require_once ( "RemoteServer.phpclass" ) ;
+
+use  Thrak\System\Object ;
+use  Thrak\IO\IniFile ;
+use  Thrak\IO\Path ;
+use  Thrak\Types\AssociativeArray ;
+
+
+/*==============================================================================================================
+
+    RemoteServers -
+        Remote servers management class.
+
+  ==============================================================================================================*/
+class  RemoteServers		extends		Object
+				implements	ArrayAccess, Countable, IteratorAggregate
+   {
+	// Server list
+	private		$Servers	=  [] ;
+	// Database object
+	public		$Database ;
+	
+	
+	// Constructor -
+	//	Builds a RemoteServers array object.
+	public function  __construct ( $db = null )
+	   {
+		global		$Database ;
+		
+		$this -> Database	=  ( $db ) ?  $db : $Database ;
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	        Private methods.
+	
+	  ==============================================================================================================*/
+
+	// __check_uniqueness -
+	//	Checks that all server names and aliases are unique.
+	private function  __check_uniqueness ( )
+	   {
+		$count	=  count ( $this -> Servers ) ;
+		
+		for  ( $i = 0 ; $i  <  $count - 1 ; $i ++ )
+		   {
+			for  ( $j = $i + 1 ; $j  <  $count ; $j ++ )
+			   {
+				$i_count	=  count ( $this -> Servers [$i] -> Names ) ;
+				$j_count	=  count ( $this -> Servers [$j] -> Names ) ;
+				
+				for  ( $k = 0 ; $k  <  $i_count ; $k ++ )
+				   {
+					for  ( $l = 0 ; $l  <  $j_count ; $l ++ )
+					   {
+						if  ( ! strcasecmp ( $this -> Servers [$i] -> Names [$k], $this -> Servers [$j] -> Names [$l] ) )
+							error ( new \Thrak\System\RuntimeException ( "Server name \"{$this -> Servers [$i] -> Names [$k]}\" " .
+									"defined in configuration file \"{$this -> Servers [$j] -> ConfigurationFile}\" " .
+									"conflicts with one of the names defined in configuration file \" " .
+									"\"{$this -> Servers [$i] -> ConfigurationFile}\"" ) ) ;
+					    }
+				    }
+			    }
+		    }
+	    }
+	
+	
+	// __get_by_offset -
+	//	Retrieves the numerical index of a server.
+	private function  __get_by_offset ( $offset )
+	   {
+		if  ( is_numeric ( $offset ) )
+		   {
+			if  ( $offset  >=  0  &&  $offset  <  count ( $this -> Servers ) )
+				return ( $this -> Servers [ $offset ] ) ;
+			else
+				return ( false ) ;
+		    }
+		else
+		   {
+			$count	=  count ( $this -> Servers ) ;
+			
+			for  ( $i = 0 ; $i  <  $count ; $i ++ )
+			   {
+				if  ( $this -> Servers [$i] -> IsNamedAs ( $offset ) )
+					return ( $i ) ;
+			    }
+			
+			return ( false ) ;
+		    }
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	        Interface implementations.
+	
+	  ==============================================================================================================*/
+	public function  Count ( )
+	   { return ( count ( $this -> Servers ) ) ; }
+
+	
+	public function  getIterator ( )
+	   { return ( new ArrayIterator ( $this -> Servers ) ) ; }
+	
+	
+	public function  offsetExists ( $offset )
+	   { return ( $this -> __get_by_offset ( $offset )  !==  false ) ; }
+		
+	
+	public function  offsetGet ( $offset )
+	   {
+		$index		=  $this -> __get_by_offset ( $offset ) ;
+		
+		if  ( $index  ===  false )
+			error ( new \Thrak\System\IndexOutOfRangeException ( $offset ) ) ;
+		
+		return ( $this -> Servers [ $index ] ) ;
+	    }
+	
+	
+	public function  offsetSet ( $offset, $value )
+	   {
+		if  ( $offset  ===  null )
+		   {
+			$this -> Servers []		=  $value ;
+		    }
+		else
+		   {
+			$this -> Servers [ $offset ]	=  $value ;
+		    }
+		
+		$this -> __check_uniqueness ( ) ;
+	    }
+	
+	
+	public function  offsetUnset ( $offset )
+	   {
+		$index		=  $this -> __get_by_offset ( $offset ) ;
+		
+		if  ( index  !==  false )
+			unset ( $this -> Servers [ $index ] ) ;
+	    }
+    }

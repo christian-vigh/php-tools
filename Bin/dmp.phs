@@ -1,0 +1,181 @@
+<?php
+	//!phpcmd(Utilities, 1.0, production) : Dumps contents of a file.
+	/**************************************************************************************************************
+
+	    NAME
+		dmp.phs
+
+	    DESCRIPTION
+		Dumps the contents of a file.
+
+	    AUTHOR
+		Christian Vigh, 06/2015.
+
+	    HISTORY
+	    [Version : 1.0]    [Date : 2015/06/22]     [Author : CV]
+		Initial version.
+
+	 **************************************************************************************************************/
+	require ( "tools.phpinclude" ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Types\String ;
+	use  Thrak\IO\Path ;
+	use  Thrak\IO\AsciiReport ;
+	use  Thrak\IO\FileDumper ;
+	use  Thrak\Processors\IniFile ;
+
+	
+	/*==================================================================================================
+
+		Command line parameters.
+
+	  ==================================================================================================*/
+	$Definitions = <<<END
+<command name="dmp" allow-php-tags="true">
+
+	<usage>
+		Dumps file contents.
+	</usage>
+	
+	<integer name="bytes_per_line, bpl" default="16">
+		Number of bytes to be displayed on each dumped line.
+	</integer>
+	
+	<flag name="full_offsets, full_offset, fo">
+		When specified, byte offsets are displayed with full precision.
+	</flag>
+	
+	<flag name="ignore_duplicates, id, i">
+		Ignore duplicate dumped lines. Only show an occurrence count instead.
+	</flag> 
+	
+	<range name="offset, o" type="unsigned" multiple="true" allow-null="either" default-low="0" default-high="<?= PHP_INT_MAX ?>">
+		Lists of offset ranges to be dumped.
+	</range>
+
+	<keyword name="offset_base, ob" default="hex">
+		Specifies the numeric base to used to display offset values.
+		
+		<case name="binary, bin, b, 2" constant="Thrak\\IO\\FileDumper::DUMP_FLAG_OFFSET_FORMAT_BINARY">
+			Offsets will be displayed in binary format.
+		</case>
+		
+		<case name="octal, oct, o, 8" constant="Thrak\\IO\\FileDumper::DUMP_FLAG_OFFSET_FORMAT_OCTAL">
+			Offsets will be displayed in octal format.
+		</case>
+		
+		<case name="decimal, dec, d, 10" constant="Thrak\\IO\\FileDumper::DUMP_FLAG_OFFSET_FORMAT_DECIMAL">
+			Offsets will be displayed in decimal format.
+		</case>
+		
+		<case name="hexadecimal, hexa, hex, h, 16" constant="Thrak\\IO\\FileDumper::DUMP_FLAG_OFFSET_FORMAT_HEXADECIMAL">
+			Offsets will be displayed in hexadecimal format.
+		</case>
+	</keyword>
+	
+	<keyword name="value_base, vb" default="hex">
+		Specifies the numeric base to used to display bytes.
+		
+		<case name="binary, bin, b, 2" constant="Thrak\\IO\\FileDumper::DUMP_FLAG_FORMAT_BINARY">
+			Bytes will be displayed in binary format.
+		</case>
+		
+		<case name="octal, oct, o, 8" constant="Thrak\\IO\\FileDumper::DUMP_FLAG_FORMAT_OCTAL">
+			Bytes will be displayed in octal format.
+		</case>
+		
+		<case name="decimal, dec, d, 10" constant="Thrak\\IO\\FileDumper::DUMP_FLAG_FORMAT_DECIMAL">
+			Bytes will be displayed in decimal format.
+		</case>
+		
+		<case name="hexadecimal, hexa, hex, h, 16" constant="Thrak\\IO\\FileDumper::DUMP_FLAG_FORMAT_HEXADECIMAL">
+			Bytes will be displayed in hexadecimal format.
+		</case>
+	</keyword>
+	
+	<unnamed-parameters>
+		<file disposition="existing" arguments="1..*" value-text="file">
+			File(s) to be dumped.
+		</file>
+	</unnamed-parameters>
+</command>
+END;
+	
+
+	/*==================================================================================================
+
+	    DumpContents -
+		Dumps file contents.
+
+	  ==================================================================================================*/
+	function  DumpContents ( $file, $display_filename, $offsets )
+	   {
+		global		$Flags, $BytesPerLine ;
+		
+		
+		if  ( count ( $offsets )  ||  filesize  ( $file )  <  10 * 1024 * 1024 )
+			$dump_flags	=  $Flags |  FileDumper::DUMP_FLAG_LOAD_IN_MEMORY ;
+		else 
+			$dump_flags	=  $Flags ;
+			
+		if  ( $display_filename )
+			output ( "$file:" ) ;
+
+		if  ( count ( $offsets ) )
+		   {
+			$dumper		=  new  FileDumper ( $file, $dump_flags, $BytesPerLine ) ;
+
+			foreach  ( $offsets  as  $offset )
+			   {
+				$dumper -> SetRange ( $offset [0], $offset [1] ) ;
+
+				foreach  ( $dumper  as  $line )
+					output ( $line ) ;
+			    }
+		    }
+		else
+		   {
+			$dumper		=  new FileDumper ( $file, $dump_flags, $BytesPerLine ) ;
+		
+			foreach  ( $dumper  as  $line )
+				output ( $line ) ;
+		    }
+	    }
+	  
+	    
+	/*==================================================================================================
+
+		Global constants and variables 
+
+	  ==================================================================================================*/
+	$CL 			=  new  CLParser ( $Definitions ) ;
+	$Files			=  $CL -> Files ;
+	$FileCount		=  count ( $CL -> Files ) ;
+	$Flags			=  FileDumper::DUMP_FLAG_NONE ;
+	$BytesPerLine		=  $CL -> bytes_per_line ;
+	$FullOffsets		=  $CL -> full_offsets ;
+	$IgnoreDuplicates	=  $CL -> ignore_duplicates ;
+	$Offsets		=  $CL -> offset ;
+	$OffsetBase		=  $CL -> offset_base ;
+	$ValueBase		=  $CL -> value_base ;
+	
+	$Flags			|=  $ValueBase | $OffsetBase ;
+
+	if  ( $IgnoreDuplicates )
+		$Flags	|=  FileDumper::DUMP_FLAG_IGNORE_DUPLICATE_BYTES ;
+	
+	if  ( ! $FullOffsets )
+		$Flags	|=  FileDumper::DUMP_FLAG_AUTOSIZE_OFFSETS ;
+	
+		
+	/*==================================================================================================
+
+		Main program.
+
+	  ==================================================================================================*/
+	foreach  ( $Files  as  $file )
+		DumpContents ( $file, $FileCount, $Offsets ) ;
+		
+	if (  ! $FileCount )
+		$CL -> DisplayHelp ( ) ;

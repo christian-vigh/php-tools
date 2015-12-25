@@ -1,0 +1,315 @@
+/***************************************************************************************************
+
+    NAME
+	Indiscipline.mysql
+
+    DESCRIPTION
+	Indiscipline server management database.
+
+    AUTHOR
+	Christian Vigh, 10/2014.
+
+    HISTORY
+	[Version : 1.0]	[Date : 2012/10/19]	[Author : CV]
+		Initial version.
+
+  ***************************************************************************************************/
+
+CREATE DATABASE IF NOT EXISTS indiscipline  DEFAULT CHARSET latin1 ;
+USE indiscipline ;
+
+/*==============================================================================================================
+
+    servers table -
+        Holds the list of servers defined in the rsadmin.ini configuration file.
+
+  ==============================================================================================================*/
+DROP TABLE IF EXISTS  servers ;
+CREATE TABLE  servers
+   (
+	ser_id 				INT UNSIGNED		NOT NULL AUTO_INCREMENT
+								COMMENT 'Server unique id',
+	ser_name			VARCHAR(128) 		NOT NULL DEFAULT ''
+								COMMENT 'Server name',
+	
+	PRIMARY KEY 			( ser_id ),
+	UNIQUE KEY 			( ser_name )
+    )  ENGINE = MyISAM CHARSET latin1 COMMENT 'List of remote servers' ;
+    
+    
+/*==============================================================================================================
+
+    servers_domains table -
+        Holds the list of servers domains defined in the rsadmin.ini configuration file.
+
+  ==============================================================================================================*/
+DROP TABLE IF EXISTS  server_domains ;
+CREATE TABLE  server_domains
+   (
+	serd_id 			INT UNSIGNED		NOT NULL AUTO_INCREMENT
+								COMMENT 'Server domain unique id',
+	serd_server_id 			INT UNSIGNED		NOT NULL DEFAULT 0
+								COMMENT 'Hosting server id, in the servers table',
+	serd_domain 			VARCHAR(1024)		NOT NULL DEFAULT ''
+								COMMENT 'Domain name',
+							
+	PRIMARY KEY 			( serd_id ),
+	UNIQUE KEY 			( serd_server_id, serd_domain(128) ) 
+    )  ENGINE = MyISAM CHARSET latin1 COMMENT 'List of domains hosted by remote servers' ;
+    
+
+/*==============================================================================================================
+
+    servers_logfiles table -
+        Holds the list of servers logfile entries that can be found on each server defined in the rsadmin.ini 
+	configuration file.
+
+  ==============================================================================================================*/
+DROP TABLE IF EXISTS  server_logfiles ;
+CREATE TABLE  server_logfiles
+   (
+	serl_id 			INT UNSIGNED		NOT NULL AUTO_INCREMENT
+								COMMENT 'Unique id for this log file of the related domain',
+	serl_domain_id			INT UNSIGNED		NOT NULL DEFAULT 0
+								COMMENT 'Parent domain id',
+	serl_logfile_type 		TINYINT 		NOT NULL DEFAULT 0
+								COMMENT 'Logfile type : 0 = http, 1 = mail, 2 = auth, ...',
+	serl_path 			VARCHAR(1024)		NOT NULL DEFAULT ''
+								COMMENT 'Logfile path',
+	serl_last_update 		TIMESTAMP 		NOT NULL DEFAULT 0
+								COMMENT 'Last update time',
+	serl_last_line_number 		INT UNSIGNED 		NOT NULL DEFAULT 0
+								COMMENT 'Last line number found during last update',
+							
+	PRIMARY KEY 			( serl_id ),
+	UNIQUE KEY 			( serl_domain_id, serl_path(128) ),
+	KEY 				( serl_logfile_type, serl_path(128) )
+    )  ENGINE = MyISAM CHARSET latin1 COMMENT 'Logfiles stored on each hosted domain of each remote server' ;
+   
+   
+/*==============================================================================================================
+
+    server_logfile_entries table -
+        Contents of the server logfiles.
+
+  ==============================================================================================================*/
+DROP TABLE IF EXISTS  server_logfile_entries ;
+CREATE TABLE  server_logfile_entries
+   (
+	serle_id			BIGINT UNSIGNED		NOT NULL AUTO_INCREMENT
+								COMMENT 'Unique id for this logfile entry',
+	serle_logfile_id 		INT 			NOT NULL DEFAULT 0
+								COMMENT 'Id of log file',
+	serle_logfile_type 		TINYINT 		NOT NULL DEFAULT 0
+								COMMENT 'Logfile type',
+	serle_date 			TIMESTAMP 		NOT NULL DEFAULT 0
+								COMMENT 'Date of this log entry',
+	serle_message_id 		BIGINT UNSIGNED 	NOT NULL DEFAULT 0
+								COMMENT 'Id, in the server logfile string store, of the log message',
+	serle_processed			TINYINT 		NOT NULL DEFAULT 0
+								COMMENT '1 if log entry has been processed',
+	serle_entry_type		SMALLINT UNSIGNED 	NOT NULL DEFAULT 0
+								COMMENT 'Log entry type ; depends on the logfile type',
+	serle_process_id 		SMALLINT UNSIGNED 	NOT NULL DEFAULT 0
+								COMMENT 'Id of the process who generated this log entry',
+								
+	PRIMARY KEY 			( serle_id ),
+	KEY 				( serle_logfile_id ),
+	KEY 				( serle_logfile_type, serle_date ),
+	KEY 				( serle_logfile_type, serle_processed ),
+	KEY 				( serle_logfile_type, serle_entry_type ),
+	KEY 				( serle_processed ),
+	KEY  				( serle_message_id )
+    )  ENGINE = MyISAM CHARSET latin1 COMMENT 'Logfile entries' ;
+
+
+/*==============================================================================================================
+
+    server_logfile_data table -
+        Data extracted from server logfile entries.
+
+  ==============================================================================================================*/
+DROP TABLE IF EXISTS  server_logfile_data ;
+CREATE TABLE  server_logfile_data
+   (
+	serld_id 			BIGINT 			NOT NULL AUTO_INCREMENT
+								COMMENT 'Unique id for this entry',
+	serld_parent_id 		BIGINT 			NOT NULL DEFAULT 0
+								COMMENT 'Id of the parent row in the server_logfile_entries table',
+	serld_logfile_type 		TINYINT 		NOT NULL DEFAULT 0
+								COMMENT 'Logfile type',
+	serld_data_type 		SMALLINT UNSIGNED 	NOT NULL DEFAULT 0
+								COMMENT 'Logfile data type (one of the LogStringStore::LOGSTORE_* constants)',
+	serld_flags 			SMALLINT UNSIGNED 	NOT NULL DEFAULT 0
+								COMMENT 'Entry-type dependent flags',
+	serld_string_store_id 		BIGINT 			NOT NULL DEFAULT 0
+								COMMENT 'Id of the value in the string store',
+								
+	PRIMARY KEY 			( serld_id ),
+	UNIQUE KEY 			( serld_parent_id, serld_data_type ),
+	KEY 				( serld_data_type ),
+	KEY 				( serld_logfile_type, serld_data_type ),
+	KEY 				( serld_string_store_id )
+    )  ENGINE = MyISAM CHARSET latin1 COMMENT 'Logfile data extracted from logfile entries' ;
+
+
+/*==============================================================================================================
+
+    server_resolved_ips table -
+        Ip addresses that have been resolved from the data extracted in the server_logfile_data table.
+
+  ==============================================================================================================*/
+DROP TABLE IF EXISTS  server_resolved_ips ;
+CREATE TABLE  server_resolved_ips
+   (
+	serri_id 			BIGINT 			NOT NULL AUTO_INCREMENT 
+								COMMENT 'Unique id for this entry',
+	serri_ip_id 			BIGINT 			NOT NULL DEFAULT 0
+								COMMENT 'Id, in the string store, of this ip address',
+	serri_domain_id 		BIGINT 			NOT NULL DEFAULT 0
+								COMMENT 'Id, in the string store, of the resolved domain name (= 0 if resolves to nothing)',
+	serri_computer_name_id 		BIGINT 			NOT NULL DEFAULT 0
+								COMMENT 'Id, in the string store, of the computer name (when the ip host is a computer name, not a domain)',
+								
+	PRIMARY KEY 			( serri_id ),
+	KEY 				( serri_ip_id ),
+	KEY 				( serri_domain_id ),
+	KEY 				( serri_computer_name_id )
+    )  ENGINE = MyISAM CHARSET latin1 COMMENT 'Ip addresses which have been resolved' ;
+ 
+ 
+/*==============================================================================================================
+
+    server_iptables table -
+        Iptable rules for each server.
+
+  ==============================================================================================================*/
+DROP TABLE IF EXISTS  server_iptables ;
+CREATE TABLE server_iptables
+   (
+	seri_id 			BIGINT 			NOT NULL AUTO_INCREMENT
+								COMMENT 'Unique id for this iptables entry',
+	seri_server_id			BIGINT 			NOT NULL DEFAULT 0
+								COMMENT 'Server id',
+	seri_chain 			VARCHAR(64)		NOT NULL DEFAULT ''
+								COMMENT 'Iptables chain (eg, INPUT)',
+	seri_policy			VARCHAR(64)		NOT NULL DEFAULT ''
+								COMMENT 'Iptables policy (eg, ACCEPT)',
+	seri_target			VARCHAR(64)		NOT NULL DEFAULT ''
+								COMMENT 'Iptables rule target (eg, DROP)',
+	seri_source 			VARCHAR(39)		NOT NULL DEFAULT ''
+								COMMENT 'Iptables source (eg, an ip address)',
+								
+	PRIMARY KEY 			( seri_id ),
+	KEY 				( seri_source ),
+	UNIQUE KEY 			( seri_server_id, seri_chain, seri_policy, seri_target, seri_source )
+	
+    )  ENGINE = MyISAM CHARSET latin1 COMMENT 'Iptables entries per server' ;
+  
+
+/*==============================================================================================================
+
+    whois_information table -
+        Holds general whois information for ip addresses stored in the server string store table.
+
+  ==============================================================================================================*/
+DROP TABLE IF EXISTS  whois_information ;
+CREATE TABLE  whois_information 
+   (
+	whoi_id 			BIGINT UNSIGNED		NOT NULL AUTO_INCREMENT 
+								COMMENT 'Unique id for this whois entry',
+	whoi_last_update 		TIMESTAMP 		NOT NULL DEFAULT 0
+								COMMENT 'Last update for this entry',
+	whoi_last_whois_update 		TIMESTAMP 		NOT NULL DEFAULT 0
+								COMMENT 'Very last update of any whois information',
+	whoi_parent_id 			BIGINT UNSIGNED 	NOT NULL DEFAULT 0
+								COMMENT 'Id of the parent whois information, if any',
+	whoi_ip_low 			CHAR(39) 		NOT NULL DEFAULT ''
+								COMMENT 'Low ip address',
+	whoi_ip_high 			CHAR(39)		NOT NULL DEFAULT ''
+								COMMENT 'High ip address. Equal to low ip address if whoi_flags & WhoisInformation::WHOIS_FLAGS_IS_PROVIDER is 0',
+	whoi_ipv4_low 			INT UNSIGNED 		NOT NULL DEFAULT 0
+								COMMENT 'Low ip v4 address',
+	whoi_ipv4_high 			INT UNSIGNED		NOT NULL DEFAULT 0
+								COMMENT 'High ip v4 address.',
+	whoi_flags 			SMALLINT		NOT NULL DEFAULT 0
+								COMMENT 'A combination of WhoisInformation::WHOIS_FLAGS_* constants',
+	whoi_country 			CHAR(2)			NOT NULL DEFAULT ''
+								COMMENT '2-letters country code',
+	whoi_text 			LONGTEXT 		NOT NULL
+								COMMENT 'Whois output for this ip/domain',
+								
+	PRIMARY KEY 			( whoi_id ),
+	UNIQUE KEY			( whoi_ipv4_low, whoi_ipv4_high ),
+	KEY 				( whoi_ipv4_high )
+    )  ENGINE = MyISAM CHARSET latin1 COMMENT 'Whois information' ;
+   
+
+ 
+/*==============================================================================================================
+
+    whois_information_blocks table -
+        Individual information blocks present in whois_information data.
+
+  ==============================================================================================================*/
+DROP TABLE IF EXISTS  whois_information_blocks ;
+CREATE TABLE whois_information_blocks 
+   (
+	whoib_id 			BIGINT UNSIGNED		NOT NULL AUTO_INCREMENT
+								COMMENT 'Unique id for this information block',
+	whoib_information_id 		BIGINT UNSIGNED		NOT NULL DEFAULT 0
+								COMMENT 'Parent whois_information id',
+	whoib_type 			INT UNSIGNED 		NOT NULL DEFAULT 0
+								COMMENT 'Block type (one of the WhoisInformation::BLOCK_* constants)',
+								
+	PRIMARY KEY 			( whoib_id ),
+	KEY 				( whoib_information_id )
+    )  ENGINE = MyISAM CHARSET latin1 COMMENT 'Whois information block definitions' ;
+   
+   
+DROP TABLE IF EXISTS  whois_information_block_entries ;
+CREATE TABLE  whois_information_block_entries
+   (
+	whoibe_id 			BIGINT UNSIGNED		NOT NULL AUTO_INCREMENT
+								COMMENT 'Unique id for this information block entry',
+	whoibe_information_id 		BIGINT UNSIGNED		NOT NULL DEFAULT 0
+								COMMENT 'Parent id in the whois_information table',
+	whoibe_block_id 		BIGINT UNSIGNED		NOT NULL DEFAULT 0
+								COMMENT 'Parent block id in the whois_information_blocks table',
+	whoibe_type 			INT UNSIGNED 		NOT NULL DEFAULT 0
+								COMMENT 'Block entry type',
+	whoibe_common_type 		INT UNSIGNED 		NOT NULL DEFAULT 0
+								COMMENT 'Unified entry type',
+	whoibe_keyword_id 		BIGINT UNSIGNED		NOT NULL DEFAULT 0
+								COMMENT 'Id, in the whois_string_store table, of the whois entry keyword',
+	whoibe_text_id 			BIGINT UNSIGNED		NOT NULL DEFAULT 0
+								COMMENT 'Text value',
+	whoibe_value_id 		BIGINT UNSIGNED		NOT NULL DEFAULT 0
+								COMMENT 'Id, in the whois_string_store table, of the whois serialized entry value',
+								
+	PRIMARY KEY 			( whoibe_id ),
+	KEY 				( whoibe_information_id ),
+	KEY 				( whoibe_block_id ),
+	KEY 				( whoibe_type ),
+	KEY 				( whoibe_common_type ),
+	KEY 				( whoibe_keyword_id )
+								
+   )  ENGINE = MyISAM CHARSET latin1 COMMENT 'Whois information block definition entries' ;
+
+   
+/*==============================================================================================================
+
+    whois_missing_ranges -
+        Holds information about the last computed missing ranges.
+
+  ==============================================================================================================*/
+DROP TABLE IF EXISTS  whois_missing_ranges ;
+CREATE TABLE  whois_missing_ranges 
+   (
+	whomr_ip_low 		INT UNSIGNED 		NOT NULL DEFAULT 0
+							COMMENT 'Low ip of the range',
+	whomr_ip_high 		INT UNSIGNED		NOT NULL DEFAULT 0
+							COMMENT 'High ip of the range',
+							
+	PRIMARY KEY 		( whomr_ip_low, whomr_ip_high )
+    )  ENGINE = MyISAM CHARSET latin1 COMMENT 'Whois missing ranges' ;

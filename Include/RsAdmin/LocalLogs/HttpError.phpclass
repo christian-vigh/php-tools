@@ -1,0 +1,731 @@
+<?php
+/**************************************************************************************************************
+
+    NAME
+        HttpError.phpclass
+
+    DESCRIPTION
+        Analyzes HTTP error log entries.
+
+    AUTHOR
+        Christian Vigh, 07/2015.
+
+    HISTORY
+    [Version : 1.0]    [Date : 2015/07/21]     [Author : CV]
+        Initial version.
+
+ **************************************************************************************************************/
+
+
+/*==============================================================================================================
+
+    LocalHttpErrorLogBase, LocalHttpErrorLog and LocalHttpError404Log classes -
+        Handles http error logfile entries.
+
+  ==============================================================================================================*/
+class  LocalHttpErrorLogBase	extends  LocalLog
+   {
+	// Http messages severity
+	const	HTTP_SEVERITY_NOTICE		=  0 ;
+	const   HTTP_SEVERITY_WARNING		=  1 ;
+	const	HTTP_SEVERITY_ERROR		=  2 ;
+	const   HTTP_SEVERITY_CUSTOM_CATCHED	=  3 ;
+	const   HTTP_SEVERITY_CUSTOM_UNKNOWN	=  4 ;
+	const   HTTP_SEVERITY_CRITICAL		=  5 ;
+	const   HTTP_SEVERITY_ALERT		=  6 ;
+	const   HTTP_SEVERITY_DEBUG		=  7 ;
+
+
+	// Association between Http severities and their title in the Apache log files
+	protected static	$HttpSeverities		=  
+	   [
+		'notice'	=>  self::HTTP_SEVERITY_NOTICE,
+		'warning'	=>  self::HTTP_SEVERITY_WARNING,
+		'warn'		=>  self::HTTP_SEVERITY_WARNING,
+		'error'		=>  self::HTTP_SEVERITY_ERROR,
+		'catched'	=>  self::HTTP_SEVERITY_CUSTOM_CATCHED,
+		'unknown'	=>  self::HTTP_SEVERITY_CUSTOM_UNKNOWN,
+		'crit'		=>  self::HTTP_SEVERITY_CRITICAL,
+		'debug'		=>  self::HTTP_SEVERITY_DEBUG,
+		'alert'		=>  self::HTTP_SEVERITY_ALERT
+	    ] ;
+
+	// Php messages severity - note that there is no distinction in Apache error logs between a core, user or
+	// basic error : they all share the same label
+	const	PHP_SEVERITY_NONE		=  0 ;		// The log entry is not a PHP error but a generic http message
+	const	PHP_SEVERITY_ERROR		=  1 ;
+	const	PHP_SEVERITY_WARNING		=  2 ;
+	const	PHP_SEVERITY_PARSE		=  3 ;
+	const	PHP_SEVERITY_NOTICE		=  4 ;
+	const	PHP_SEVERITY_RECOVERABLE_ERROR	=  5 ;
+	const	PHP_SEVERITY_DEPRECATED		=  6 ;
+	const	PHP_SEVERITY_FATAL		=  7 ;
+	const   PHP_SEVERITY_PARSE_ERROR	=  8 ;
+
+	// Association between PHP severities and their title in the Apache log files
+	protected static	$PhpSeverities		=  
+	   [
+		'error'			=>  self::PHP_SEVERITY_ERROR,
+		'warning'		=>  self::PHP_SEVERITY_WARNING,
+		'parse'			=>  self::PHP_SEVERITY_PARSE,			// Don't know if it appears in log files
+		'notice'		=>  self::PHP_SEVERITY_NOTICE,
+		'recoverable'		=>  self::PHP_SEVERITY_RECOVERABLE_ERROR,	// Don't know either
+		'deprecated'		=>  self::PHP_SEVERITY_DEPRECATED,
+		'fatal'			=>  self::PHP_SEVERITY_FATAL,
+		'fatal error'		=>  self::PHP_SEVERITY_FATAL,
+		'parse error'		=>  self::PHP_SEVERITY_PARSE_ERROR
+	    ] ;
+
+	// Http codes
+	const	HTTP_NONE				=   0 ;
+	const	HTTP_CUSTOM_404				=   1 ;
+	const   HTTP_NO_HOSTNAME			=   2 ;
+	const   HTTP_RECONFIGURED			=   3 ;
+	const	HTTP_CAUGHT_SIGNAL			=   4 ;
+	const   HTTP_RESTART_REQUESTED			=   5 ;
+	const	HTTP_FILE_NOT_FOUND			=   6 ;
+	const   HTTP_SCRIPT_NOT_FOUND			=   7 ;
+	const	HTTP_INVALID_URI_IN_REQUEST		=   8 ;
+	const	HTTP_SOCKET_ACCEPT_ERROR		=   9 ;
+	const   HTTP_CLIENT_DENIED_BY_CONFIGURATION	=  10 ;
+	const   HTTP_INVALID_METHOD			=  11 ;
+	const	HTTP_ERROR_READING_HEADERS		=  12 ;
+	const   HTTP_INVOKED_DIRECTORY_AS_SCRIPT	=  13 ;
+	const   HTTP_STOPPING_CHILD			=  14 ;
+	const   HTTP_MALFORMED_HEADER			=  15 ;
+	const	HTTP_PHP_MESSAGE			=  16 ;
+	const	HTTP_DIRECTORY_INDEX_FORBIDDEN		=  17 ;
+	const   HTTP_PERMISSION_DENIED			=  18 ; 
+	const   HTTP_TOO_MANY_REDIRECTS			=  19 ;
+	const   HTTP_KEYWORD_NOT_ALLOWED_HERE		=  20 ;
+	const	HTTP_DEBUG_MESSAGE			=  21 ;
+	const	HTTP_CERTIFICATE_ISSUE			=  22 ;
+	const   HTTP_INVALID_CONTENT_LENGTH		=  23 ; 
+
+
+	// Constructor -
+	//	Builds the log object
+	public function  __construct ( $logtype, $string_store, $rsadmin ) 
+	   {
+		parent::__construct ( $logtype, $string_store, $rsadmin ) ;
+	    }
+ 
+
+	/*--------------------------------------------------------------------------------------------------------------
+
+	    Parse -
+		Parses error and custom error 404 messages such as :
+
+		[Sun Jul 19 00:30:03 2015] [notice] Apache/2.2.22 (Debian) configured -- resuming normal operations
+		[Sun Jul 19 01:21:02 2015] [error] [client 81.19.209.184] client sent HTTP/1.1 request without hostname 
+					   (see RFC2616 section 14.23): /w00tw00t.at.ISC.SANS.DFind:)
+		[Sun Jul 12 01:50:44 2015] [error] [client 176.101.255.216] File does not exist: 
+					    /var/www/Ringing.at.your.dorbell!, 
+					    referer: http://google.com/search?q=2+guys+1+horse
+		[Sun Jul 12 01:50:48 2015] [error] [client 176.101.255.216] File does not exist: /var/www/Diagnostics.asp
+
+	 *-------------------------------------------------------------------------------------------------------------*/
+	
+	// Regex to match php errors
+	private static	$regex_php				=  '#
+									PHP
+									\s+
+									(?P<severity> [^:]+)
+									: \s+
+									(?P<message> .*?)
+									\s+ in \s+
+									(?P<file> / [^\s]+)
+									\s+ on \s+ line \s+
+									(?P<line> \d+)
+								    #imsx' ;
+	// Message of the form :
+	//	client sent HTTP/1.1 request without hostname (see RFC2616 section 14.23): /w00tw00t.at.ISC.SANS.DFind:)
+	//	Constant : HTTP_NO_HOSTNAME
+	private static  $regex_http_no_hostname			=  '#
+									(?P<message>
+										client \s+ sent \s+ HTTP .*? request \s+ without \s+ hostname
+										[^:]+
+										: \s+
+										(?P<url> [^\s]+)
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	Apache/2.2.22 (Debian) configured -- resuming normal operations
+	//	Constant : HTTP_RECONFIGURED
+	private static	$regex_http_reconfigured		=  '#
+									(?P<message>
+										Apache .*? configured
+										\s+ -- \s+
+										resuming \s+ normal \s+ operations
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form : 
+	//	caught SIGTERM, shutting down
+	//	Constant : HTTP_CAUGHT_SIGNAL
+	private static	$regex_http_caught_signal		=  '#
+									(?P<message>
+										Caught .*? , \s+ shutting \s+ down
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	Graceful restart requested, doing restart
+	//	Constant : HTTP_RESTART_REQUESTED
+	private static	$regex_http_restart_requested		=  '#
+									(?P<message>
+										Graceful \s+ restart \s+ requested, \s+
+										doing \s+ restart
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	File does not exist: /var/www/mail
+	//	Constant : HTTP_FILE_NOT_FOUND
+	private static	$regex_http_file_not_found		=  '#
+									(?P<message>
+										File \s+ does \s+ not \s+ exist: \s+
+										(?P<file> [^\s]+)
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	script '/var/www/xmlrpc.php' not found or unable to stat, referer: http://92.222.1.99/xmlrpc.php
+	//	Constant : HTTP_SCRIPT_NOT_FOUND
+	private static	$regex_http_script_not_found		=  '#
+									(?P<message>
+										script \s+ \'
+										(?P<file> [^\']+)
+										\' \s+ not \s+ found
+										.*?
+										(
+											, \s+ referer: \s+
+											(?P<referer> [^\s]+)
+										 )?
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	script not found or unable to stat: /usr/lib/cgi-bin/php
+	//	Constant : HTTP_SCRIPT_NOT_FOUND
+	private static	$regex_http_script_not_found_2		=  '#
+									(?P<message>
+										Script \s+ not \s+ found .*? : \s+
+										(?P<file> [^\s]+)
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	Invalid URI in request t3 12.1.2
+	//	Constant : HTTP_INVALID_URI_IN_REQUEST.
+	private static	$regex_http_invalid_uri_in_request	=  '#
+									(?P<message>
+										Invalid \s+ URI \s+ in \s+ request \s+
+										(?P<url> [^\s]+)
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	(9)Bad file descriptor: apr_socket_accept: (client socket)
+	//	
+	private static   $regex_http_socket_accept_error	=  '#
+									(?P<message>
+										.*?
+										Bad \s+ file \s+ descriptor : \s+
+										apr_socket_accept:
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	client denied by server configuration: /var/www/.htaccess
+	//	Constant : HTTP_CLIENT_DENIED_BY_CONFIGURATION
+	private static	$regex_http_client_denied_by_conf	=  '#
+									(?P<message>
+										Client \s+ denied \s+ by \s+ server \s+ configuration: \s+
+										(?P<file> [^\s]+)
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	Invalid method in request ?
+	// Constant : HTTP_INVALID_METHOD
+	private static	$regex_http_invalid_method		=  '#
+									(?P<message>
+										Invalid \s+ method \s+ in \s+ request \s+
+										(?P<url> [^\s]+)
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	[error] [client 91.109.6.212] Invalid Content-Length
+	// Constant : HTTP_INVALID_CONTENT_LENGTH
+	private static	$regex_http_invalid_content_length	=  '#
+									(?P<message>
+										Invalid \s+ Content-length
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	request failed: error reading the headers
+	// Constant : HTTP_ERROR_READING_HEADERS
+	private static	$regex_http_error_reading_headers	=  '#
+									(?P<message>
+										request \s+ failed: \s+ error \s+ reading \s+ the \s+ headers
+										.*
+									 )
+								    #imsx' ;
+	// Custom error 404
+	private static	$regex_custom_error_404			=  '#
+									(?P<message>
+										( 
+											( (Url) | (File) )
+											\s+ does \s+ not \s+ exist: \s+
+										 )?
+										(?P<url> [^\s,]+)
+										(
+											, \s+ referer \s+
+											(?P<referer> [^\s]+)
+										 )?
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	attempt to invoke directory as script: /usr/lib/cgi-bin/
+	//	Constant : HTTP_INVOKED_DIRECTORY_AS_SCRIPT
+	private static	$regex_invoked_directory_as_script	=  '#
+									(?P<message>
+										attempt \s+ to \s+ invoke \s+ directory \s+ as \s+ script: \s+ 
+										(?P<file> [^\s]+)
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	child process 12023 still did not exit, sending a SIGTERM
+	// or :
+	//	[error] could not make child process 12023 exit, attempting to continue anyway
+	//	Constant : HTTP_STOPPING_CHILD
+	private static	$regex_stopping_child			=  '#
+									(?P<message>
+									    (
+										child \s+ process \s+ \d+ \s+ still \s+ did \s+ not \s+ exit
+									     )  |
+									    (
+										could \s+ not \s+ make \s+ child \s+ process \s+ \d+ \s+
+									     )
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	Client sent malformed Host header, referer: () { :; }; /bin/ping -c 3 82.118.236.247
+	//	Constant : HTTP_MALFORMED_HEADER
+	private static	$regex_malformed_header			=  '#
+									(?P<message>
+									    (
+										Client \s+ sent \s+ malformed \s+ Host \s+ header
+									     ) 
+									     .*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	[error] [client 218.241.108.79] Directory index forbidden by Options directive:	/path/to/dir
+	//	Constant : HTTP_DIRECTORY_INDEX_FORBIDDEN
+	private static	$regex_directory_index_forbidden	=  '#
+									(?P<message>
+									    (
+										Directory \s+ index  \s+ forbidden \s+ 
+									     ) 
+									     .*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	[crit] [client 180.76.15.138] (13)Permission denied:
+        //	server/www/www.wuthering-bytes.com/site/.htaccess pcfg_openfile: unable to check htaccess file,
+        //	ensure it is readable
+	//	Constant : HTTP_PERMISSION_DENIED
+	private static	$regex_permission_denied		=  '#
+									(?P<message>
+									    (
+										.* Permission \s+ denied: \s+
+										(?P<file> [^\s]+)
+									     ) 
+									     \s+ pcfg_openfile:
+									     .*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	[error] [client 81.50.179.24] Request exceeded the limit of 10 internal redirects due to probable
+	//	configuration error. Use 'LimitInternalRecursion' to increase the limit if necessary. Use 'LogLevel
+	//	debug' to get a backtrace.
+	// Constant : HTTP_TOO_MANY_REDIRECTS
+	private static	$regex_too_many_redirects		=  '#
+									(?P<message>
+									    (
+										.* Request \s+ exceeded \s+ the \s+ limit \s+ of
+									     )
+									     .*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	[alert] [client 81.50.179.24] /server/www/www.wuthering-bytes.com/site/.htaccess: LogLevel not allowed here
+	// Constant : HTTP_KEYWORD_NOT_ALLOWED_HERE
+	private static	$regex_keyword_not_allowed_here		=  '#
+									(?P<message>
+									    (
+										\w+ \s+ not \s+ allowed \s+ here
+									     )
+									     .*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	[error] Server should be SSL-aware but has no certificate configured [Hint: SSLCertificateFile]
+	//	(/etc/apache2-agagax/apache2.conf:48)
+	// or :
+	//	[warn] RSA server certificate is a CA certificate (BasicConstraints: CA == TRUE !?)
+	// or :
+	//	[warn] RSA server certificate CommonName (CN) `admin.wuthering-bytes.com' does NOT match server name!?
+	// Constant : HTTP_CERTIFICATE_ISSUE
+	private static	$regex_certificate_issue		=  '#
+									(?P<message>
+										(
+										    (
+											SSL-aware \s+ but \s+ has \s+ no \s+ certificate \s+ configured
+										     )  |
+										    (
+											RSA \s+ server \s+ certificate \s+ is \s+ a \s+ CA \s+ certificate
+										     )  |
+										    (
+											RSA \s+ server \s+ certificate \s+ CommonName .* does \s+ not \s+ match
+										     ) 
+										)
+									     .*
+									 )
+								    #imsx' ;
+
+
+	protected function  Parse ( $line, &$parsed_data, $string_store )
+	   {
+		static	$re	=  "#
+					\[
+						(?P<severity> [^\]]+)
+					\]
+					\s+
+					(
+						\[
+						client 
+						\s+
+						(?P<ip> [^]]+)
+						\]
+						\s+
+					 )?
+					(?P<message> .*)
+				    #imsx" ;
+
+		// First, check that the supplied message has three parts : a severity, an optional client ip and a message
+		if  ( preg_match ( $re, $line, $match ) )
+		   {
+			$http_severity		=  $this -> GetHttpSeverity ( $match [ 'severity' ] ) ;
+			$php_severity		=  self::PHP_SEVERITY_NONE ;
+			$log_error_code		=  self::HTTP_NONE ;
+			$ip			=  $this -> PreprocessIp ( $match [ 'ip' ] ) ;
+			$ip_id			=  ( isset ( $match [ 'ip' ] ) ) ? 
+							$string_store -> Insert ( LogStringStore::LOGSTORE_IP, $ip ) : 0 ;
+			$url_id			=  0 ;
+			$file_id		=  0 ;
+			$message_id		=  0 ;
+			$referer_id		=  0 ;
+			$php_source_file_id	=  0 ;
+			$php_source_file_line	=  0 ;
+
+			$message	=  $match [ 'message' ] ;
+
+			// The big IF that tries to recognize all possible log messages :
+
+			// A debug message
+			if  ( $http_severity  ==  self::HTTP_SEVERITY_DEBUG )
+			    {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE, $match [ 'message' ] ) ;
+				$log_error_code		=  self::HTTP_DEBUG_MESSAGE ;
+			     }
+			// Custom error 404 log messages
+			else if  ( $this -> LogType  ==  RsAdmin::LOGTYPE_HTTP_ERROR_404 )
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE, $match [ 'message' ] ) ;
+
+				if (  preg_match ( self::$regex_custom_error_404, $match [ 'message' ], $error_match ) )
+				   {
+					$url_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_HTTP_REQUEST_URL, $error_match [ 'url' ] ) ;
+
+					if  ( isset ( $error_match [ 'referer' ] ) )
+						$referer_id	=  $string_store -> Insert ( LogStringStore::LOGSTORE_HTTP_REFERER, $error_match [ 'referer' ] ) ;
+				    }
+
+				$log_error_code		=  self::HTTP_CUSTOM_404 ;
+			    }
+			// Message of the form :
+			//	PHP message_severity: message_text in source_filename on line source_line
+			else if  ( preg_match ( self::$regex_php, $message, $regex_match ) )
+			   {
+				$php_severity		=  $this -> GetPhpSeverity ( $regex_match [ 'severity' ] ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_PHP_ERROR_MESSAGE, $regex_match [ 'message' ] ) ;
+				$php_source_file_id	=  $string_store -> Insert ( LogStringStore::LOGSTORE_PHP_SOURCE_FILE, $regex_match [ 'file' ] ) ;
+				$php_source_file_line	=  ( integer ) $regex_match [ 'line' ] ;
+				$log_error_code		=  self::HTTP_PHP_MESSAGE ;
+			    }
+			// Message of the form :
+			//	client sent HTTP/1.1 request without hostname (see RFC2616 section 14.23): /w00tw00t.at.ISC.SANS.DFind:)
+			else if  ( preg_match ( self::$regex_http_no_hostname, $message, $regex_match ) )
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE, $regex_match [ 'message' ] ) ;
+				$url_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_HTTP_REQUEST_URL, $regex_match [ 'url' ] ) ;
+				$log_error_code		=  self::HTTP_NO_HOSTNAME ;
+			    }
+			// Message of the form :
+			//	Apache/2.2.22 (Debian) configured -- resuming normal operations
+			else if  ( preg_match ( self::$regex_http_reconfigured, $message, $regex_match ) )
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE, $regex_match [ 'message' ] ) ;
+				$log_error_code		=  self::HTTP_RECONFIGURED ;
+			    }
+			// Message of the form : 
+			//	caught SIGTERM, shutting down
+			else if  ( preg_match ( self::$regex_http_caught_signal, $message, $regex_match ) )
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE, $regex_match [ 'message' ] ) ;
+				$log_error_code		=  self::HTTP_CAUGHT_SIGNAL ;
+			    }
+			// Message of the form :
+			//	Graceful restart requested, doing restart
+			else if  ( preg_match ( self::$regex_http_restart_requested, $message, $regex_match ) )
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE, $regex_match [ 'message' ] ) ;
+				$log_error_code		=  self::HTTP_RESTART_REQUESTED ;
+			    }
+			// Message of the form :
+			//	File does not exist: /var/www/mail
+			else if  ( preg_match ( self::$regex_http_file_not_found, $message, $regex_match ) )
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE, $regex_match [ 'message' ] ) ;
+				$file_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_HTTP_REQUEST_FILE, $regex_match [ 'file' ] ) ;
+				$log_error_code		=  self::HTTP_FILE_NOT_FOUND ;
+			    }
+			// Message of the form :
+			//	script '/var/www/xmlrpc.php' not found or unable to stat, referer: http://92.222.1.99/xmlrpc.php
+			else if  ( preg_match ( self::$regex_http_script_not_found, $message, $regex_match ) )
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE, $regex_match [ 'message' ] ) ;
+				$file_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_HTTP_REQUEST_SCRIPT, $regex_match [ 'file' ] ) ;
+
+				if  ( isset ( $regex_match [ 'referer' ] ) )
+					$referer_id	=  $string_store -> Insert ( LogStringStore::LOGSTORE_HTTP_REFERER, $regex_match [ 'referer' ] ) ;
+
+				$log_error_code		=  self::HTTP_SCRIPT_NOT_FOUND ;
+			    }
+			// Message of the form :
+			//	script not found or unable to stat: /usr/lib/cgi-bin/php
+			else if  ( preg_match ( self::$regex_http_script_not_found_2, $message, $regex_match ) )
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE, $regex_match [ 'message' ] ) ;
+				$file_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_HTTP_REQUEST_SCRIPT, $regex_match [ 'file' ] ) ;
+
+				$log_error_code		=  self::HTTP_SCRIPT_NOT_FOUND ;
+			    }
+			// Message of the form :
+			//	Invalid URI in request t3 12.1.2
+			else if  ( preg_match ( self::$regex_http_invalid_uri_in_request, $message, $regex_match ) )
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE, $regex_match [ 'message' ] ) ;
+				$url_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_HTTP_REQUEST_URL, $regex_match [ 'url' ] ) ;
+
+				$log_error_code		=  self::HTTP_INVALID_URI_IN_REQUEST ;
+			    }
+			// Message of the form :
+			//	(9)Bad file descriptor: apr_socket_accept: (client socket)
+			else if  ( preg_match ( self::$regex_http_socket_accept_error, $message, $regex_match ) )
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE, $regex_match [ 'message' ] ) ;
+				$log_error_code		=  self::HTTP_SOCKET_ACCEPT_ERROR ;
+			    }
+			// Message of the form :
+			//	client denied by server configuration: /var/www/.htaccess
+			else if  ( preg_match ( self::$regex_http_client_denied_by_conf, $message, $regex_match ) )
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE, $regex_match [ 'message' ] ) ;
+				$file_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_HTTP_REQUEST_FILE, $regex_match [ 'file' ] ) ;
+
+				$log_error_code		=  self::HTTP_CLIENT_DENIED_BY_CONFIGURATION ;
+			    }
+			// Message of the form :
+			//	Invalid method in request ?
+			else if  ( preg_match ( self::$regex_http_invalid_method, $message, $regex_match ) )
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE, $regex_match [ 'message' ] ) ;
+				$url_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_HTTP_REQUEST_URL, $regex_match [ 'url' ] ) ;
+
+				$log_error_code		=  self::HTTP_INVALID_METHOD ;
+			    }
+			// Message of the form :
+			//	request failed: error reading the headers
+			else if  ( preg_match ( self::$regex_http_error_reading_headers, $message, $regex_match ) )
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE, $regex_match [ 'message' ] ) ;
+				$log_error_code		=  self::HTTP_ERROR_READING_HEADERS ;
+			    }
+			// Message of the form :
+			//	attempt to invoke directory as script: /usr/lib/cgi-bin/
+			else if  ( preg_match ( self::$regex_invoked_directory_as_script, $message, $regex_match ) )
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE, $regex_match [ 'message' ] ) ;
+				$file_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_HTTP_REQUEST_FILE, $regex_match [ 'file' ] ) ;
+				$log_error_code		=  self::HTTP_INVOKED_DIRECTORY_AS_SCRIPT ;
+			    }
+			// Message of the form :
+			//	[warn] child process 12023 still did not exit, sending a SIGTERM
+			else if  ( preg_match ( self::$regex_stopping_child, $message, $regex_match ) )
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE, $regex_match [ 'message' ] ) ;
+				$log_error_code		=  self::HTTP_STOPPING_CHILD ;
+			    }
+			// Message of the form :
+			//	Client sent malformed Host header, referer: () { :; }; /bin/ping -c 3 82.118.236.247
+			else if  ( preg_match ( self::$regex_malformed_header, $message, $regex_match ) )
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE, $regex_match [ 'message' ] ) ;
+				$log_error_code		=  self::HTTP_MALFORMED_HEADER ;
+			    }
+			// Message of the form :
+			//		[error] [client 218.241.108.79] Directory index forbidden by Options directive: /path/to/dir
+			else if  ( preg_match ( self::$regex_directory_index_forbidden, $message, $regex_match ) )
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE, $regex_match [ 'message' ] ) ;
+				$log_error_code		=  self::HTTP_DIRECTORY_INDEX_FORBIDDEN ;
+			    }
+			// Message of the form :
+			//	[crit] [client 180.76.15.138] (13)Permission denied:
+			//	server/www/www.wuthering-bytes.com/site/.htaccess pcfg_openfile: unable to check htaccess file,
+			//	ensure it is readable
+			else if  ( preg_match ( self::$regex_permission_denied, $message, $regex_match ) )
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE, $regex_match [ 'message' ] ) ;
+				$file_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_HTTP_REQUEST_FILE, $regex_match [ 'file' ] ) ;
+				$log_error_code		=  self::HTTP_PERMISSION_DENIED ;
+			    }
+			// Message of the form :
+			//	[error] [client 81.50.179.24] Request exceeded the limit of 10 internal redirects due to probable
+			//	configuration error. Use 'LimitInternalRecursion' to increase the limit if necessary. Use 'LogLevel
+			//	debug' to get a backtrace.
+			else if  ( preg_match ( self::$regex_too_many_redirects, $message, $regex_match ) )
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE, $regex_match [ 'message' ] ) ;
+				$log_error_code		=  self::HTTP_TOO_MANY_REDIRECTS ;
+			    }
+			// Message of the form :
+			//	[alert] [client 81.50.179.24] /server/www/www.wuthering-bytes.com/site/.htaccess: LogLevel not allowed here
+			else if  ( preg_match ( self::$regex_keyword_not_allowed_here, $message, $regex_match ) )
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE, $regex_match [ 'message' ] ) ;
+				$log_error_code		=  self::HTTP_KEYWORD_NOT_ALLOWED_HERE ;
+			    }
+			// Message of the form :
+			//	[error] Server should be SSL-aware but has no certificate configured [Hint: SSLCertificateFile]
+			else if  ( preg_match ( self::$regex_certificate_issue, $message, $regex_match ) )
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE, $regex_match [ 'message' ] ) ;
+				$log_error_code		=  self::HTTP_CERTIFICATE_ISSUE ;
+			    }
+			// Message of the form :
+			//	[error] [client 91.109.6.212] Invalid Content-Length
+			else if  ( preg_match ( self::$regex_http_invalid_content_length, $message, $regex_match ) )
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE, $regex_match [ 'message' ] ) ;
+				$log_error_code		=  self::HTTP_INVALID_CONTENT_LENGTH ;
+			    }
+			else
+			   {
+				warning ( new \Thrak\System\ParseException ( "The following {$this -> Title} log entry message part could not be interpreted :\n\t$line" ) ) ;
+				return ( false ) ;
+			    }
+
+			// Message has been processed ; assign individual column values
+			$parsed_data	=
+			   [
+				'type'		=>  $log_error_code,
+				'data'		=>  
+				   [
+					LogStringStore::LOGSTORE_HTTP_SEVERITY		=>  $http_severity,
+					LogStringStore::LOGSTORE_PHP_SEVERITY		=>  $php_severity,
+					LogStringStore::LOGSTORE_IP			=>  $ip_id,
+					LogStringStore::LOGSTORE_HTTP_REQUEST_URL	=>  $url_id,
+					LogStringStore::LOGSTORE_HTTP_REQUEST_FILE	=>  $file_id,
+					LogStringStore::LOGSTORE_MESSAGE		=>  $message_id,
+					LogStringStore::LOGSTORE_HTTP_REFERER		=>  $referer_id,
+					LogStringStore::LOGSTORE_PHP_SOURCE_FILE	=>  $php_source_file_id,
+					LogStringStore::LOGSTORE_PHP_SOURCE_LINE	=>  $php_source_file_line
+				    ]
+			    ] ;
+
+			return ( true ) ;
+		    }
+		else 
+			error ( new \Thrak\System\ParseException ( "The following {$this -> Title} log entry could not be interpreted :\n\t$line" ) ) ;
+	    }
+
+
+	protected function  GetHttpSeverity ( $severity )
+	   {
+		$low_severity	=  strtolower ( $severity ) ;
+
+		if  ( isset ( self::$HttpSeverities [ $low_severity ] ) )
+			return ( self::$HttpSeverities [ $low_severity ] ) ;
+
+		error ( new \Thrak\System\RuntimeException ( "Unhandled HTTP severity found : \"$severity\"." ) ) ;
+	    }
+
+
+	protected function  GetPhpSeverity ( $severity )
+	   {
+		$low_severity	=  strtolower ( $severity ) ;
+
+		if  ( isset ( self::$PhpSeverities [ $low_severity ] ) )
+			return ( self::$PhpSeverities [ $low_severity ] ) ;
+
+		error ( new \Thrak\System\RuntimeException ( "Unhandled PHP severity found : \"$severity\"." ) ) ;
+	    }
+   }
+
+
+/*==============================================================================================================
+
+    LocalHttpErrorLog -
+        Analyzes http error log entries.
+
+  ==============================================================================================================*/
+class  LocalHttpErrorLog	extends  LocalHttpErrorLogBase
+   {
+	public		$Title		=  'http error' ;
+
+
+	public function  __construct ( $string_store, $rsadmin ) 
+	   {
+		parent::__construct ( RsAdmin::LOGTYPE_HTTP_ERROR, $string_store, $rsadmin ) ;
+	    }
+    }
+
+
+/*==============================================================================================================
+
+    LocalHttpError404Log -
+        Analyzes custom http error 404 log entries.
+
+  ==============================================================================================================*/
+class  LocalHttpError404Log	extends  LocalHttpErrorLogBase
+   {
+	public		$Title		=  'http custom error 404' ;
+
+
+	public function  __construct ( $string_store, $rsadmin ) 
+	   {
+		parent::__construct ( RsAdmin::LOGTYPE_HTTP_ERROR_404, $string_store, $rsadmin ) ;
+	    }
+    }
+
+

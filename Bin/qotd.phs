@@ -1,0 +1,44 @@
+<?php
+	require ( "tools.phpinclude" ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Database\Tables\Qotd ;
+	use  Thrak\Types\String\Formatting ;
+
+
+	/*==================================================================================================
+
+		Command line parameters.
+
+	  ==================================================================================================*/
+	$Definitions = <<<END
+<command allow-files="false">
+	<usage>
+		Displays the quote of the day.
+	</usage>
+</command>
+END;
+
+
+	/*==================================================================================================
+
+		Main program.
+
+	  ==================================================================================================*/
+	$CL 			=  new  CLParser ( $Definitions ) ;
+
+	$qotd		=  new Qotd ( 1 ) ;
+
+	// Right-align author name to the end of the quote, or to the maximum console width.
+	$cwidth		=  $Configuration -> Get ( 'Console/line-width' ) ;
+	$qwidth		=  strlen ( $qotd -> Quote ) ;
+	$awidth		=  strlen ( $qotd -> Author ) ;
+	$width		=  min ( $qwidth, $cwidth ) ;
+
+	// Format paragraph
+	$quote		=  Formatting::FormatParagraph ( $qotd -> Quote,
+					$alignment = TEXT_ALIGN_LEFT | TEXT_ALIGN_MULTILINE_JUSTIFY, $cwidth ) ;
+
+
+	output ( $quote ) ;
+	output ( str_repeat ( ' ', max ( 0, $width - $awidth ) ) . $qotd -> Author ) ;

@@ -1,0 +1,345 @@
+<?php
+	//!phpcmd(Utilities, 2.0) : Launches applications and send keystrokes.
+	/***************************************************************************************************
+
+	    NAME
+		robokey.phs
+
+	    DESCRIPTION
+		Launches applications and send keystrokes.
+
+	    AUTHOR
+	     	Christian Vigh, 03/2015.
+	 
+	    HISTORY
+	    [Version : 1.0]	[Date : 2015/03/13]	[Author : CV]
+	     	Initial version.
+
+	 ***************************************************************************************************/
+	require ( "tools.phpinclude" ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Types\String ;
+	use  Thrak\IO\Path ;
+	use  Thrak\Processors\IniFile ;
+	use  Thrak\Windows\WShell ;
+
+	
+
+	/*==================================================================================================
+
+		Command line parameters.
+
+	  ==================================================================================================*/
+	$Definitions = <<<END
+<command name="robotkey">
+
+	<usage>
+		Launches an application (like Internet Explorer) and 
+	</usage>
+
+	<file name="configuration_file, cf" disposition="existing" default="thraktools://Data/robotkey.ini">
+		Specifies the location of the Robokey .ini file.
+	</file>
+	
+	<string name="edit, e">
+		Edits the specified settings file.
+	</string>
+	
+	<string name="run, r">
+		Runs the key sequences defined in the specified file. If the file is relative, it will be searched 
+		in the directory pointed to by the DataDirectory key of the [Settings] section of the configuration file.
+		If no extension is specified, then '.ini' will be implied.
+	</string>
+	
+	<flag name="verbose, v">
+		When used in conjuntion with the -run options, displays the command that has been launched together with
+		the keystrokes that have been sent to the application.
+	</flag>
+	
+	<flag name="very_verbose, vv">
+		Implies the -verbose flag. Displays additional information about the real key sequences sent to the application.
+	</flag>
+</command>
+END;
+
+	
+	/*==============================================================================================================
+	
+	    locate_robotkey_file -
+	        Locates the specified file in the data directory, if not absolute.
+		Add the .ini extension if not specified.
+	
+	  ==============================================================================================================*/
+	function  locate_robotkey_file ( $data_directory, $filename )
+	   {
+		if  ( file_exists ( "$filename" ) )
+			return ( "$filename" ) ;
+
+		if  ( file_exists ( "$filename.ini" ) )
+			return ( "$filename.ini" ) ;
+
+		if  ( file_exists ( "$data_directory\\$filename" ) )
+			return ( "$data_directory\\$filename" ) ;
+
+		if  ( file_exists ( "$data_directory\\$filename.ini" ) )
+			return ( "$data_directory\\$filename.ini" ) ;
+		
+		return ( false ) ;
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    Edit -
+	        Edits the specified robotkey settings file.
+	
+	  ==============================================================================================================*/
+	function  Edit ( )
+	   {
+		global		$DataDirectory, $Edit ;
+		
+		$filename	=  locate_robotkey_file ( $DataDirectory, $Edit ) ;
+		
+		if  ( ! $filename )
+		   {
+			$ext	=  pathinfo ( $Edit, PATHINFO_EXTENSION ) ;
+			
+			if (  ! $ext )
+				$Edit	=  "$Edit.ini" ;
+
+			$filename	=  "$DataDirectory\\$Edit" ;
+		    }
+			
+		$editor		=  getenv ( "EDITOR" ) ;
+		$filename	=  Path::RealPath ( $filename ) ;
+		
+		if (  ! $editor ) 
+			$editor		=  "NOTEPAD.EXE" ;
+
+		output ( "$editor $filename" ) ;
+		$wshell		=  new WShell ( ) ;
+		$wshell -> Execute ( "$editor \"$filename\"" ) ;
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    LoadRobotkeyFile -
+	        Loads the settings defined in the specified robotkey file.
+	
+	  ==============================================================================================================*/
+	function  LoadRobotkeyFile ( $file )
+	   {
+		global		$DataDirectory ;
+		
+		// Locate the configuration file for this robotkey setting and loads it
+		$configuration_file	=  locate_robotkey_file ( $DataDirectory, $file ) ;
+		
+		if  ( ! $configuration_file )
+			error ( "Unable to locate robotkey file \"$file\"" ) ;
+		
+		$inifile		=  IniFile::LoadFromFile ( $configuration_file ) ;
+		
+		// Returned value
+		$result			=  
+		   [ 
+			'pause-between-keys'		=>  0, 
+			'default-pause'			=>  100, 
+			'wait-for-activation'		=>  100,
+			'command'			=>  false, 
+			'keys'				=>  false ] ;
+		
+		// PauseBetweenKeys setting -
+		//	Defines the pause in milliseconds between two keys. Default is 0.
+		$value		=  $inifile -> GetKey ( '', 'PauseBetweenKeys' ) ;
+		
+		if (  $value  !==  false )
+		   {
+			if  ( ! is_numeric ( $value )  ||  $value  <  0 )
+				error ( "Invalid value \"$value\" specified for the PauseBetweenKeys key of the \"$file\" file." ) ;
+			
+			$result [ 'pause-between-keys' ]	=  $value ;
+		    }
+
+		// DefaultPause setting -
+		//	Defines the pause in milliseconds when no value has been specified with the {PAUSE} sequence.
+		$value		=  $inifile -> GetKey ( '', 'DefaultPause' ) ;
+		
+		if (  $value  !==  false )
+		   {
+			if  ( ! is_numeric ( $value )  ||  $value  <  0 )
+				error ( "Invalid value \"$value\" specified for the PauseBetweenKeys key of the \"$file\" file." ) ;
+			
+			$result [ 'default-pause' ]	=  $value ;
+		    }
+		
+		// WaitForActivation setting -
+		//	Defines the pause in milliseconds after the application has been activated.
+		$value		=  $inifile -> GetKey ( '', 'WaitForActivation' ) ;
+		
+		if (  $value  !==  false )
+		   {
+			if  ( ! is_numeric ( $value )  ||  $value  <  0 )
+				error ( "Invalid value \"$value\" specified for the WaitForActivation key of the \"$file\" file." ) ;
+			
+			$result [ 'wait-for-activation' ]	=  $value ;
+		    }
+		
+		// Command setting -
+		//	Specifies the application to be launched, together with its arguments.
+		$value		=  $inifile -> GetKey ( '', 'Command' ) ;
+		
+		if  ( ! $value )
+			error ( "Missing Command key in robotkey file \"$file\"." ) ;
+		
+		$result [ 'command' ]	=  $value ;
+		
+		// Keys setting -
+		//	Key sequences to be sent to the application.
+		$value		=  $inifile -> GetKey ( '', 'Keys' ) ;
+		
+		if  ( ! $value )
+			error ( "Missing Keys key in robotkey file \"$file\"." ) ;
+		
+		// Strip any newline or space from the sequence
+		$lines			=  explode ( "\n", $value ) ;
+		$processed_lines	=  [] ;
+		
+		foreach  ( $lines  as  $line )
+		   {
+			// Spaces followed by a '#' are considered as comments 
+			if  ( preg_match ( '/(?P<comment> \s+ \# .* )/imsx', $line, $match, PREG_OFFSET_CAPTURE ) )
+			   {
+				$line	=  trim ( substr ( $line, 0, $match [ 'comment' ] [1] ) ) ;
+				
+				if  ( $line )
+					$processed_lines []	=  $line ;	
+			    }
+			else
+				$processed_lines []	=  trim ( $line ) ;
+		    }
+		
+		$result [ 'keys' ]	=  $processed_lines ;
+		
+		// All done, return 
+		return ( $result ) ;
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    LoadSettings -
+	        Loads .ini file settings.
+	
+	  ==============================================================================================================*/
+	function  LoadSettings ( )
+	   {
+		global		$ConfigurationFile, $ConfigurationObject ;
+		global		$DataDirectory ;
+		
+		
+		// DataDirectory optional setting
+		$value	=  $ConfigurationObject -> GetKey ( 'Settings', 'DataDirectory' ) ;
+		
+		if  ( $value )
+		   {
+			if  ( ! file_exists ( $value ) )
+				error ( new \Thrak\System\RuntimeException ( "Path specified for the DataDirectory key in the [Settings] section " .
+					"of configuration file \"$ConfigurationFile\". does not exist." ) ) ;
+			
+			if  ( ! is_dir ( $value ) )
+				error ( new \Thrak\System\RuntimeException ( "Path specified for the DataDirectory key in the [Settings] section " .
+					"of configuration file \"$ConfigurationFile\". is not a valid directory." ) ) ;
+			
+			$DataDirectory	=  $value ;
+		    }
+	    }
+	
+
+	/*==============================================================================================================
+	
+	    Run -
+	        Runs the specified robotkey file.
+	
+	  ==============================================================================================================*/
+	function  Run ( )
+	   {
+		global		$Run, $Verbose, $VeryVerbose ;
+		
+		
+		// Get path to the robotkey settings file
+		$settings	=  LoadRobotkeyFile ( $Run ) ;
+		
+		// Execute the command
+		$wshell		=  new  WShell ( ) ;
+		$process	=  $wshell -> Exec ( $settings [ 'command' ] ) ;
+		
+		// Wait for the specified number of milliseconds for application activation
+		if  ( $settings [ 'wait-for-activation' ] ) 
+			usleep ( $settings [ 'wait-for-activation' ] * 1000 ) ;
+		
+		// Gve the focus to the launched application
+		$wshell -> AppActivate ( $process -> ProcessID ) ;
+		
+		// Send key sequences
+		$keys		=  $wshell -> SendKeys ( implode ( '', $settings [ 'keys' ] ), $settings [ 'pause-between-keys' ], $settings [ 'default-pause' ] ) ;
+		
+		// Optionally display useful information
+		if  ( $Verbose )
+		   {
+			output ( 'Command             : ' . $settings [ 'command' ] ) ;
+			output ( 'Pid                 : ' . $process -> ProcessID ) ;			
+			output ( 'Pause between keys  : ' . $settings [ 'pause-between-keys' ] . 'ms' ) ;
+			output ( 'Default pause       : ' . $settings [ 'default-pause' ] . 'ms' ) ;
+			output ( 'Wait for activation : ' . $settings [ 'wait-for-activation' ] . 'ms' ) ;
+			output ( 'Keys                :' ) ;
+			
+			foreach  ( $settings [ 'keys' ]  as  $sequence )
+				output ( "\t$sequence" ) ;
+			
+			if  ( $VeryVerbose )
+				output ( 'Real keys           : ' . implode ( '', str_replace ( ' ', '{SPACE}', $keys ) ) ) ;
+		    }
+	    }
+	
+	
+	/*==================================================================================================
+
+		Get command-line parameters and configuration file.
+
+	  ==================================================================================================*/
+	$CL 				=  new CLParser ( $Definitions ) ;
+	$DataDirectory			=  false ;
+	
+	$ConfigurationFile		=  $CL -> configuration_file ;
+	$Edit				=  $CL -> edit ;
+	$Run				=  $CL -> run ;
+	$Verbose			=  $CL -> verbose ;
+	$VeryVerbose			=  $CL -> very_verbose ;
+	
+	$ConfigurationObject		=  IniFile::LoadFromFile ( $ConfigurationFile ) ;
+	$HadOption			=  false ;
+
+	// Load robotkey settings
+	LoadSettings ( ) ;
+	
+	// The -very_verbose option implies the -verbose one
+	if  ( $VeryVerbose )
+		$Verbose	=  true ;
+	
+	// -edit parameter :
+	//	Edits the specified robotkey settings file.
+	if  ( ! $HadOption  &&  $Edit )
+	   {
+		Edit ( ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// -run parameter :
+	//	Executes the command and key sequences defined in the specified robotkey file.
+	if  ( ! $HadOption  &&  $Run )
+	   {
+		Run ( ) ;
+		$HadOption	=  true ;
+	    }

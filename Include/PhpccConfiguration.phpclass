@@ -1,0 +1,1661 @@
+<?php
+/**************************************************************************************************************
+
+    NAME
+        PhpccConfiguration.phpclass
+
+    DESCRIPTION
+        Manages the PHPCC configuration file.
+
+    AUTHOR
+        Christian Vigh, 11/2014.
+
+    HISTORY
+    [Version : 1.0]    [Date : 2014/11/16]     [Author : CV]
+        Initial version.
+
+ **************************************************************************************************************/
+use  Thrak\System\Object ;
+use  Thrak\IO\AsciiReport ;
+use  Thrak\IO\Path ;
+use  Thrak\Processors\IniFile ;
+use  Thrak\Processors\VariableStore ;
+use  Thrak\Types\AssociativeArray ;
+use  Thrak\Types\String ;
+use  Thrak\Runtime\AsynchronousCommand ;
+
+
+/*==============================================================================================================
+
+    PhpccConfiguration class -
+        Manages the configuration of phpcc, as defined in a .ini file.
+
+  ==============================================================================================================*/
+class  PhpccConfiguration	extends Object
+   {
+	// Cache files
+	const		DATA_CACHE_FILE			=  "phpcc.cache" ;			// Phpcc various data cache
+	const		SOURCE_CACHE_FILE		=  "phpcc.search.cache" ;		// Phpcc source files cache
+	const		SOURCE_INDEX_CACHE_FILE		=  "phpcc.search.index.cache" ;		// List of source filenames
+	const		SYMBOLS_CACHE_FILE		=  "phpcc.symbols.cache" ;		// Symbol definitions
+	
+	// Rebuild options
+	const		REBUILD_SEARCH_CACHE		=  0x01 ;
+	const		REBUILD_ALL_CACHES		=  0xFF ;
+	
+	// Symbol types
+	const		SYMBOL_TYPE_ANY			=  0 ;			// Only for searches
+	const		SYMBOL_TYPE_DEFINE		=  1 ;
+	const		SYMBOL_TYPE_PHP_FUNCTION	=  2 ;
+	const		SYMBOL_TYPE_PHP_METHOD		=  3 ;
+	const		SYMBOL_TYPE_FUNCTION		=  4 ;
+	const		SYMBOL_TYPE_TYPEDEF		=  5 ;
+	const		SYMBOL_TYPE_STRUCTURE		=  6 ;
+	const		SYMBOL_TYPE_UNION		=  7 ;
+	const		SYMBOL_TYPE_INCLUDE		=  8 ;
+	
+	// Search options
+	const		SEARCH_OPTION_NONE		=  0 ;			// No option
+	const		SEARCH_OPTION_LOOSE_SEARCH	=  1 ;			// Searched expression is a substring
+	const		SEARCH_OPTION_CASE_INSENSITIVE	=  2 ;			// Search is to be made case insensitive
+	const		SEARCH_OPTION_GET_BODY		=  4 ;			// When searching functions or methods, function body is to be displayed
+	const		SEARCH_OPTION_NO_LINE_NUMBERS	=  8 ;			// Not really used here...
+	
+	// Required entries in the [Paths] section
+	private static	$PathEntries	=  [ 'Build', 'Dependencies', 'Sources', 'InstallDir' ] ;
+	
+	// Configuration file name
+	public		$ConfigurationFile ;
+	// INI file object
+	public		$Configuration ;
+	// Variables to be expanded
+	public		$Variables ;
+	// Contents of the [Paths] section
+	public		$Paths ;
+	// Available source code versions & currently selected version
+	public		$Versions ;
+	public		$CurrentVersion ;
+	public		$CurrentPath ;
+	// Cache files
+	public		$CacheDirectory			=  null ;
+	public		$DataCacheFile			=  null ;		// Data collected from the ext/ directory
+	public		$SearchCacheFile		=  null ;		// Concatenation of all the source files
+	public		$SearchIndexCacheFile		=  null ;		// List of all the source files
+	public		$SearchSymbolsCacheFile		=  null ;		// Symbol definitions
+	// Extension info
+	public		$Extensions ;
+	// Search directories
+	public		$ExcludedPaths	=  [] ;
+	
+	
+	/*==============================================================================================================
+	
+	    Constructor -
+	        Loads the phpcc parameters.
+	
+	  ==============================================================================================================*/
+	public function  __construct ( $configuration_file, $rebuild_cache = false )
+	   {
+		// Load configuration file
+		$this -> Configuration		=  IniFile::LoadFromFile ( $configuration_file ) ;
+		$this -> ConfigurationFile	=  $configuration_file ;
+		
+		// Variable store for expanding variable references found in the configuration file entries
+		$this -> Variables		=  new VariableStore ( VariableStore::OPTION_DEFAULT | VariableStore::OPTION_USE_ENVIRONMENT_VARIABLES ) ;
+		
+		// Base paths
+		$this -> Paths			=  new AssociativeArray ( ) ;
+		
+		// List of PHP source versions found in the directory referenced by the "Source" key of the [Paths] section
+		$this -> Versions		=  new AssociativeArray ( ) ;
+		
+		// [Variables] section : load variables from configuration file
+		$keys	=  $this -> Configuration -> GetKeys ( 'Variables' ) ;
+		
+		foreach  ( $keys  as  $key => $value )
+			$this -> Variables -> Define ( $key, $value ) ;
+		
+		// [Settings] section : general settings
+		$version	= $this -> GetKey ( 'Settings', 'Version' ) ;
+		
+		if  ( ! $version )
+			error ( "No \"Version\" key defined in the [Settings] section of file $configuration_file." ) ;
+		
+		$this -> CurrentVersion		=  $version ;
+		$this -> Variables -> Define ( 'Version', $version ) ;		// Add current version to the list of variables
+		
+		// [Paths] section : mandatory paths 
+		foreach  ( self::$PathEntries  as  $path_key )
+		   {
+			$path	=  $this -> GetKey ( 'Paths', $path_key ) ;
+			
+			// Complain if entry does not exist
+			if  ( ! $path )
+				error ( "Missing entry \"$path_key\" from section [Paths] of file $configuration_file." ) ;
+			
+			// Make sure the path exists ; create it, if current key is 'Binaries' (output of PHP compilation)
+			$this -> EnsurePathExists ( $configuration_file, 'Paths', $path_key, $path, ( $path_key  ==  'Build' ) ) ;
+			
+			// Add this entry to the list of mandatory paths
+			$this -> Paths [ $path_key ]	=  Path::ToWindows ( Path::RealPath ( $path ) ) ;
+		    }
+		
+		// Get the list of versions found in the sources directory
+		$versions	=  glob ( $this -> Paths [ 'Sources' ] . "/*" ) ;
+		$re		=  '#
+					php-
+					(?P<version>
+						\d+ \. \d+ \. \d+ \w+?
+					 )
+					
+				    #imsx' ;
+					
+		foreach  ( $versions  as  $version )
+		   {
+			// Ignore non-directory entries
+			if   ( ! is_dir ( $version ) )
+				continue ;
+			
+			// Check if this is a php source directory, ie the string "php-" followed by a version number
+			// followed by the the optional string "-src"
+			$base	=  basename ( $version ) ;
+			
+			if  ( preg_match ( $re, $base, $match ) )
+			   {
+				$this -> Versions [ $match [ 'version' ] ]	=  $version ;
+			    }
+		    }
+		
+		// Complain if no source directory found
+		if  ( ! count ( $this -> Versions ) )
+			error ( "No Php source directory found in " . $this -> Paths [ 'Sources' ] ) ;
+		
+		// Complain if currently selected version does not exists
+		if  ( ! isset ( $this -> Versions [ $this -> CurrentVersion ] ) )
+			error ( "No source directory found for currently selected version ({$this -> CurrentVersion})." ) ;
+		
+		// Also complain if current version does not match any of the found sources
+		if  ( ! isset ( $this -> CurrentVersion ) )
+			error ( "The version defined in the [Settings] section ({$this -> CurrentVersion}) does not " .
+				"reference any installed Php source code." ) ;
+
+		// Define the Source variable, which points to the directory referenced by the current version
+		// ("Version" key of the [Variables] section)
+		$this -> Variables -> Define ( 'Source', $version ) ;
+		$this -> CurrentPath		=  $version ;
+		
+		// Check if a cache file has been specified. If not, reload module information at each instanciation
+		$cache_dir	= $this -> GetKey ( 'Settings', 'Cache' ) ;
+		$loaded		=  false ;
+		
+		if  ( $cache_dir )
+		   {
+			$this -> DataCacheFile	=  "$cache_dir/" . self::DATA_CACHE_FILE ;
+			
+			// Create cache file parent directory if needed
+			if  ( ! is_dir ( $cache_dir ) )
+				mkdir ( $cache_dir, 0777, true ) ;
+			
+			if  ( ! $rebuild_cache )
+			   {
+				if  ( file_exists ( $this -> DataCacheFile ) )
+					$loaded		=  $this -> __load_cache ( ) ;
+			    }
+		    }
+		
+		$this -> CacheDirectory			=  $cache_dir ;
+		$this -> SearchCacheFile		=  "$cache_dir\\" . self::SOURCE_CACHE_FILE ;
+		$this -> SearchIndexCacheFile		=  "$cache_dir\\" . self::SOURCE_INDEX_CACHE_FILE ;
+		$this -> SearchSymbolsCacheFile		=  "$cache_dir\\" . self::SYMBOLS_CACHE_FILE ;
+		
+		// Search directories
+		$directories	=  preg_replace ( '/\s+/', ' ', $this -> GetKey ( 'Search', 'Exclude' ) ) ;		
+		
+		if  ( $directories )
+			$this -> ExcludedPaths	=  String::ExplodeAndTrim ( ' ', $directories ) ;
+		
+		// Reload module information if needed
+		if  ( ! $loaded )
+			$this -> __get_modules ( ) ;
+	    }
+
+	
+	/*==============================================================================================================
+	
+	    Destructor -
+	        Save the cache.
+	
+	  ==============================================================================================================*/
+	public function  __destruct ( )
+	   {
+		$this -> __save_cache ( ) ;
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    __build_search_cache -
+	        Builds the search cache.
+	
+	  ==============================================================================================================*/
+	private function  __build_search_cache ( &$counters )
+	   {
+		$source				=  $this -> CurrentPath ;
+		$exclusions			=  [] ;
+		$message			=  "" ;
+		$cache_source_file		=  $this -> SearchCacheFile ;
+		$cache_source_index_file	=  $this -> SearchIndexCacheFile ;
+		$cache_symbols_file		=  $this -> SearchSymbolsCacheFile ;
+		
+		// Take exclusions into account
+		foreach  ( $this -> ExcludedPaths  as  $exclusion )
+		   {
+			$list	=  glob ( "$source/$exclusion" ) ;
+			
+			if  ( $list )
+			   {
+				foreach ( $list  as  $item ) 
+					$exclusions []	=  Path::ToWindows ( $item ) ;
+			    }
+		    }
+		
+		// Remove previous index files
+		if  ( file_exists ( $cache_source_file ) )
+			unlink ( $cache_source_file ) ;
+		
+		if  ( file_exists ( $cache_source_index_file ) )
+			unlink ( $cache_source_index_file ) ;
+		
+		if  ( file_exists ( $cache_symbols_file ) )
+			unlink ( $cache_symbols_file ) ;
+		
+		// Show a little bit of life...
+		output ( "Rebuilding source cache..." ) ;
+		$message		=  "" ;
+
+		// Get source files list
+		$this -> __scan_files ( $this -> CurrentPath, $found_files, $exclusions ) ;
+		
+		// Open the file that is the concatenation of all source files
+		$output_source_fp	=  fopen ( $this -> SearchCacheFile, "w" ) ;
+		
+		// Initializations
+		$symbols		=  [] ;
+		$source_files		=  [] ;
+		$counters [ 'files' ]	=  count ( $found_files ) ;
+		$file_index		=  0 ;
+		$start_offset		=  0 ;
+		
+		// Loop through found files
+		foreach  ( $found_files  as  $file )
+		   {
+			$extension	=  strtolower ( pathinfo ( $file, PATHINFO_EXTENSION ) ) ;
+
+			// Display current file name
+			echo ( str_repeat ( ' ', strlen ( $message ) ) . "\r" ) ;
+			$message	=  "Processing file $file..." ;
+			echo ( "$message\r" ) ;
+			
+			// Process current file
+			$contents		=  file_get_contents ( $file ) ;
+			$extension		=  strtolower ( pathinfo ( $file, PATHINFO_EXTENSION ) ) ;
+			
+			$lines			=  explode ( "\n", $contents ) ;
+			$line_number		=  0 ;
+			
+			foreach  ( $lines  as  &$line )
+			   {
+				$line_number ++ ;
+				$line	=  "$file_index:$line_number:$line" ;
+			    }
+			
+			$new_contents		=  implode ( "\n", $lines ) ;
+			$new_contents_length	=  strlen ( $contents ) ;
+			
+			fwrite ( $output_source_fp, $new_contents ) ;
+
+			// Update source file info
+			$source_files []	=  [ 'file' => $file, 'start' => $start_offset, 'end' => $start_offset + $new_contents_length - 1 ] ;
+			
+			// Scan this source file for symbols
+			if  ( $extension  ==  'h'  ||  $extension  ==  'c' ) 
+				$this -> __scan_source ( $file_index, $contents, $symbols, $counters ) ;
+			
+			$start_offset	+=  $new_contents_length ;
+			$file_index ++ ;
+		    }
+		
+		echo ( "\n" ) ;
+		
+		// Close the file containing the concatenation of all files
+		fclose ( $output_source_fp ) ;
+		
+		// Write the filenames encountered so far
+		$index_fp	=  fopen ( $cache_source_index_file, "w" ) ;
+		
+		foreach  ( $source_files  as  $source_file )
+			fputs ( $index_fp, $source_file [ 'start' ] . ':' . $source_file [ 'end' ] . ':' . $source_file [ 'file' ] . "\n" ) ;
+		
+		fclose ( $index_fp ) ;
+		
+		// Sort symbols ; we do not use a closure here, since it is 5 times slower than specifying
+		// a callback, and also because the entries are numerous
+		echo ( "Sorting symbols..." ) ;
+		usort ( $symbols  , [ $this, '__sort_compare' ] ) ;
+		output ( "done" ) ;
+		
+		// Write the symbols encountered so far
+		echo ( "Writing symbols..." ) ;
+		$symbols_fp	=  fopen ( $this -> SearchSymbolsCacheFile, "w" ) ;
+		
+		foreach  ( $symbols  as  $symbol )
+			fputs ( $symbols_fp, 
+				"{$symbol [ 'index' ]}:{$symbol [ 'type' ]}:{$symbol [ 'name' ]}:{$symbol [ 'start' ]}:{$symbol [ 'end' ]}:{$symbol [ 'line' ]}\n" ) ;
+		
+		fclose ( $symbols_fp ) ;
+		output ( "done" ) ;
+	    }
+
+	
+	/*==============================================================================================================
+	
+	    __ensure_cache_exists -
+	        Checks if the cache files exist.
+	
+	  ==============================================================================================================*/
+	private function  __ensure_cache_exists ( )
+	   {
+		if  ( ! file_exists ( $this -> DataCacheFile )		||
+		      ! file_exists ( $this -> SearchCacheFile )	||
+		      ! file_exists ( $this -> SearchIndexCacheFile )	||
+		      ! file_exists ( $this -> SearchSymbolsCacheFile ) )
+			error ( "One or more cache files are missing. Please rebuild the cache using the -rebuild_search_cache option." ) ;
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    __get_extension_data -
+	        Searches an extension by its name or parent/name.
+	
+	  ==============================================================================================================*/
+	private function  __get_extension_data ( $name )
+	   {
+		$parts	=  explode ( '/', $name ) ;
+		
+		if  ( count ( $parts )  ==  2 )
+		   {
+			$parent		=  $parts [0] ;
+			$extension	=  $parts [1] ;
+		    }
+		else
+		   {
+			$parent		=  false ;
+			$extension	=  $parts [0] ;
+		    }
+		
+		foreach  ( $this -> Extensions  as  $data )
+		   {
+			if  ( $parent )
+			   {
+				if  ( ! strcasecmp ( $parent, $data [ 'parent' ] )  &&  ! strcasecmp ( $extension, $data [ 'extension' ] ) )
+					return ( $data ) ;
+			    }
+			else
+			   {
+				if  ( ! strcasecmp ( $extension, $data [ 'extension' ] ) )
+					return ( $data ) ;
+			    }
+		    }
+		
+		return ( false ) ;
+	    }
+	
+
+	/*==============================================================================================================
+	
+	    __get_file_by_index -
+	        Gets a source file name by its index.
+	
+	  ==============================================================================================================*/
+	private function  __get_file_by_index ( $index )
+	   {
+		static		$source_files		=  [] ;
+		
+		if  ( ! count ( $source_files ) )
+		   {
+			$this -> __ensure_cache_exists ( ) ;
+			$fp	=  fopen ( $this -> SearchIndexCacheFile, "r" ) ;
+			
+			while  ( $line = fgets ( $fp ) )
+			   {
+				$parts	=  explode ( ':', trim ( $line ), 3 ) ;
+				$source_files []	=  [ 'file' => $parts [2], 'start' => $parts [0], 'end' => $parts [1] ] ;
+			    }
+			fclose ( $fp ) ;
+		    }
+		
+		if  ( isset ( $source_files [ $index ] ) )
+			return ( $source_files [ $index ] ) ;
+		else
+			return ( false ) ;
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    __get_modules -
+	        Gets modules list.
+	
+	  ==============================================================================================================*/
+	private function  __get_modules ( )
+	   {
+		// Get the Extensions value of the [Settings] section. This setting is catenated with a list of
+		$extensions_string	=  $this -> Configuration -> GetKey ( 'Settings', 'Extensions' ) ;
+		$extensions		=  String::ExplodeAndTrim ( ',', $extensions_string ) ;
+		
+		// Loop through declared extensions
+		$results	=  [] ;
+		
+		foreach  ( $extensions  as  $extension )
+		   {
+			$extension_files	=  glob ( $this -> Variables -> Expand ( $extension ) . "/config.w32" ) ;
+			
+			if  ( ! count ( $extension_files ) )
+				continue ;
+
+			// Process each extension file (config.w32)
+			foreach  ( $extension_files  as  $file )
+			   {
+				$file		=  Path::ToWindows ( $file ) ;
+				
+				// Build an extension name from the config.w32 path (parent directory + extension directory)
+				$parts		=  explode ( '\\', $file ) ;
+				$part_count	=  count ( $parts ) ;
+				
+				if  ( $part_count  >=  3 )
+					$name	=  $parts [ $part_count - 3 ] . '/' . $parts [ $part_count - 2 ] ;
+				else if  ( $part_count  ==  2 )
+					$name	=  $parts [ $part_count - 2 ] . '/' . $parts [ $part_count - 1 ] ;
+				else
+					$name	=  $parts [0] ;
+				
+				// Scan config.w32 file for a list of defined compilation switches
+				$this -> __scan_config_w32 ( $name, $file,  $results ) ;
+			    }			
+		    }
+		
+		ksort ( $results ) ;
+		$this -> Extensions	=  $results ;
+	    }
+	
+
+	/*==============================================================================================================
+	
+	    __load_cache, __save_cache -
+	        Loads data from/saves data to the cache file.
+	
+	  ==============================================================================================================*/
+	private function  __save_cache ( )
+	   {
+		$cache_data	=
+		   [
+			'extensions'	=>  $this -> Extensions
+		    ] ;
+		
+		file_put_contents ( $this -> DataCacheFile, serialize ( $cache_data ) ) ;
+	    }
+	    
+	
+	private function  __load_cache ( )
+	   {
+		$data	=  unserialize ( file_get_contents ( $this -> DataCacheFile ) ) ;
+		
+		if  ( isset ( $data [ 'extensions' ] ) )
+		   {
+			$this -> Extensions	=  $data [ 'extensions' ] ;
+			
+			return ( true ) ;
+		    }
+		else
+		   {
+			@unlink ( $this -> DataCacheFile ) ;
+			warning ( "Unable to load cache data from file \"{$this -> DataCacheFile}\". File will be rebuilt." ) ;
+			
+			return ( false ) ;
+		    }
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    __scan_config_w32 -
+	        Scans a config.w32 file to get a list of arguments declared with the ARG_WITH() and ARG_ENABLED()
+		functions.
+	
+	  ==============================================================================================================*/
+	private function  __scan_config_w32 ( $name, $file, &$results )
+	   {
+		// Regex to match calls to predefined macros
+		static $re	=  '#
+					(?P<parameter>
+						(?P<name> (ARG_WITH) | (ARG_ENABLE) )
+						\s* \( \s*
+					 )			
+				    #msx' ;
+					
+		// Get config.w32 contents
+		$contents		=  file_get_contents ( $file ) ;
+		$content_length		=  strlen ( $contents ) ;
+		
+		// Init array structure for this file
+		$results [ $name ]	=  [ 'file' => $file, 'arguments' => [] ] ;
+		
+		// Get parent directory and extension name
+		$parts			=  explode ( '/', $name ) ;
+		
+		if  ( count ( $parts )  ==  1 )
+			$parts []	=  $parts [0] ;
+		
+		$results [ $name ] [ 'parent' ]		=  $parts [0] ;
+		$results [ $name ] [ 'extension' ]	=  $parts [1] ;
+		
+		// Find if there are any argument specification calls
+		if  ( preg_match_all ( $re, $contents, $matches, PREG_OFFSET_CAPTURE ) )
+		   {
+			// Found ; loop through matches
+			for  ( $i = 0 ; $i  <  count ( $matches [ 'name' ] ) ; $i ++ )
+			   {
+				// Function call parameters
+				$params		=  [] ;
+				
+				// Function name
+				$funcname	=  $matches [ 'name' ] [$i] [0] ;
+			
+				// Start index (after the first opening parenthesis)
+				$index		=  $matches [ 'parameter' ] [$i] [1] + strlen ( $matches [ 'parameter' ] [$i] [0] ) ;
+				
+				// Other variables
+				$params_string	=  '' ;		// Current parameter
+				$quote		=  '' ;		// Equals to '"' or '\'' if processing a string
+				$nesting	=  1 ;		// Function call nesting level (=1 because the regex matches the first opening parenthesis)
+				
+				// Parse until we find the closing parenthesis
+				while  ( $index  <  $content_length )
+				  {
+					$ch	=  $contents [ $index ] ;
+					$add_ch =  true ;	// Sometimes, we don't have to add the current character to the parameter being parsed
+					
+					// We are processing data within a quoted string...
+					if  ( $quote )
+					   {
+						// Escape sequence within the string
+						if  ( $ch  ==  '\\' )
+						   {
+							$params_string	.=  '\\' ;
+							$index ++ ;
+							
+							if  ( $index  ==  $content_length )	// EOF reached before closing parenthesis
+								break ;
+							
+							$ch	=  $contents [ $index ] ;
+						    }
+						// End of string
+						else if  ( $ch  ==  $quote )
+						   {
+							$quote	=  '' ;
+							$add_ch	=  false ;			// Don't add this quote to the current parameter
+						    }
+					    }
+					// Start of string
+					else if  ( $ch  ==  '"'  ||  $ch  ==  '\'' )
+					   {
+						$quote	=  $ch ;
+						$add_ch =  false ;
+					    }
+					// Opening parenthesis : start of a function call parameters
+					else if  ( $ch  ==  '(' )
+						$nesting ++ ;
+					// Closing parameter : end of a function call
+					else if  ( $ch  ==  ')' )
+					   {
+						$nesting -- ;
+						
+						// Nesting level = 0 : this is the end of the function call for which we were parsing
+						// the parameters (either ARG_WITH or ARG_ENABLE)
+						if  ( ! $nesting )
+						   {
+							$params	[]	=  $params_string ;
+							$params_string	=  '' ;
+							$add_ch		=  false ;
+							break ;
+						    }
+					    }
+					// Comma : we have processed one more parameter
+					else if  ( $ch  ==  ',' )
+					   {
+						$params	[]	=  $params_string ;
+						$params_string	=  '' ;
+						$add_ch		=  false ;
+					    }
+					// Ignore spaces between parameters
+					else if  ( ctype_space ( $ch ) )
+						$add_ch		=  false ;
+					
+					// Add current character to current parameter value
+					if  ( $add_ch )
+						$params_string	.=  $ch ;
+					
+					$index ++ ;
+				   }
+				
+				// If an unprocessed parameter remains, add it to the parameter list
+				if  ( $params_string )
+					$params []	=  $params_string ;
+
+				// This flag indicates whether the parameter has been declared with ARG_WITH (true) or
+				// ARG_ENABLE (false).
+				$dependencies	=  false ;
+				
+				// Process called function
+				switch  ( $funcname )
+				   {
+					// Function ARG_WITH and ARG_ENABLE : 
+					//	Parameter declaration for configure.js
+					case	'ARG_WITH' :
+					case	'ARG_ENABLE' :
+						$dependencies	=  ( $funcname  ==  'ARG_WITH' ) ?  true : false ;
+				
+						// We need exactly three parameters
+						if  ( count ( $params )  !=  3 )
+							error ( "Invalid parameter count for function $funcname in file \"$file\"." ) ;
+				
+						// All done, add these function call parameters to the extension's parameter list
+						$results [ $name ] [ 'arguments' ] [ $params [0] ]	=
+						   [ 
+							'name'			=>  $params [0],
+							'description'		=>  $params [1],
+							'default'		=>  $params [2],
+							'has-dependencies'	=>  $dependencies 
+						    ] ;
+						
+						break ;
+						
+					default :
+						error ( "Unhandled function $funcname." ) ;
+				    }
+			    }
+			
+			ksort ( $results [ $name ] [ 'arguments' ] ) ;
+		    }
+	    }
+	
+
+	/*==============================================================================================================
+	
+	    __scan_files -
+	        Scans a source directory.
+	
+	  ==============================================================================================================*/
+	private function  __scan_files ( $directory, &$files, $exclusions )
+	   {
+		$rs	=  opendir ( $directory ) ;
+		
+		while  ( $path =  readdir ( $rs ) )
+		   {
+			if  ( ! strcmp ( $path, '.' )  ||  ! strcmp ( $path, '..' ) )
+				continue ;
+			
+			$real_path	=  Path::ToWindows ( "$directory\\$path" ) ;
+			
+			foreach  ( $exclusions  as  $exclusion )
+			   {
+				if  ( ! strncasecmp ( $real_path, $exclusion, strlen ( $exclusion ) ) )
+					continue 2 ;
+			    }
+  
+			if  ( is_dir ( $real_path ) )
+			   {
+				$this -> __scan_files ( $real_path, $files, $exclusions ) ;
+				continue ;
+			    }
+
+			$files []	=  $real_path ;
+		    }
+			
+		closedir ( $rs ) ;
+	    }
+	
+
+	/*==============================================================================================================
+	
+	    __scan_nested_type -
+	        Recursive expression matching works in a limited number of cases ; the following will be ok to match
+		nested braces :
+			\{ (?> [^{}]+ | (?R) )* \}
+	 	However it will not work if we search for patterns before the recursive one :
+	 		struct \s+ \w+ \s* \{ (?> [^{}]+ | (?R) )* \}
+	 	This is why the __scan_source() method only searches the start of structure/union/typedef definitions,
+	 	until the first opening brace.
+	 	It is the responsibility of the __scan_nested_type() function to reach the semicolon after the last
+	 	closing brace of the type definition. The $offset parameter must point after the first opening brace.
+	
+	  ==============================================================================================================*/
+	private function  __scan_nested_type ( $contents, $length, &$offset, &$names =  [] ) 
+	   {
+		$nesting	=  1 ;
+
+		// Process remaining characters until the nesting level reaches 0
+		while  ( $offset  <  $length )
+		   {
+			$ch	=  $contents [ $offset ] ;
+			
+			// Skip comments
+			if  ( $ch  ==  '/'  &&  isset ( $contents [ $offset + 1 ] ) )
+			   {
+				$offset ++ ;
+				$new_offset	=  false ;
+				$ch2		=  $contents [ $offset ] ;
+				
+				if  ( $ch2  ==  '*' )
+					$new_offset	=  strpos ( $contents, '*/', $offset ) ;
+				else if  ( $ch2  ==  '/' )
+					$new_offset	=  strpos ( $contents, "\n", $offset ) ;
+				
+				if  ( $new_offset )
+					$offset		=  $new_offset ;
+			    }
+			else if  ( $ch  ==  '{' )
+				$nesting ++ ;
+			else if  ( $ch  ==  '}' ) 
+			   {
+				$nesting -- ;
+				
+				if  ( ! $nesting )
+					break ;
+			    }
+			
+			$offset ++ ;
+		    }
+
+		// Found position of the terminating semicolon
+		$offset ++ ;
+		$new_offset	=  strpos ( $contents, ';', $offset ) ;
+		
+		// If found then extract the list of identifiers between the last closing brace and the semicolon
+		if  ( $new_offset )
+		   {
+			$identifiers	=  substr ( $contents, $offset, $new_offset - $offset ) ;
+			$offset		=  $new_offset + 1 ;
+			$identifiers	=  preg_replace ( '/[,\s]+/', ' ', trim ( $identifiers ) ) ;
+			
+			$names		=  explode ( ' ', $identifiers ) ;
+			
+			foreach  ( $names  as  &$name )
+				$name	=  preg_replace ( '/[^A-Za-z0-9_]/', '', $name ) ;
+		    }
+	    }
+	
+
+	/*==============================================================================================================
+	
+	    __scan_source -
+	        Scans a renumbered source file for various symbols.
+	
+	  ==============================================================================================================*/
+	private function  __scan_source ( $file_index, $contents, &$symbols, &$counters )
+	   {
+		// The big match
+		// Comments and preprocessor directives (other than #defines) are catched but ignored
+		// The "S" modifier is here to pre-study (compile) the regular expression
+		static	$re		=  '#
+						(?P<match>
+							(?P<define>
+								\# \s* define \s+
+								(?P<define_name> \w+)
+							 )
+							|
+							(?P<php_function> 
+								( PHP_FUNCTION | ZEND_FUNCTION | PHP_FALIAS | ( [A-Z_]*_FUNC ) )
+								\s* \( \s*
+								(?P<php_function_name> \w+)
+								\s* \)
+								\s* \{
+							 )
+							|
+							(?P<php_method> 
+								( PHP_METHOD | ZEND_METHOD | PHP_ME | ZEND_ME | PHP_ABSTRACT_ME | ( [A-Z_]*_METHOD ) )
+								\s* \( \s*
+								(?P<php_class_name> \w+)
+								\s* , \s*
+								(?P<php_method_name> \w+)
+								\s* \)
+								\s* \{
+							 )
+							|
+							(?P<function>
+								(\w+ \s+)*
+								(?P<function_name> \w+)	
+								\s* \( [^)]* \) 
+								\s* \{
+							 )
+							|
+							(?P<simple_struct_typedef>
+								typedef \s+ struct \s+ [^{]+?
+								(?P<simple_struct_typedef_name> \w+) 
+								;
+							 )
+							|
+							(?P<struct_typedef>
+								typedef \s+ struct 
+								(?P<opt_struct_typedef_name_entry> 
+									\s+
+									(?P<opt_struct_typedef_name> \w+)?
+								)
+								\s*
+								\{
+							 )
+							|
+							(?P<struct>
+								struct \s+
+								(?P<struct_name> \w+ )
+								\s*
+								\{
+							 )
+							|
+							(?P<simple_union_typedef>
+								typedef \s+ union \s+ [^{]+?
+								(?P<simple_union_typedef_name> \w+) 
+								;
+							 )
+							|
+							(?P<union_typedef>
+								typedef \s+ union
+								(?P<opt_union_typedef_name_entry> 
+									\s+
+									(?P<opt_union_typedef_name> \w+)
+								)?
+								\s*
+								\{
+							 )
+							|
+							(?P<union>
+								union \s+
+								(?P<union_name> \w+ )
+								\s*
+								\{
+							 )
+							|
+							(?P<simple_typedef>
+								typedef \s+ [^{]+?
+								(
+									(?P<simple_typedef_name> \w+) 
+									|
+									(?P<simple_typedef_fptrexp> 
+										\( \s*
+											[^\w]*
+											(?P<simple_typedef_fptrname> \w+)
+										\s* \) .*?
+									 )
+								 )
+								;
+							 )
+							|
+							(?P<include>
+								\# \s* include \s+
+								[<"]
+								(?P<include_name> [^">]+ )
+								.
+							 )
+							|
+							(?P<comment>
+								( / \* [^*]* \* /)
+								|
+								( // [^\n] \n )
+							 )
+							|
+							(?P<preprocessor_directive>
+								\# \s*
+								(if | else | elif | endif | ifdef | elifdef | elifndef | pragma | error | warning)
+								[^\n]* \n
+							 )
+						 )
+					    #imsxS' ;
+
+		// Matches to exclude when a <function> is captured
+		static	$exclude_re	=  '#
+						if|for|while|define|[=]|switch|else|do|main|
+						PHP_.*_FUNCTION | 
+						ZEND_VM_HANDLER |
+						DBA_.*_FUNC |
+						ZEND_INI_MH |
+						PHP_INI_MH |
+						( (x2 | n) \s* \( \s* \" )
+					    #imsxS' ;
+						
+		if  ( ! preg_match_all ( $re, $contents, $matches, PREG_OFFSET_CAPTURE ) )
+			return ;
+		
+		// Loop through found matches
+		$match_count		 =  count ( $matches [ 'match' ] ) ;
+		$contents		.=  "\n" ;				// For the sake of code simplicity, make sure source code always end with a newline
+		$contents_length	 =  strlen ( $contents ) ;
+		$start_line		 =  1 ;
+		$previous_start_offset	 =  0 ;
+		
+		for  ( $i = 0 ; $i  <  $match_count ; $i ++ )
+		   {
+			$start_offset	=  $matches [ 'match'  ] [$i] [1] ;
+			$end_offset	=  $start_offset ;
+			
+			// Find line number related to the start offset
+			$start_line	+=  substr_count ( $contents, "\n", $previous_start_offset, $start_offset - $previous_start_offset + 1 ) ;
+			
+			// A macro define
+			if  ( isset ( $matches [ 'define' ] [$i] [0] )  &&  $matches [ 'define' ] [$i] [1]  !=  -1 )
+			   {
+				$name	=  $matches [ 'define_name' ] [$i] [0] ;
+					
+				while  ( true )  
+				   {
+					$end_offset	=  strpos ( $contents, "\n", $end_offset + 1 ) ;
+					
+					if  ( $contents [ $end_offset - 1 ]  !=  '\\' )
+						break ;
+				    }
+				
+				$symbols []	=
+				   [
+					'index'		=>  $file_index,
+					'name'		=>  $name,
+					'type'		=>  self::SYMBOL_TYPE_DEFINE,
+					'start'		=>  $start_offset,
+					'end'		=>  $end_offset,
+					'line'		=>  $start_line
+				    ] ;
+				
+				$counters [ 'defines' ] ++ ;
+			    }
+			// PHP function
+			else if  ( isset ( $matches [ 'php_function' ] [$i] [0] )  &&  $matches [ 'php_function' ] [$i] [1]  !=  -1 )
+			   {
+				$name		 =  $matches [ 'php_function_name' ] [$i] [0] ;
+				$end_offset 	+=  strlen ( $matches [ 'match' ] [$i] [0] ) ;
+				
+				while  ( isset ( $contents [ $start_offset - 1 ] )  &&  $contents [ $start_offset - 1 ]  !=  "\n" ) 
+					$start_offset -- ;
+				
+				$symbols []	=
+				   [
+					'index'		=>  $file_index,
+					'name'		=>  $name,
+					'type'		=>  self::SYMBOL_TYPE_PHP_FUNCTION,
+					'start'		=>  $start_offset,
+					'end'		=>  $end_offset,
+					'line'		=>  $start_line
+				    ] ;
+				
+				$counters [ 'php_functions' ] ++ ;
+			    }
+			// PHP method
+			else if  ( isset ( $matches [ 'php_method' ] [$i] [0] )  &&  $matches [ 'php_method' ] [$i] [1]  !=  -1 )
+			   {
+				$method_name	 =  $matches [ 'php_method_name' ] [$i] [0] ;
+				$class_name	 =  $matches [ 'php_class_name'  ] [$i] [0] ;
+				$end_offset 	+=  strlen ( $matches [ 'match'  ] [$i] [0] ) ;
+				
+				while  ( isset ( $contents [ $start_offset - 1 ] )  &&  $contents [ $start_offset - 1 ]  !=  "\n" ) 
+					$start_offset -- ;
+				
+				$symbols []	=
+				   [
+					'index'		=>  $file_index,
+					'name'		=>  "$class_name.$method_name",
+					'type'		=>  self::SYMBOL_TYPE_PHP_METHOD,
+					'start'		=>  $start_offset,
+					'end'		=>  $end_offset,
+					'line'		=>  $start_line
+				    ] ;
+				
+				$counters [ 'php_methods' ] ++ ;
+			    }
+			// Regular functions
+			else if  ( isset ( $matches [ 'function' ] [$i] [0] )  &&  $matches [ 'function' ] [$i] [1]  !=  -1 )
+			   {
+				if  ( ! preg_match ( $exclude_re, $matches [ 'function' ] [$i] [0] ) )
+				   {
+					$function_name	 =  $matches [ 'function_name' ] [$i] [0] ;
+					$end_offset 	+=  strlen ( $matches [ 'match'  ] [$i] [0] ) ;
+				
+					while  ( isset ( $contents [ $start_offset - 1 ] )  &&  $contents [ $start_offset - 1 ]  !=  "\n" ) 
+						$start_offset -- ;
+				
+					$symbols []	=
+					   [
+						'index'		=>  $file_index,
+						'name'		=>  "$function_name",
+						'type'		=>  self::SYMBOL_TYPE_FUNCTION,
+						'start'		=>  $start_offset,
+						'end'		=>  $end_offset,
+						'line'		=>  $start_line
+					    ] ;
+				
+					$counters [ 'functions' ] ++ ;
+				    }
+			    }
+			// Simple typedefs
+			else if  ( isset ( $matches [ 'simple_typedef' ] [$i] [0] )  &&  $matches [ 'simple_typedef' ] [$i] [1]  !=  -1 )
+			   {
+				$name		 =  ( is_array ( $matches [ 'simple_typedef_name' ] ) ) ?
+								$matches [ 'simple_typedef_name' ] [$i] [0] :
+								$matches [ 'simple_typedef_fptrname' ] [$i] [0] ;
+				$end_offset 	+=  strlen ( $matches [ 'match' ] [$i] [0] ) ;
+				
+				while  ( isset ( $contents [ $start_offset - 1 ] )  &&  $contents [ $start_offset - 1 ]  !=  "\n" ) 
+					$start_offset -- ;
+
+				$symbols []	=
+				   [
+					'index'		=>  $file_index,
+					'name'		=>  $name,
+					'type'		=>  self::SYMBOL_TYPE_TYPEDEF,
+					'start'		=>  $start_offset,
+					'end'		=>  $end_offset,
+					'line'		=>  $start_line
+				    ] ;
+				
+				$counters [ 'typedefs' ] ++ ;
+			    }
+			// Simple structure typedefs
+			else if  ( isset ( $matches [ 'simple_struct_typedef' ] [$i] [0] )  &&  $matches [ 'simple_struct_typedef' ] [$i] [1]  !=  -1 )
+			   {
+				$name		 =  $matches [ 'simple_struct_typedef_name' ] [$i] [0] ;
+				$end_offset 	+=  strlen ( $matches [ 'match' ] [$i] [0] ) ;
+				
+				while  ( isset ( $contents [ $start_offset - 1 ] )  &&  $contents [ $start_offset - 1 ]  !=  "\n" ) 
+					$start_offset -- ;
+
+				$symbols []	=
+				   [
+					'index'		=>  $file_index,
+					'name'		=>  $name,
+					'type'		=>  self::SYMBOL_TYPE_TYPEDEF,
+					'start'		=>  $start_offset,
+					'end'		=>  $end_offset,
+					'line'		=>  $start_line
+				    ] ;
+				
+				$counters [ 'typedefs' ] ++ ;
+			    }
+			// Struct definitions
+			else if  ( isset ( $matches [ 'struct' ] [$i] [0] )  &&  $matches [ 'struct' ] [$i] [1]  !=  -1 )
+			   {
+				$name		 =  $matches [ 'struct_name' ] [$i] [0] ;
+				$end_offset 	+=  strlen ( $matches [ 'match' ] [$i] [0] ) ;
+				
+				while  ( isset ( $contents [ $start_offset - 1 ] )  &&  $contents [ $start_offset - 1 ]  !=  "\n" ) 
+					$start_offset -- ;
+				
+				$endwords	=  [] ;
+				$this -> __scan_nested_type ( $contents, $contents_length, $end_offset, $endwords ) ;
+
+				$symbols []	=
+				   [
+					'index'		=>  $file_index,
+					'name'		=>  $name,
+					'type'		=>  self::SYMBOL_TYPE_STRUCTURE,
+					'start'		=>  $start_offset,
+					'end'		=>  $end_offset,
+					'line'		=>  $start_line
+				    ] ;
+				
+				$counters [ 'structs' ] ++ ;
+			    }
+			// Struct type definitions
+			else if  ( isset ( $matches [ 'struct_typedef' ] [$i] [0] )  &&  $matches [ 'struct_typedef' ] [$i] [1]  !=  -1 )
+			   {
+				$end_offset 	+=  strlen ( $matches [ 'match' ] [$i] [0] ) ;
+				
+				while  ( isset ( $contents [ $start_offset - 1 ] )  &&  $contents [ $start_offset - 1 ]  !=  "\n" ) 
+					$start_offset -- ;
+
+				$endwords	=  [] ;
+				$this -> __scan_nested_type ( $contents, $contents_length, $end_offset, $endwords ) ;
+
+				$symbols []	=
+				   [
+					'index'		=>  $file_index,
+					'name'		=>  $endwords [0],
+					'type'		=>  self::SYMBOL_TYPE_TYPEDEF,
+					'start'		=>  $start_offset,
+					'end'		=>  $end_offset,
+					'line'		=>  $start_line
+				    ] ;
+				
+				$counters [ 'typedefs' ] ++ ;
+				
+				// If a structure name has been specified, add this to the list of structures
+				if  ( isset ( $matches [ 'opt_struct_typedef_name' ] [$i] [0] )  &&  $matches [ 'opt_struct_typedef_name' ] [$i] [1]  !=  -1 )
+				   {
+					$optname	=  $matches [ 'opt_struct_typedef_name' ] [$i] [0] ;
+					
+					$symbols []	=
+					   [
+						'index'		=>  $file_index,
+						'name'		=>  $optname,
+						'type'		=>  self::SYMBOL_TYPE_STRUCTURE,
+						'start'		=>  $start_offset,
+						'end'		=>  $end_offset,
+						'line'		=>  $start_line
+					    ] ;
+				
+					$counters [ 'structs' ] ++ ;
+				    }
+			    }
+			// Simple union typedefs
+			else if  ( isset ( $matches [ 'simple_union_typedef' ] [$i] [0] )  &&  $matches [ 'simple_union_typedef' ] [$i] [1]  !=  -1 )
+			   {
+				$name		 =  $matches [ 'simple_union_typedef_name' ] [$i] [0] ;
+				$end_offset 	+=  strlen ( $matches [ 'match' ] [$i] [0] ) ;
+				
+				while  ( isset ( $contents [ $start_offset - 1 ] )  &&  $contents [ $start_offset - 1 ]  !=  "\n" ) 
+					$start_offset -- ;
+
+				$symbols []	=
+				   [
+					'index'		=>  $file_index,
+					'name'		=>  $name,
+					'type'		=>  self::SYMBOL_TYPE_TYPEDEF,
+					'start'		=>  $start_offset,
+					'end'		=>  $end_offset,
+					'line'		=>  $start_line
+				    ] ;
+				
+				$counters [ 'typedefs' ] ++ ;
+			    }
+			// Union definitions
+			else if  ( isset ( $matches [ 'union' ] [$i] [0] )  &&  $matches [ 'union' ] [$i] [1]  !=  -1 )
+			   {
+				$name		 =  $matches [ 'union_name' ] [$i] [0] ;
+				$end_offset 	+=  strlen ( $matches [ 'match' ] [$i] [0] ) ;
+				
+				while  ( isset ( $contents [ $start_offset - 1 ] )  &&  $contents [ $start_offset - 1 ]  !=  "\n" ) 
+					$start_offset -- ;
+
+				$endwords	=  [] ;
+				$this -> __scan_nested_type ( $contents, $contents_length, $end_offset, $endwords ) ;
+
+				$symbols []	=
+				   [
+					'index'		=>  $file_index,
+					'name'		=>  $name,
+					'type'		=>  self::SYMBOL_TYPE_UNION,
+					'start'		=>  $start_offset,
+					'end'		=>  $end_offset,
+					'line'		=>  $start_line
+				    ] ;
+				
+				$counters [ 'unions' ] ++ ;
+			    }
+			// Union type definitions
+			else if  ( isset ( $matches [ 'union_typedef' ] [$i] [0] )  &&  $matches [ 'union_typedef' ] [$i] [1]  !=  -1 )
+			   {
+				$end_offset 	+=  strlen ( $matches [ 'match' ] [$i] [0] ) ;
+				
+				while  ( isset ( $contents [ $start_offset - 1 ] )  &&  $contents [ $start_offset - 1 ]  !=  "\n" ) 
+					$start_offset -- ;
+
+				$endwords	=  [] ;
+				$this -> __scan_nested_type ( $contents, $contents_length, $end_offset, $endwords ) ;
+
+				$symbols []	=
+				   [
+					'index'		=>  $file_index,
+					'name'		=>  $endwords [0],
+					'type'		=>  self::SYMBOL_TYPE_TYPEDEF,
+					'start'		=>  $start_offset,
+					'end'		=>  $end_offset,
+					'line'		=>  $start_line
+				    ] ;
+				
+				$counters [ 'typedefs' ] ++ ;
+				
+				// If a union name has been specified, add this to the list of unions
+				if  ( isset ( $matches [ 'opt_union_typedef_name' ] [$i] [0] )  &&  $matches [ 'opt_union_typedef_name' ] [$i] [1]  !=  -1 )
+				   {
+					$optname	=  $matches [ 'opt_union_typedef_name' ] [$i] [0] ;
+					
+					$symbols []	=
+					   [
+						'index'		=>  $file_index,
+						'name'		=>  $optname,
+						'type'		=>  self::SYMBOL_TYPE_UNION,
+						'start'		=>  $start_offset,
+						'end'		=>  $end_offset,
+						'line'		=>  $start_line
+					    ] ;
+				
+					$counters [ 'unions' ] ++ ;
+				    }
+			    }
+			// Includes
+			else if  ( isset ( $matches [ 'include' ] [$i] [0] )  &&  $matches [ 'include' ] [$i] [1]  !=  -1 )
+			   {
+				$name		 =  $matches [ 'include_name' ] [$i] [0] ;
+				$end_offset 	+=  strlen ( $matches [ 'match' ] [$i] [0] ) ;
+				
+				while  ( isset ( $contents [ $start_offset - 1 ] )  &&  $contents [ $start_offset - 1 ]  !=  "\n" ) 
+					$start_offset -- ;
+
+				$symbols []	=
+				   [
+					'index'		=>  $file_index,
+					'name'		=>  $name,
+					'type'		=>  self::SYMBOL_TYPE_INCLUDE,
+					'start'		=>  $start_offset,
+					'end'		=>  $end_offset,
+					'line'		=>  $start_line
+				    ] ;
+				
+				$counters [ 'includes' ] ++ ;
+			    }
+			
+			$previous_start_offset	=  $start_offset + 1 ;
+		    }
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    __search -
+	        Searches a definition (macro, function or else).
+	
+	  ==============================================================================================================*/	
+	private function  __search ( $name, $searched_symbol_type, $options )
+	   {
+		$results		=  [] ;
+		$name			=  str_replace ( '::', '.', $name ) ;		// For class name/member search
+
+		// Build search pattern
+		$wildcard_pattern	=  String::WildcardToRegex ( $name, '"' ) ;
+		
+		if  ( $wildcard_pattern  ===  false )
+			error ( "Invalid wildcard expression \"$name\"." ) ;
+		
+		// Loose search : we are looking for substrings within symbol names
+		if  ( $options  &  self::SEARCH_OPTION_LOOSE_SEARCH )
+			$wildcard_pattern	=  "[^:]*{$wildcard_pattern}[^:]*" ;
+		
+		// Search any type of symbol...
+		if  ( $searched_symbol_type  ==  PhpccConfiguration::SYMBOL_TYPE_ANY )
+			$symbol_type	=  '\d+' ;
+		// ... or a specific symbol type
+		else
+			$symbol_type	=  $searched_symbol_type ;
+		
+		// Build the final regular expression
+		$pattern	=  '^\d+:' .
+				   $symbol_type .
+				   ':' .
+				   $wildcard_pattern .
+				   ':' ;
+		
+		// Additional grep options
+		$grep_options	=  "" ;
+		
+		if  ( $options  &  self::SEARCH_OPTION_CASE_INSENSITIVE )
+			$grep_options	= "-i" ;
+		
+		// Execute the grep command using Perl syntax
+		$cache		 =  Path::ToCygWin ( Path::RealPath ( $this -> SearchSymbolsCacheFile ) ) ;
+		$command	=  "grep -P $grep_options \"$pattern\" \"" . $cache . "\"" ;
+		exec ( $command, $lines, $status ) ;
+		
+		// No match
+		if  ( ! count ( $lines ) )
+			return ( [] ) ;
+		// Other kind of error : display the command that has been executed, and its output
+		else if  ( $status ) 
+		   {
+			output ( "Symbol search failed ; execution status is $status :" ) ;
+			output ( $command ) ;
+			
+			foreach  ( $lines  as  $line )
+				output ( $line ) ;
+			
+			exit ;
+		    }
+
+		// Loop through command results, which are symbol definitions and location data
+		$last_filename		=  "" ;
+		$source_fp		=  null ;
+		
+		foreach  ( $lines  as  $line )
+		   {
+			// A definition is made of :
+			// - A file index
+			// - A symbol type
+			// - A name
+			// - A start and end offset
+			// - A line number
+			$parts		=  explode ( ':', rtrim ( $line ) ) ;
+			$file_index	=  $parts [0] ;
+			$symbol_type	=  $parts [1] ;
+			$define		=  $parts [2] ;
+			$start_offset	=  $parts [3] ;
+			$end_offset	=  $parts [4] ;
+			$line_number	=  $parts [5] ;
+			
+			// Get the filename containing the definition
+			$file_entry	=  $this -> __get_file_by_index ( $file_index ) ;
+			$filename	=  $file_entry [ 'file' ] ;
+				
+			// Open the source file if needed
+			if  ( $filename  !=  $last_filename )
+			   {
+				if  ( $source_fp )
+					fclose ( $source_fp ) ;
+					
+				$source_fp		=  fopen ( $filename, "r" ) ;
+				$last_filename		=  $filename ;
+					
+				if  ( ! isset ( $results [ $filename ] ) )
+					$results [ $filename ]	=  [] ;
+			    }
+
+			// Locate the source code excerpt
+			fseek ( $source_fp, $start_offset, SEEK_SET ) ;
+			$data		=  fread ( $source_fp, $end_offset - $start_offset + 1 ) ;
+			$data_lines	=  explode ( "\n", rtrim ( $data ) ) ;
+
+			// Add the source lines to the output results
+			foreach  ( $data_lines  as  $data_line )
+				$results [ $filename ] []	=  [ 'line' => $line_number ++, 'text' => $data_line ] ;
+				
+			// Further parse source file if function/method body is requested
+			if  ( ( $options  &  self::SEARCH_OPTION_GET_BODY )  &&
+				( $symbol_type  ==  self::SYMBOL_TYPE_FUNCTION  ||
+				  $symbol_type  ==  self::SYMBOL_TYPE_PHP_FUNCTION  ||
+				  $symbol_type  ==  self::SYMBOL_TYPE_PHP_METHOD ) )
+			   {
+				$nesting_level	=  1 ;
+					
+				while  ( $nesting_level  &&  ( $line = fgets ( $source_fp ) ) )
+				   {
+					$length		=  strlen ( $line ) ;
+					
+					for  ( $i = 0 ; $i  <  $length ; $i ++ )
+					   {
+						if  ( $line [$i]  ==  '{' )
+							$nesting_level ++ ;
+						else if  ( $line [$i]  ==  '}' )
+						   {
+							$nesting_level -- ;
+							
+							if  ( ! $nesting_level )
+							   {
+								$results [ $filename ] []	=
+								   [
+									'line'	=>  $line_number,
+									'text'  =>  substr ( $line, 0, $i + 1 ) 
+								    ] ;
+									
+								break 2 ;
+							    }
+						    }
+					    }
+						
+					$results [ $filename ] []	=  [ 'line' => $line_number ++, 'text' => rtrim ( $line ) ] ;
+				    }
+			    }
+			
+		    } 
+	
+		// All done
+		if  ( $source_fp )
+			fclose ( $source_fp ) ;
+		
+		return ( $results ) ;
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    __sort_compare -
+	        Comparison function used when sorting macros and functions list.
+	
+	  ==============================================================================================================*/
+	private function  __sort_compare ( $a, $b )
+	   {
+		$status		=  strcasecmp ( $a [ 'name' ], $b [ 'name' ] ) ;
+		
+		if  ( $status )
+			return ( $status ) ;
+		else
+			return ( $a [ 'line' ] - $b [ 'line' ] ) ;
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    BuildExtensions -
+	        Builds the specified extensions.
+	
+	  ==============================================================================================================*/
+	public function  BuildExtensions ( $extensions ) 
+	   {
+		// Collect extension data for the specified extensions
+		$extension_data		=  [] ;
+		
+		foreach  ( $extensions  as  $extension )
+		   {
+			$data	=  $this -> __get_extension_data ( $extension ) ;
+			
+			if  ( $data  ===  false )
+				error ( "Extension \"$extension\" not found." ) ;
+			
+			$extension_data []	=  $data ;
+		    }
+		
+		dump ( $extension_data ) ;
+		exit;
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    GetVersion, SetVersion -
+	        Gets/sets the currently used PHP version.
+	
+	  ==============================================================================================================*/
+	public function  GetVersion ( )
+	   {
+		return ( $this -> CurrentVersion ) ;
+	    }
+	
+	
+	public function  SetVersion ( $version )
+	   {
+		if  ( ! isset ( $this -> Versions [ $version ] ) )
+			return ( false ) ;
+		
+		$this -> CurrentVersion		=  $version ;
+		$this -> Configuration -> SetKey ( 'Settings', 'Version', $version ) ;
+		$this -> Configuration -> Save ( ) ;
+		
+		return ( true ) ;
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    GetExtensions -
+	        Get defined extensions.
+	
+	  ==============================================================================================================*/
+	public function  GetExtensions ( $parent = null )
+	   {
+		if  ( $parent )
+		   {
+			$results	=  [] ;
+			
+			foreach  ( $this -> Extensions  as  $extension )
+			   {
+				if  ( ! strcasecmp ( $extension [ 'parent' ], $parent ) )
+					$results []	=  $extension ;
+			    }
+			    
+			return ( $results ) ;
+		    }
+		else
+			return ( $this -> Extensions ) ;
+	    }
+	
+
+	/*==============================================================================================================
+	
+	    Grep -
+	        Performs a text search on the specified expression within the PHP source files.
+	
+	  ==============================================================================================================*/
+	public function  Grep ( $expression, $options = "", $ignore = [] )
+	   {
+		$command	=  "grep " ;
+		
+		if  ( $options )
+			$command	.=  "-$options " ;
+		
+		$cache		 =  Path::RealPath ( $this -> SearchCacheFile ) ;
+		$command	.=  "\"$expression\" \"$cache\" " ;
+		
+		if  ( count ( $ignore ) )
+			$command	.=  "| egrep -v \"(" . implode ( ' | ', $ignore ) . ")\" " ;
+		
+		$results	 =  [] ;
+		$last_filename	 =  "" ;
+		
+		exec ( $command, $matches ) ;
+		
+		if   ( $matches )
+		   {
+			foreach  ( $matches  as  $match )
+			   {
+				$parts		=  explode ( ':', $match, 3 ) ;
+				$file_entry	=  $this -> __get_file_by_index ( $parts [0] ) ;
+				$filename	=  $file_entry [ 'file' ] ;
+				$line		=  $parts [1] ;
+				$source		=  $parts [2] ;
+				
+				if  ( $filename  !=  $last_filename )
+				   {
+					$results []	=  [ 'file' => $filename, 'source' => [] ] ;
+					$last_filename	=  $filename ;
+				    }
+				
+				$results [ count ( $results ) - 1 ] [ 'source' ] []	=  [ 'line' => $line, 'text' => $source ] ;
+			    }
+		    }
+		
+		return ( $results ) ;
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    RebuildSourceCache -
+	        Rebuilds the source code cache used for fast searches.
+	
+	  ==============================================================================================================*/
+	public function  RebuildSourceCache ( $build_options = self::REBUILD_ALL_CACHES )
+	   {
+		if  ( ! $build_options )
+			$build_options	=  self::REBUILD_ALL_CACHES ;
+		
+		$counters	=  
+		   [ 
+			'files'			=>  0, 
+			'defines'		=>  0, 
+			'php_functions'		=>  0,
+			'php_methods'		=>  0,
+			'functions'		=>  0,
+			'typedefs'		=>  0,
+			'structs'		=>  0,
+			'unions'		=>  0,
+			'includes'		=>  0
+		    ] ;
+		
+		if  ( $build_options  &  self::REBUILD_SEARCH_CACHE )
+			$this -> __build_search_cache ( $counters ) ;
+		
+		// Show some statistics
+		output ( "" ) ;
+		output ( "Files processed       : {$counters [ 'files' ]}" ) ;
+		output ( "Defined macros        : {$counters [ 'defines' ]}" ) ;
+		output ( "Php functions         : {$counters [ 'php_functions' ]}" ) ;
+		output ( "Php methods           : {$counters [ 'php_methods' ]}" ) ;
+		output ( "Regular functions     : {$counters [ 'functions' ]}" ) ;
+		output ( "Type definitions      : {$counters [ 'typedefs' ]}" ) ;
+		output ( "Structure definitions : {$counters [ 'structs' ]}" ) ;
+		output ( "Union definitions     : {$counters [ 'unions' ]}" ) ;
+		output ( "File inclusions       : {$counters [ 'includes' ]}" ) ;
+	    }
+
+	
+	/*==============================================================================================================
+	
+	    SearchSymbol -
+	        Searches a symbol by its name, which can contain wildcard characters.
+	
+	  ==============================================================================================================*/
+	public function  SearchSymbol ( $name, $symbol_type, $options )
+	   {
+		$this -> __ensure_cache_exists ( ) ;
+		$results	=  $this -> __search ( $name, $symbol_type, $options ) ;
+		
+		return ( $results ) ;
+	    }
+			
+	
+	
+	/*==============================================================================================================
+	
+	    EnsurePathExists -
+	        Guess... The directory will be created if it does not exists and the $create parameter is true.
+	
+	  ==============================================================================================================*/
+	protected function  EnsurePathExists ( $file, $section, $key, $path, $create )
+	   {
+		if  ( file_exists ( $path ) )
+		   {
+			if  ( ! is_dir ( $path ) )
+				error ( "The path \"$path\" specified by the \"$key\" entry of the [$section] section in configuration file \"$file\" " .
+					"references a path which is not a directory." ) ;
+		    }
+		else if  ( $create )
+		   {
+			@mkdir ( $path, 0777, true ) ;
+			
+			if  ( ! is_dir ( $path ) )
+				error ( "Unable to create path \"$path\" specified by the \"$key\" entry of the [$section] section in configuration file \"$file\"." ) ;
+		    }
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    GetKey -
+	        Retrieves a key value from the .ini configuration file, after expanding all references to variables
+		defined in the [Variables] section.
+	
+	  ==============================================================================================================*/
+	protected function  GetKey ( $section, $key )
+	   {
+		$value	=  $this -> Configuration -> GetKey ( $section, $key ) ;
+		
+		if  ( $value )
+			return ( $this -> Variables -> Expand ( $value ) ) ;
+		else
+			return ( $value ) ;
+	    }
+    }	
+

@@ -1,0 +1,319 @@
+<?php
+	//!phpcmd(Utilities, 2.0) : Generates a random password.
+	/**************************************************************************************************************
+
+	    NAME
+		genpwd.phs
+
+	    DESCRIPTION
+		Generates a random password.
+
+	    AUTHOR
+		Christian Vigh, 03/2015.
+
+	    HISTORY
+	    [Version : 1.0]    [Date : 2015/03/22]     [Author : CV]
+		Initial version.
+
+	 **************************************************************************************************************/
+	require ( "tools.phpinclude" ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Types\String ;
+	use  Thrak\IO\Path ;
+	use  Thrak\IO\AsciiReport ;
+	use  Thrak\Processors\IniFile ;
+	use  Thrak\Security\Random\RandomProvider ;
+	use  Thrak\Windows\WShell ;
+
+
+	/*==================================================================================================
+
+		Command line parameters.
+
+	  ==================================================================================================*/
+	$Definitions = <<<END
+<command name="genpwd" allow-files="false">
+
+	<usage>
+		Generates a random password.
+	</usage>
+
+	<flag name="copy, c">
+		Copies the generated password to the clipboard.
+	</flag>
+	
+	<flag name="extended_character_set, ecs, xcs">
+		When specified, an extended character set is used (basically, the range of ascii characters
+		between 32 and 127). Otherwise, only the characters that do not need to be escaped in a shell
+		command are used.
+	</flag>
+	
+	<flag name="list_random_providers, lrp, list_providers, lp">
+		Lists the available random number generators.
+	</flag>
+	
+	<integer name="min_password_length, minpl, min_length, minl, min" min-value="6" default="16">
+		Min password length.
+	</integer>
+	
+	<integer name="max_password_length, maxpl, max_length, maxl, max" min-value="6" default="32">
+		Max password length.
+	</integer>
+
+	<integer name="password_length, pl">
+		Specifies a fixed password length, instead of choosing a random length between 
+		-min_password_length and -max_password_length.
+	</integer>
+	
+	<string name="random_provider, rp, provider, p" default="random.org">
+		Specifies the name of the random number provider.
+		Use the -list_random_providers for a list of available random generators.
+	</string>
+	
+	<integer name="test_distribution, td" arguments="3" value-text="count min max">
+		Outputs statistical data about random number distribution, for 'count' values between
+		'min' and 'max'.
+	</integer>
+	
+	<flag name="verbose, v">
+		Currently used only for the -test_distribution parameter. Adds an extra column showing the
+		random numbers.
+	</flag>
+</command>
+END;
+
+	
+	/*==================================================================================================
+
+	    GeneratePassword -
+		Generates a password.
+
+	  ==================================================================================================*/
+	function  GeneratePassword ( )
+	   {
+		static		$BasicCharacterSet	=  "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+-=_,./:-" ;
+		global		$Copy, $ExtendedCharacterSet, $MinPasswordLength, $MaxPasswordLength, $RandomProvider ;
+		
+		$password	=  '' ;
+		
+		// Get a random password length
+		if  ( $MinPasswordLength  !=  $MaxPasswordLength )
+		   {
+			mt_srand ( time ( ) ) ;
+			$password_length	=  mt_rand ( $MinPasswordLength, $MaxPasswordLength ) ;
+		    }
+		else
+			$password_length	=  $MinPasswordLength ;
+	
+		// Generate the final character set : either basic (characters that are not interpreted by a shell) or
+		// a full one (must be escaped)
+		if  ( $ExtendedCharacterSet )
+		   {
+			$cset	=  "" ;
+			
+			for  ( $i = 33 ; $i  <=  128 ; $i ++ )
+				$cset	.=  chr ( $i ) ;
+		    }
+		else
+			$cset	=  $BasicCharacterSet ;
+		
+		$cset_length	=  strlen ( $cset ) ;
+		
+		// Generate the password
+		$provider	=  RandomProvider::GetInstance ( $RandomProvider ) ;
+		$result		=  $provider -> Next ( $password_length, 0, $cset_length - 1 ) ;
+		
+		for  ( $i = 0 ; $i  <  $password_length ; $i ++ )
+			$password	.=  $cset [ ( integer ) $result [$i] ] ;
+		
+		output ( $password ) ;
+		
+		// Copy text to the clipboard if needed
+		if  ( $Copy )
+		   {
+			$shell		=  new WShell ( ) ;
+			$shell -> SetClipboardText ( $password ) ;
+		    }
+	    }
+	
+	
+	/*==================================================================================================
+
+	    ListRandomProviders -
+		Lists the available random number providers.
+
+	  ==================================================================================================*/
+	function  ListRandomProviders ( )
+	   {
+		$providers	=  RandomProvider::GetProviders ( ) ;
+		$report		=  new AsciiReport
+		   (
+			[ 'member'	=>  'Name'							],
+			[ 'member'	=>  'Alias'		, 'width' => 32, 'overflow' => 'wrap'	],
+			[ 'member'	=>  'Description'	, 'width' => 50, 'overflow' => 'wrap'	],
+			[ 'member'	=>  'Class'							],
+			[ 'member'	=>  'Quota?'		, 'align' => 'center'			],
+			[ 'member'	=>  'Remains'		, 'align' => 'right'			]
+		    ) ;
+		$data		=  [] ;
+		
+		foreach  ( $providers  as  $provider )
+		   {
+			$object		=  RandomProvider::GetInstance ( $provider [ 'official-name' ] ) ;
+			
+			$row		=
+			   [
+				'Name'		=>  $provider [ 'official-name' ],
+				'Alias'		=>  implode ( ', ', $provider [ 'names' ] ),
+				'Description'	=>  $provider [ 'description' ],
+				'Class'		=>  $provider [ 'classname' ]
+			    ] ;
+			
+			if  ( $object -> IsTrueRandomProvider ( ) )
+			   {
+				$row [ 'Quota?'	]	=  '*' ;
+				$row [ 'Remains' ]	=  number_format ( $object -> GetRemainingQuota ( ), 0, '.', ' ' ) ;
+			    }
+			else
+			   {
+				$row [ 'Quota?' ]	=  ' ' ;
+				$row [ 'Remains' ]	=  'N/A' ;
+			    }
+			
+			$data []	=  $row ;
+		    }
+		
+		echo $report -> Generate ( $data ) ;
+		echo $report -> Summary ( 'provider' ) ;
+	    }
+	
+	
+	/*==================================================================================================
+
+	    TestDistribution -
+		Displays statistical information about random number distribution.
+
+	  ==================================================================================================*/
+	function  TestDistribution ( $count, $min, $max, $verbose )
+	   {
+		$providers	=  RandomProvider::GetProviders ( ) ;
+		$columns	= 
+		   [
+			[ 'member' => 'name'	, 'title' => 'Provider'					],
+			[ 'member' => 'min'	, 'title' => 'Min occ./value'	, 'align' => 'right'	],
+			[ 'member' => 'max'	, 'title' => 'Max occ./value'	, 'align' => 'right'	],
+			[ 'member' => 'average'	, 'title' => 'Average'					],
+			[ 'member' => 'variance', 'title' => 'Variance'					]
+		    ] ;
+
+		if  ( $verbose )
+			$columns []	=  [ 'member' => 'values', 'title' => 'Occurrences', 'width' => 80, 'overflow' => 'wrap' ] ;
+
+		$report		=  new AsciiReport ( $columns ) ;
+		$data		=  [] ;
+		
+
+		foreach  ( $providers  as  $provider )
+		   {
+			$object	=  RandomProvider::GetInstance ( $provider [ 'official-name' ] ) ;
+			$object -> Randomize ( ) ;
+		
+			$numbers	=  $object -> TestDistribution ( $count, $min, $max ) ;
+			
+			$row		=
+			   [
+				'name'		=>  $provider [ 'official-name' ],
+				'min'		=>  $numbers [ 'min'      ] [ 'occurrences' ] . ' / ' . $numbers [ 'min' ] [ 'values' ],
+				'max'		=>  $numbers [ 'max'      ] [ 'occurrences' ] . ' / ' . $numbers [ 'max' ] [ 'values' ],
+				'average'	=>  number_format ( $numbers [ 'average'  ] [ 'values' ], 3, '.', ' ' ),
+				'variance'	=>  number_format ( $numbers [ 'variance' ] [ 'occurrences' ], 3, '.', ' ' ),
+			    ] ;
+			
+			if  ( $verbose )
+			   {
+				$assocs		=  [] ;
+				$key_spaces	=  0 ;
+				$value_spaces	=  0 ;
+				
+				foreach  ( $numbers [ 'occurrences' ]  as  $key => $value )
+				   {
+					$key_length	=  strlen ( ( string ) $key ) ;
+					$value_length	=  strlen ( ( string ) $value ) ;
+					
+					if  ( $key_length  >  $key_spaces )
+						$key_spaces	=  $key_length ;
+					
+					if  ( $value_length  >  $value_spaces )
+						$value_spaces	=  $value_length ;
+				    }
+				
+				foreach  ( $numbers [ 'occurrences' ]  as  $key => $value )
+					$assocs	[]	=  sprintf ( '%' . $key_spaces . 'd', $key ) . 
+							   '[' . 
+							   sprintf ( '%' . $value_spaces . 'd', $value ) . 
+							   ']' ;
+				
+				$row [ 'values' ]	=  implode ( ', ', $assocs ) ;
+			    }
+			
+			$data []	=  $row ;
+		    }		
+		    
+		echo $report -> Generate ( $data ) ;
+		echo $report -> Summary ( 'provider' ) ;
+	    }
+	
+	
+	/*==================================================================================================
+
+		Global variables.
+
+	  ==================================================================================================*/
+	$CL 			=  new CLParser ( $Definitions ) ;
+	$HadOption		=  false ;
+	
+	$Copy			=  $CL -> copy ;
+	$ExtendedCharacterSet	=  $CL -> extended_character_set ;
+	$ListRandomProviders	=  $CL -> list_random_providers ;
+	$MinPasswordLength	=  $CL -> min_password_length ;
+	$MaxPasswordLength	=  $CL -> max_password_length ;
+	$PasswordLength		=  $CL -> password_length ;
+	$RandomProvider		=  $CL -> random_provider ;
+	$TestDistribution	=  $CL -> test_distribution ;
+	$Verbose		=  $CL -> verbose ;
+	
+	// Parameter checking
+	if (  $MinPasswordLength  >  $MaxPasswordLength )
+		error ( "Min password length exceed max password length." ) ;
+	
+	// If a fixed password length has been specified, set the min/max values accordingly
+	if  ( $PasswordLength )
+	   {
+		$MinPasswordLength	=  
+		$MaxPasswordLength	=  $PasswordLength ;
+	    }
+	
+	// -list_random_providers option :
+	//	Lists information about the declared random number providers.
+	if  ( ! $HadOption  &&  $ListRandomProviders )
+	   {
+		ListRandomProviders ( ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// -test_distribution :
+	//	Displays statistical information on random generator numbers distribution.
+	if  ( ! $HadOption  &&  $CL -> IsSpecified ( 'test_distribution' ) )
+	   {
+		TestDistribution ( $TestDistribution [0], $TestDistribution [1], $TestDistribution [2], $Verbose ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// No option : generate a password
+	if  ( ! $HadOption )
+	   {
+		GeneratePassword ( ) ;
+	    }
+
+	

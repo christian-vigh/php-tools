@@ -1,0 +1,105 @@
+#!/usr/bin/php
+<?php
+
+	//!phpcmd(Utilities, 2.0) : Base-64 encoding/decoding utility.
+	/***************************************************************************************************
+
+	    NAME
+		b64.phs
+
+	    DESCRIPTION
+		Convert contents to base64.
+
+	    AUTHOR
+	     	Christian Vigh, 10/2012.
+
+	    HISTORY
+	    [Version : 1.0]	[Date : 2012/10/01]	[Author : CV]
+	     	Initial version.
+
+	    [Version : 2.0]	[Date : 2012/11/12]	[Author : CV]
+	     	Adapted to the Thrak library version 2.
+
+	 ***************************************************************************************************/
+	require ( "tools.phpinclude" ) ;
+
+	require_once ( 'Processors/CL/CLParser.phpclass' ) ;
+	require_once ( 'Types/String/Formatting.phpclass' ) ;
+	require_once ( 'Windows/WShell.phpclass' ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Processors\CL\CLAbstractParameter ;
+	use  Thrak\Types\String ;
+	use  Thrak\IO\Path ;
+
+
+	/*===========================================================================================
+
+		Command-line definitions.
+
+	  ===========================================================================================*/
+	$Definitions = <<<END
+<command name="b64" allow-files="false">
+	<usage>
+		Base64 encoding/decoding.
+	</usage>
+
+        <file name="input, i" disposition="existing">
+                File to be encoded/decoded. The -input and -string options are mutually exclusive.
+        </file>
+
+        <string name="string, s">
+                String to be encoded/decoded. The -input and -string options are mutually exclusive.
+        </string>
+
+        <string name="output, o">
+                Output file. If no output file is specified, results are written to the standard output.
+        </string>
+
+        <flag name="encode, e">
+                Specifies that the input file or string is to be encoded.
+        </flag>
+
+        <flag name="decode, d">
+                Specifies that the input file or string is to be decoded.
+        </flag>
+
+        <exclude name="string" with="input" />
+        <exclude name="encode" with="decode" />
+</command>
+END;
+
+
+	/*===========================================================================================
+
+		Main program.
+
+	  ===========================================================================================*/
+
+	// Get command-line parameters
+	$CL 		=  new CLParser ( $Definitions ) ;
+
+	$InputFile	=  $CL -> input ;
+	$OutputFile 	=  $CL -> output ;
+	$Contents	=  $CL -> string ;
+	$CodedContents  =  "" ;
+	$Encode 	=  true ;
+
+	if  ( $CL -> decode )
+		$Encode = false ;
+
+	if  ( $InputFile )
+		$Contents 	=  file_get_contents ( $InputFile ) ;
+
+	if  ( $Encode )
+		$CodedContents 	=  base64_encode ( $Contents ) ;
+	else
+		$CodedContents 	=  base64_decode ( $Contents, true ) ;
+
+	if  ( $CodedContents  ===  false )
+		error ( "Invalid data." ) ;
+
+	if  ( $OutputFile )
+		file_put_contents ( $OutputFile, $CodedContents ) ;
+	else
+		output ( $CodedContents ) ;

@@ -1,0 +1,800 @@
+<?php
+
+	//!phpcmd(Utilities, 2.0) : Provides help on parameter-specification xml format
+	/***************************************************************************************************
+
+	    NAME
+		opthelp.phs
+
+	    DESCRIPTION
+		Displays help about the CLParser xml specifications.
+
+	    AUTHOR
+	     	Christian Vigh, 10/2012.
+
+	    HISTORY
+	    [Version : 1.0]	[Date : 2012/10/01]	[Author : CV]
+	     	Initial version.
+
+	    [Version : 2.0]	[Date : 2012/10/01]	[Author : CV]
+	     	Adapted to the Thrak library version 2.
+
+	 ***************************************************************************************************/
+	require ( "tools.phpinclude" ) ;
+
+	require_once ( 'Processors/CL/CLParser.phpclass' ) ;
+	require_once ( 'IO/AsciiReport.phpclass' ) ;
+	require_once ( 'Types/String/Formatting.phpclass' ) ;
+	require_once ( 'Windows/WShell.phpclass' ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Processors\CL\CLAbstractParameter ;
+	use  Thrak\Types\String ;
+	use  Thrak\IO\Path ;
+	use  Thrak\IO\AsciiReport ;
+	use  Thrak\Types\String\Formatting ;
+	use  Thrak\Windows\WShell ;
+
+
+	/*===========================================================================================
+
+		Command line options.
+
+	  ===========================================================================================*/
+	$Parameters 	=<<<END
+		<command name="opthelp">
+
+			<usage>
+				Provides help on the syntax of command-line switch definitions.
+			</usage>
+
+			<flag name="list, l">
+				Lists the available parameter types.
+			</flag>
+
+			<flag name="list_reserved_tags, lrt, lr">
+				Lists the reserved tags (ie, the ones that can be specified withing the &lt;command&gt; tag).
+			</flag>
+
+			<string name="show_help, sh">
+				Displays help about a particular parameter type.
+			</string>
+
+			<string name="show_syntax, ss, s">
+				Displays the syntax for a particular parameter type.
+			</string>
+
+			<bitset name="display_option, do, d" default="default">
+				<constant name="default, def"   value="0x01" help="Include the 'name' and 'default' attributes (this value is always implied)."/>
+				<constant name="standard, std"  value="0x02" help="Include the standard attributes common to all parameters." />
+				<constant name="specific, spec" value="0x04" help="Include the attributes specific to the parameter." />
+				<constant name="required, req"  value="0x08" help="Include the required attributes." />
+				<constant name="optional, opt"  value="0x10" help="Include the optional attributes." />
+				<constant name="all"            value="0x1F" help="Include all attributes." />
+
+				Display options for the -show_xml_syntax parameter.
+			</bitset>
+
+			<string name="show_xml_syntax, sxs, sx">
+				Displays the XML syntax for the specified parameter type.
+			</string>
+
+			<flag name="show_reserved_tags, srt, sr">
+				Displays help about reserved tags.
+			</flag>
+
+			<flag name="show_command_help, sch, sc">
+				Show help for the &lt;command&gt; tag.
+			</flag>
+
+			<flag name="ctrlc, c">
+				Copies output to the clipboard.
+			</flag>
+
+			<list name="build, b" value-text="type[:name][,type:[name]...]">
+				Outputs a command-line definition using the specified parameter types and names.
+			</list>
+
+			<list name="build_script, bs" value-text="type[:name][,type:[name]...]">
+				Builds a script using the specified command-line definitions.
+			</list>
+
+			<exclude name="list" 		with="list_reserved_tags, show_help, show_syntax, display_option, show_xml_syntax, show_reserved_tags, show_command_help, ctrlc, build, build_script"/>
+			<exclude name="show_help"	with="show_syntax, display_option, show_xml_syntax, show_reserved_tags, show_command_help, ctrlc, build, build_script"/>
+			<exclude name="show_syntax"	with="display_option, show_xml_syntax, show_reserved_tags, show_command_help, ctrlc, build, build_script"/>
+			<exclude name="show_xml_syntax"	with="show_reserved_tags, show_command_help, ctrlc, build, build_script"/>
+		</command>
+END;
+
+
+	/*===========================================================================================
+
+		FormatHelp -
+			Formats the specified help string.
+
+	  ===========================================================================================*/
+	function  FormatHelp ( $help, $margin = 8 )
+	   {
+		global		$DisplayWidth ;
+
+		if  ( is_array ( $help ) )
+			$help 	=  implode ( ' ', $help ) ;
+
+		$description 	=  Formatting::FormatParagraph ( $help, TEXT_ALIGN_JUSTIFY | TEXT_ALIGN_MULTILINE_JUSTIFY, $DisplayWidth, $margin ) ;
+
+		return ( $description ) ;
+	    }
+
+
+	/*===========================================================================================
+
+		FormatAttributeHelp -
+			Formats the specified attribute help string.
+
+	  ===========================================================================================*/
+	function  FormatAttributeHelp ( $definition, $margin )
+	   {
+  		global		$DisplayWidth ;
+
+
+	   	$help		=  "" ;
+  		$names 		=  array ( ) ;
+
+		// Build the attribute name and aliases list
+  		foreach  ( $definition [ 'names' ]  as  $name )
+  			$names [] = "'$name'" ;
+
+		$help .= '- ' . implode ( ', ', $names ) . " :\n" ;
+
+		// Add the attribute type
+		$type  = CLAbstractParameter::GetAttributeTypeString ( $definition [ 'type' ] ) ;
+
+		// Add attribute type and specification
+	    	$help .= "        Type          : $type\n" ;
+	    	$help .= "        Specification : " . ( ( $definition [ 'required'] ) ?  'required' : 'optional' ) . "\n" ;
+	    	$help .= "        Default value : " . ( ( $definition [ 'default']  ===  null ) ? '(none)' : $definition [ 'default'] ) . "\n" ;
+
+	    	// Then attribute help
+	    	$help .= "        Description   :\n" ;
+		$help .= FormatHelp ( $definition [ 'help' ], 16 ) ;
+
+    		// Format paragraph and return vamlue
+    		$help = Formatting::FormatParagraph ( $help, TEXT_ALIGN_JUSTIFY | TEXT_ALIGN_MULTILINE_JUSTIFY, $DisplayWidth, $margin ) ;
+
+    		return ( $help ) ;
+	    }
+
+
+	/*===========================================================================================
+
+		SortAttributes -
+			Sorts an attributes array, making sure the 'name' and 'default' attributes
+			appear first, then the standard attributes, then the specific ones.
+
+	  ===========================================================================================*/
+	function  SortAttributes ( &$output )
+	   {
+	   	// Put a weight on each entry
+	   	foreach  ( $output  as  &$item )
+	   	   {
+	   	   	$name 	=  $item [ 'DefaultName' ] ;
+
+			// The 'weight' entry will serve us to sort the output array making sure the 'name' and 'default'
+			// entries appear first, then the rest of the standard ones, then the specific attributes
+			if  ( $name  ==  'name' )
+				$weight 	=  0 ;
+			else if  ( $name  ==  'default' )
+				$weight 	=  1 ;
+			else if  ( $item [ 'Specific' ] )
+				$weight 	=  3 ;
+			else
+				$weight 	=  2 ;
+
+			$item [ 'Weight' ] 	=  $weight ;
+		    }
+
+		// Comparison function
+		$compare_function = function ( $a, $b )
+		   {
+			$weight_a 	=  $a [ 'Weight' ] ;
+			$weight_b 	=  $b [ 'Weight' ] ;
+
+			if  ( $weight_a  !=  $weight_b )
+				return ( $weight_a - $weight_b ) ;
+
+			$name_a		=  $a [ 'DefaultName' ] ;
+			$name_b 	=  $b [ 'DefaultName' ] ;
+
+			return ( strcasecmp ( $name_a, $name_b ) ) ;
+		    } ;
+
+   		// Perform the sort
+   		usort ( $output, $compare_function ) ;
+	    }
+
+
+	/*===========================================================================================
+
+		ShowTypes -
+			Shows parameter class types in a tabular form.
+
+	  ===========================================================================================*/
+	function  ShowTypes ( $CL )
+	   {
+		$data 	=  array ( ) ;
+
+		foreach  ( $CL -> RegisteredClasses  as  $class )
+		   {
+			$data []  =  array
+			   (
+			   	'class'		=>  $class [ 'class' ],
+			   	'file'		=>  basename ( $class [ 'file' ] ),
+			   	'tags'		=>  implode ( ', ', $class [ 'tags' ] ),
+				'type'		=>  $class [ 'type' ],
+				'section'	=>  $class [ 'section' ]
+			    ) ;
+		    }
+
+		$report = new AsciiReport
+		   (
+		   	array ( 'member' => 'type' 	, 'title' => 'Type' ),
+			array ( 'member' => 'tags'	, 'title' => 'Tags' ),
+			array ( 'member' => 'class'	, 'title' => 'Classname' ),
+			array ( 'member' => 'file'	, 'title' => 'File' ),
+			array ( 'member' => 'section'	, 'title' => 'Section' )
+		    ) ;
+
+		$sorter = function ( $a, $b )
+		   {
+			return ( strcasecmp ( $a [ 'type'], $b [ 'type' ] ) ) ;
+		    } ;
+
+		uasort ( $data, $sorter ) ;
+		echo $report -> Generate ( $data ) ;
+		echo $report -> Summary ( 'type' ) ;
+	    }
+
+
+	/*===========================================================================================
+
+		GetReservedTagString -
+			Get the list of name and aliases for a reserved tag.
+
+	  ===========================================================================================*/
+	function  GetReservedTagString ( $tag )
+	   {
+		$result 	=  array ( ) ;
+
+		foreach  (  $tag [ 'names']  as  $name )
+			$result [] = '<' . $name . '>' ;
+
+		return ( implode ( ', ', $result ) ) ;
+	    }
+
+
+	/*===========================================================================================
+
+		ListReservedTags -
+			Shows reserved tags.
+
+	  ===========================================================================================*/
+	function  ListReservedTags ( $CL )
+	   {
+		$output 	=  array ( ) ;
+
+		// Build reserved tags list
+		foreach  ( $CL -> ReservedTags  as  $reserved )
+		   {
+			$names 	=  GetReservedTagString ( $reserved ) ;
+
+			$output [] = array ( 'Name' => $names, 'Description' => $reserved [ 'brief' ], 'Sort' => $reserved [ 'names' ] [0] ) ;
+		    }
+
+		// Sort by tag name
+		$compare_function = function ( $a, $b )
+		   {
+		   	return ( strcasecmp ( $a [ 'Sort'], $b [ 'Sort' ] ) ) ;
+		    } ;
+		usort ( $output, $compare_function ) ;
+
+
+		// Generate report
+   		$report = new AsciiReport
+   		   (
+   		   	array ( 'member' => 'Name' ),
+   		   	array ( 'member' => 'Description' )
+		    ) ;
+
+	    	echo  $report -> Generate ( $output ) ;
+	    }
+
+
+	/*===========================================================================================
+
+		ShowHelp -
+			Shows help for the specified parameter type.
+
+	  ===========================================================================================*/
+	function  ShowHelp ( $CL, $type )
+	   {
+	   	$parameter 	=  $CL -> InstanciateParameter ( $type ) ;
+
+		// Display the authorized tags
+		$tagnames 	=  array ( ) ;
+
+		foreach  ( $parameter -> TagNames  as  $tagname )
+			$tagnames [] 	=  "<$tagname>" ;
+
+		output ( "Parameter type :\n\t" . implode ( ", ", $tagnames ) . "\n" ) ;
+
+		// Display description & return value
+		output ( "Description :\n" . FormatHelp ( $parameter -> Help ) . "\n" ) ;
+		output ( "Return value :\n" . FormatHelp ( $parameter ->ReturnValueHelp ) . "\n" ) ;
+
+		// Sort attributes
+		$compare 	= function ( $a, $b )
+				     {
+				     	return ( strcasecmp ( $a [ 'names' ] [0], $b [ 'names' ] [0] ) ) ;
+      				      } ;
+  		$definitions 	=  $parameter -> AttributeDefinitions ;
+		usort ( $definitions, $compare ) ;
+
+		// Display common attributes
+		$count 	=  0 ;
+		output ( "Common attributes :" ) ;
+
+  		foreach  ( $definitions  as  $definition )
+   		   {
+			if  ( ! $definition [ 'specific' ] )
+			   {
+			   	if  ( $count )
+			   		output ( "" ) ;
+
+				output ( FormatAttributeHelp ( $definition, 8 ) ) ;
+				$count ++ ;
+			    }
+   		    }
+
+		output ( "" ) ;
+
+		// Then specific attributes
+		$count 	=  0 ;
+		output ( "Specific attributes :" ) ;
+
+  		foreach  ( $definitions  as  $definition )
+   		   {
+			if  ( $definition [ 'specific' ] )
+			   {
+			   	if  ( $count )
+			   		output ( "" ) ;
+
+				output ( FormatAttributeHelp ( $definition, 8 ) ) ;
+				$count ++ ;
+			    }
+   		    }
+
+		if  ( ! $count )
+			output ( "\t*** No specific attributes are defined for this parameter type ***" ) ;
+	    }
+
+
+
+
+	/*===========================================================================================
+
+		ShowSyntax -
+			Shows syntax for the specified parameter type.
+
+	  ===========================================================================================*/
+	function  ShowSyntax ( $CL, $type )
+	   {
+	   	$parameter 	=  $CL -> InstanciateParameter ( $type ) ;
+
+		// Display the authorized tags
+		$tagnames 	=  array ( ) ;
+
+		foreach  ( $parameter -> TagNames  as  $tagname )
+			$tagnames [] 	=  "<$tagname>" ;
+
+		output ( implode ( ', ', $tagnames ) . " :" ) ;
+
+		// Collect common attributes
+  		$definitions 	=  $parameter -> AttributeDefinitions ;
+		$output 	=  array ( ) ;
+
+  		foreach  ( $definitions  as  $definition )
+   		   {
+   		   	$names 		=  implode ( ', ', $definition [ 'names' ] ) ;
+			$name 	 	=  $definition [ 'names' ] [0] ;
+			$type		=  CLAbstractParameter::GetAttributeTypeString ( $definition [ 'type' ] ) ;
+			$default 	=  ( $definition [ 'default' ]  ===  null ) ? '-' : "{$definition [ 'default' ]}" ;
+			$required 	=  ( $definition [ 'required'] ) ?  '*' : '' ;
+			$specific 	=  ( $definition [ 'specific'] ) ?  '*' : '' ;
+
+			$output [] 	=  array
+			   (
+			   	'Name'		=>  $names,
+			   	'Type'		=>  $type,
+			   	'Required'	=>  $required,
+			   	'Specific'	=>  $specific,
+			   	'Default'	=>  $default,
+			   	'DefaultName'	=>  $name
+			    )  ;
+   		    }
+
+		SortAttributes ( $output ) ;
+
+   		// Generate report
+   		$report = new AsciiReport
+		   (
+		   	array ( 'member' => 'Name' ),
+		   	array ( 'member' => 'Type' ),
+		   	array ( 'member' => 'Required', 'align' => 'center' ),
+		   	array ( 'member' => 'Specific', 'align' => 'center' ),
+		   	array ( 'member' => 'Default', 'type' => 'text' )
+		    ) ;
+
+	    	echo $report -> Generate ( $output ) ;
+	    }
+
+
+	/*===========================================================================================
+
+		GetXmlSyntax -
+			Returns the xml syntax for the specified parameter type.
+
+	  ===========================================================================================*/
+	function  GetXmlSyntax ( $CL, $type, $pname = "" )
+	   {
+	   	$parameter 	=  $CL -> InstanciateParameter ( $type ) ;
+	   	$flags 		=  $CL -> display_option [ 'flags' ] ;
+
+		if  ( ! $flags [ 'default'] )
+			$flags [ 'default' ] = true ;
+
+		// Output XML data
+  		$definitions 	=  $parameter -> AttributeDefinitions ;
+  		$attributes 	=  array ( ) ;
+
+  		foreach  ( $definitions  as  $definition )
+   		   {
+			$name 	 	=  $definition [ 'names' ] [0] ;
+			$default 	=  "{$definition [ 'default' ]}" ;
+			$required 	=  $definition [ 'required'] ;
+			$specific 	=  $definition [ 'specific'] ;
+
+			if  ( ( $flags [ 'standard' ]  &&  ! $specific )  	||
+			      ( $flags [ 'specific' ]  &&  $specific )    	||
+			      ( $flags [ 'required' ]  &&  $required )    	||
+			      ( $flags [ 'optional' ]  &&  ! $required )  	||
+       			      ( $flags [ 'default'  ]  &&  ( $name  ==  'name'  ||  $name  ==  'default' ) )  ||
+			        $flags [ 'all' ] )
+			   {
+				$attributes [] 	=  array
+				   (
+				   	'DefaultName'	=>  $name,
+				   	'Required'	=>  $required,
+				   	'Specific'	=>  $specific,
+				   	'Default'	=>  $default
+				    )  ;
+			    }
+   		    }
+
+		// Sort the attributes
+		SortAttributes ( $attributes ) ;
+
+		// Build the resulting string
+		$tag 		=  $parameter -> TagNames [0] ;
+		$result 	=  "<" . $tag . " " ;
+
+		// Loop through attributes
+		$list 	=  array ( ) ;
+
+		foreach  ( $attributes  as  $attribute )
+		   {
+		  	$name 		=  $attribute [ 'DefaultName' ] ;
+		  	$default 	=  $attribute [ 'Default' ] ;
+
+			if  ( $name  ==  'name' )
+				$default = $pname ;
+		  	else if  ( $name  == 'type' )
+		  		$default = $parameter -> GetAttributeTypeString ( $default ) ;
+
+			$default    	=  '"' . str_replace ( '"', "&quot;", $default ) . '"' ;
+			$list []	=  $name . '=' . $default ;
+		    }
+
+		// All done, return
+		$result .= implode ( ' ', $list ) . ">\n</$tag>" ;
+		return ( $result ) ;
+	    }
+
+
+	/*===========================================================================================
+
+		ShowXmlSyntax -
+			Shows the xml syntax for the specified parameter type.
+
+	  ===========================================================================================*/
+	function  ShowXmlSyntax ( $CL, $type )
+	   {
+	   	$xml = GetXmlSyntax ( $CL, $type ) ;
+	   	output ( $xml ) ;
+	    }
+
+
+	/*===========================================================================================
+
+		ShowReservedTags -
+			Shows help for reserved tags.
+
+	  ===========================================================================================*/
+	function  ShowReservedTags ( $CL )
+	   {
+	   	global		$DisplayWidth ;
+
+	   	$nl	=  false ;
+
+		foreach  ( $CL -> ReservedTags  as  $reserved )
+		   {
+		   	if  ( $nl )
+		   		output ( "" ) ;
+
+			$names 		=  GetReservedTagString ( $reserved ) ;
+			$help 		=  $reserved [ 'help' ] ;
+
+			if  ( is_array ( $help ) )
+				$help	=  implode ( '', $help ) ;
+
+			$help 		=  Formatting::FormatParagraph ( $help, TEXT_ALIGN_JUSTIFY | TEXT_ALIGN_MULTILINE_JUSTIFY, $DisplayWidth, 8 ) ;
+			output ( "$names :" ) ;
+			output ( "$help" ) ;
+
+			$nl = true ;
+		    }
+	    }
+
+
+	/*===========================================================================================
+
+		ShowCommandHelp -
+			Shows help for the <command> tag.
+
+	  ===========================================================================================*/
+	function  ShowCommandHelp ( $CL )
+	   {
+	   	global		$DisplayWidth ;
+
+		$help 		=  Formatting::FormatParagraph ( $CL -> CommandTagHelp, TEXT_ALIGN_JUSTIFY | TEXT_ALIGN_MULTILINE_JUSTIFY, $DisplayWidth ) ;
+
+		output ( $help ) ;
+	    }
+
+
+	/*===========================================================================================
+
+		BuildXml -
+			Builds an xml command definition.
+
+	  ===========================================================================================*/
+	function  GetXml ( $CL, $list )
+	   {
+	   	global 		$DisplayWidth ;
+
+	   	// Build the command tag
+		$result 	=  "<command name=\"\">\n\n" .
+				   "\t<usage>\n" .
+				   "\t\tusage.\n" .
+				   "\t</usage>\n\n" ;
+
+		// Add each parameter in list
+		foreach  ( $list  as  $item )
+		   {
+			$item_parts 	=  explode ( ':', $item ) ;
+
+			// Get parameter type and (optional) name
+			switch ( count ( $item_parts ) )
+			   {
+				case	1 :
+					$parameter_type 	=  $item_parts [0] ;
+					$parameter_name 	=  "" ;
+					break ;
+
+				case	2 :
+					$parameter_type 	=  $item_parts [0] ;
+					$parameter_name 	=  $item_parts [1] ;
+					break ;
+
+				default :
+					error ( "Invalid item '$item' specified for the '-build' option." ) ;
+			    }
+
+	    		// Instanciate the parameter
+	    		$parameter =  $CL -> InstanciateParameter ( $parameter_type ) ;
+	    		$text      =  GetXmlSyntax ( $CL, $parameter_type, $parameter_name ) ;
+	    		$text 	   =  Formatting::FormatParagraph ( $text, TEXT_ALIGN_JUSTIFY | TEXT_ALIGN_MULTILINE_JUSTIFY, $DisplayWidth, 8 ) ;
+
+	    		// Add it to the resulting string
+	    		$result .= $text . "\n\n" ;
+		    }
+
+		// End the command tag, output it and copy it to the clipboard if needed
+		$result        .=  "</command>" ;
+
+		return ( $result ) ;
+	    }
+
+
+	function  BuildXml ( $CL, $list )
+	   {
+	   	global 		$WShell ;
+
+
+	   	$result 	=  GetXml ( $CL, $list ) ;
+
+	   	output ( $result ) ;
+
+		if  ( $CL -> ctrlc )
+			$WShell -> SetClipboardText ( $result ) ;
+	    }
+
+
+	/*===========================================================================================
+
+		BuildScript -
+			Builds a .phs script using the CL utility.
+
+	  ===========================================================================================*/
+	function  BuildScript ( $CL, $list )
+	   {
+	   	global 		$WShell ;
+
+
+		$xml	=  GetXml ( $CL, $list ) ;
+		$xml 	=  Formatting::FormatParagraph ( $xml, null, 0, 16 ) ;
+		$mmyyyy	=  date ( 'm/Y' ) ;
+		$date 	=  date ( 'Y/m/d' ) ;
+
+		$output	=<<<XMLEND
+<?php
+
+	#*phpcmd(Utilities, 1.0) : description.
+	/***************************************************************************************************
+
+	    NAME
+		name.phs
+
+	    DESCRIPTION
+		description.
+
+	    AUTHOR
+	     	Christian Vigh, $mmyyyy.
+
+	    HISTORY
+	    [Version : 1.0]	[Date : $date]	[Author : CV]
+	     	Initial version.
+
+	 ***************************************************************************************************/
+	require ( "tools.phpinclude" ) ;
+
+	require_once ( 'Processors/CL/CLParser.phpclass' ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Types\String ;
+	use  Thrak\IO\Path ;
+
+
+	/*===========================================================================================
+
+		Command line options.
+
+	  ===========================================================================================*/
+	\$Parameters 	=<<<END
+$xml
+END;
+
+
+	/*===========================================================================================
+
+		Main program.
+
+	  ===========================================================================================*/
+        // Process command-line parameters
+	\$CL = new CLParser ( \$Parameters ) ;
+
+ ?>
+XMLEND;
+
+		output ( $output ) ;
+
+		if  ( $CL -> ctrlc )
+			$WShell -> SetClipboardText ( $output ) ;
+	    }
+
+
+	/*===========================================================================================
+
+		Main program.
+
+	  ===========================================================================================*/
+	// Get configuration parameters
+	$DisplayWidth 		=  $Configuration -> Get ( 'Console/line-width' ) ;
+
+        // Process command-line parameters
+	$CL = new CLParser ( $Parameters ) ;
+
+	// If -ctrlc specified, check that we run under Windows
+	if  ( $CL -> ctrlc )
+	   {
+		if  ( ! IS_WINDOWS )
+			error ( "The '-ctrlc' option can only be specified on Windows systems." ) ;
+
+		$WShell 	=  new WShell ( ) ;
+	    }
+
+	// -list option
+	if  ( $CL -> list )
+	   {
+		ShowTypes ( $CL ) ;
+		exit ( ) ;
+	    }
+
+  	// -list_reserved_tags option
+  	if  ( $CL -> list_reserved_tags )
+  	   {
+		ListReservedTags ( $CL ) ;
+		exit ( ) ;
+  	    }
+
+	// -show_help option
+	if  ( $CL -> show_help )
+	   {
+		ShowHelp ( $CL, $CL -> show_help ) ;
+		exit ( ) ;
+	    }
+
+	// -show_syntax option
+	if  ( $CL -> show_syntax )
+	   {
+		ShowSyntax ( $CL, $CL -> show_syntax ) ;
+		exit ( ) ;
+	    }
+
+  	// -show_xml_syntax option
+  	if  ( $CL -> show_xml_syntax )
+  	   {
+		ShowXmlSyntax ( $CL, $CL -> show_xml_syntax ) ;
+		exit ( ) ;
+  	    }
+
+	// -show_reserved_tags option
+	if  ( $CL -> show_reserved_tags )
+	   {
+		ShowReservedTags ( $CL ) ;
+		exit ( ) ;
+	    }
+
+	// -show_command_help option
+	if  ( $CL -> show_command_help )
+	   {
+		ShowCommandHelp ( $CL ) ;
+		exit ( ) ;
+	    }
+
+	// -build option
+	if  ( $CL -> build )
+	   {
+		BuildXml ( $CL, $CL -> build ) ;
+		exit ( ) ;
+	    }
+
+	// -build_script option
+	if  ( $CL -> build_script )
+ 	   {
+ 	   	BuildScript ( $CL, $CL -> build_script ) ;
+	    	exit ( ) ;
+ 	    }
+
+  	// No arguments specified ; display command-line help
+  	$CL -> DisplayHelp ( ) ;
+ ?>

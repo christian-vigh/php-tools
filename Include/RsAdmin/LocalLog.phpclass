@@ -1,0 +1,244 @@
+<?php
+/**************************************************************************************************************
+
+    NAME
+        LocalLog.phpclass
+
+    DESCRIPTION
+        Implements a local log (ie, a log stored in the server_logfile_entries table).
+
+    AUTHOR
+        Christian Vigh, 07/2015.
+
+    HISTORY
+    [Version : 1.0]    [Date : 2015/07/19]     [Author : CV]
+        Initial version.
+
+ **************************************************************************************************************/
+use  Thrak\System\Object ;
+use  Thrak\Types\String ;
+use  Thrak\Database\BufferedInsert ;
+use  Thrak\Database\BufferedLoadFile ;
+use  Thrak\Database\BufferedUpdate ;
+
+
+require ( 'LocalLogs/Http.phpclass' ) ;
+require ( 'LocalLogs/HttpError.phpclass' ) ;
+require ( 'LocalLogs/Mail.phpclass' ) ;
+require ( 'LocalLogs/Auth.phpclass' ) ;
+require ( 'LocalLogs/Ssh.phpclass' ) ;
+
+
+/*==============================================================================================================
+
+    LocalLog -
+        Base class for logs whose contents are held in a local table.
+
+  ==============================================================================================================*/
+abstract class  LocalLog	extends  Object
+   {
+	// Logfile type
+	public		$LogType ;
+	// String store
+	public		$StringStore ;
+	// RsAdmin object
+	public		$RsAdmin ;
+	// Log title
+	public		$Title		=  'generic log' ;
+
+
+	/*--------------------------------------------------------------------------------------------------------------
+	 
+	    Constructor -
+		Builds a LocalLog object, which can be used to extract data from server logfile entries.
+
+	 *-------------------------------------------------------------------------------------------------------------*/
+	public function  __construct ( $logtype, $string_store, $rsadmin )
+	   {
+		$this -> LogType		=  $logtype ;
+		$this -> StringStore		=  $string_store ;
+		$this -> RsAdmin		=  $rsadmin ;
+	    }
+
+
+	/*--------------------------------------------------------------------------------------------------------------
+	 
+	    Extract -
+	        Updates log file entries, then extracts information from the new log entries.
+	 
+	 *-------------------------------------------------------------------------------------------------------------*/
+	public function  Extract ( $buffer_size = 4096, $verbose = true, $prefix = "\t" )
+	   {
+		$string_store			=  $this -> StringStore ;
+		$rsadmin			=  $this -> RsAdmin ;
+		$db				=  $rsadmin -> Database ;
+		$logfile_entries_table		=  RsAdmin::TABLE_SERVER_LOGFILE_ENTRIES ;
+		$logfile_entries_string_store	=  RsAdmin::TABLE_SERVER_LOGENTRIES_STRING_STORE ;
+
+		// Reset any previously cached results (not a logic, but memory problem that may occur if too many records have
+		// been processed so far)
+		$string_store -> ResetCache ( ) ;
+
+		if  ( $verbose )
+			output ( "{$prefix}Processing {$this -> Title} log entries :" ) ;
+
+		// Get unprocessed rows
+		$query		=  "
+					SELECT serle_id AS id, serle_logfile_type, serle_message_id 
+					FROM  $logfile_entries_table
+					WHERE 
+						server_logfile_entries. serle_processed = 0 AND
+						server_logfile_entries. serle_logfile_type = {$this -> LogType}
+				   " ;
+
+		$db -> SetQuery ( $query ) ;
+
+		$rows		=  $db -> LoadRows ( ) ;
+		$row_count	=  count ( $rows ) ;
+
+		if  ( ! $row_count )
+		   {
+			output ( "{$prefix}\tNo new row to process." ) ;
+
+			return ( 0 ) ;
+		    }
+
+		// Create a buffered insert object 
+		$data_inserter		=  new  BufferedLoadFile ( RsAdmin::TABLE_SERVER_LOGFILE_DATA, 
+									[ 'serld_parent_id', 'serld_data_type', 'serld_string_store_id', 'serld_logfile_type' ],
+									32768,  $db ) ;
+		$entry_updater		=  new  BufferedUpdate ( RsAdmin::TABLE_SERVER_LOGFILE_ENTRIES,
+									'serle_id',
+									$buffer_size, 
+									BufferedUpdate::UPDATE_FLAGS_BY_ID,
+									$db ) ;
+		
+		// Process rows 
+		echo ( "{$prefix}\tProcessing $row_count rows" ) ;
+
+		foreach  ( $rows  as  $row )
+		   {
+			// Get log message contents
+			$query		=  "
+						SELECT value AS serle_message 
+						FROM $logfile_entries_string_store
+						WHERE 
+							id = {$row [ 'serle_message_id' ]}" ;
+			$db -> SetQuery ( $query ) ;
+			$line		=  $db -> LoadValue ( ) ;
+			$logfile_type	=  $row [ 'serle_logfile_type' ] ;
+
+			// Parse data
+			$parsed_data	=  [] ;
+			$status		=  $this -> Parse ( $line, $parsed_data, $string_store ) ;
+		   
+			// Derived class parser did not succeed in parsing data
+			if  ( ! $status ) 
+				error ( new \Thrak\System\RuntimeException ( "The {$this -> Title} log parser did not recognize the above line." ) ) ;
+
+			// Update 'processed' flag and specific log subtype entry
+			$update_row	=
+			   [ 
+				$row [ 'id' ] => 
+				   [ 
+					'serle_processed'	=> 1, 
+					'serle_entry_type'	=> $parsed_data [ 'type' ] 
+				    ]
+			    ] ;
+
+			if  ( isset ( $parsed_data [ 'pid' ] ) )
+				$update_row [ $row [ 'id' ] ] [ 'serle_process_id' ]	=  $parsed_data [ 'pid' ] ;
+
+			$updater_status		=  $entry_updater -> Add ( $update_row ) ;
+
+			if  ( $verbose  &&  $updater_status )
+				echo ( '{E}' ) ;
+
+			// Insert a row for each returned data entry
+			foreach  ( $parsed_data [ 'data' ]  as  $data_type => $string_store_id ) 
+			   {
+				// ... but only if there is a string store id for this entry
+				if  ( $string_store_id )
+				   {
+					$inserter_status	=  $data_inserter -> Add 
+					   ([ 
+						'serld_parent_id'	=> $row [ 'id' ], 
+						'serld_data_type'	=> $data_type,
+						'serld_string_store_id'	=> $string_store_id,
+						'serld_logfile_type'	=> $logfile_type
+					     ]) ;
+
+					if  ( $verbose  &&  $inserter_status )
+						echo ( '{D}' ) ;
+				    }
+			    }
+
+			if  ( $verbose )
+				echo ( '.' ) ;
+		    }
+
+		$updater_status		=  $entry_updater -> Flush ( ) ;
+
+		if  ( $verbose  &&  $updater_status ) 
+			echo ( '{D}' ) ;
+
+		$inserter_status	=  $data_inserter -> Flush ( ) ;
+
+		if  ( $verbose  &&  $inserter_status ) 
+			echo ( '{L}' ) ;
+
+		return ( $row_count ) ;
+	    }
+
+
+	/*--------------------------------------------------------------------------------------------------------------
+	 
+	    Parse -
+	        Parses a log message and set the parsed data values accordingly.
+		To be implemented by derived classes.
+	 
+	 *-------------------------------------------------------------------------------------------------------------*/
+	protected abstract function  Parse ( $message, &$parsed_data, $string_store ) ;
+
+
+	/*--------------------------------------------------------------------------------------------------------------
+	 
+	    ParseCheck -
+		Checks that the specified message contains the required number of fields. Issues an exception if not.
+	 
+	 *-------------------------------------------------------------------------------------------------------------*/
+	protected function  ParseCheck ( $message, $parts, $min_count, $max_count = null )
+	   {
+		$count		=  count ( $parts ) ;
+
+		if  ( $max_count  ===  null )
+		   {
+			if  ( $count  !=  $min_count )
+				error ( new \Thrak\System\ParseException ( "The following {$this -> Title} log entry should contain $min_count fields :\n\t$message" ) ) ;
+		    }
+		else
+		   {
+			if  ( $count  <  $min_count  ||  $count  >  $max_count )
+				error ( new \Thrak\System\ParseException ( "The following {$this -> Title} log entry should contain between $min_count and $max_count fields :\n\t$message" ) ) ;
+		    }
+	    }
+
+
+ 	/*--------------------------------------------------------------------------------------------------------------
+	 
+	    PreprocessIp -
+	        Processes IPV6 ips that are just a simple translation of IPV4 addresses. For example, the address :
+			::ffff:a.b.c.d
+		becomes :
+			a.b.c.d
+	 
+	 *-------------------------------------------------------------------------------------------------------------*/
+	protected function  PreprocessIp ( $ip )
+	   {
+		if  ( ! strncasecmp ( $ip, '::ffff:', 7 ) )
+			return ( substr ( $ip, 7 ) ) ;
+		else
+			return ( $ip ) ;
+	    }
+   }
+

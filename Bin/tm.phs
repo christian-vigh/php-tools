@@ -1,0 +1,158 @@
+<?php
+	//!phpcmd(Utilities, 2.0) : Time translation/computation.
+	/***************************************************************************************************
+
+	    NAME
+		phpcmd.phs
+
+	    DESCRIPTION
+		Time translation/computation.
+
+	    AUTHOR
+	     	Christian Vigh, 10/2012.
+
+	    HISTORY
+	    [Version : 1.0]	[Date : 2012/10/01]	[Author : CV]
+	     	Initial version.
+
+	 ***************************************************************************************************/
+	require ( "tools.phpinclude" ) ;
+
+	require_once ( 'Processors/CL/CLParser.phpclass' ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Types\String ;
+	use  Thrak\IO\Path ;
+
+
+	/*==================================================================================================
+
+		Command line parameters.
+
+	  ==================================================================================================*/
+	$Definitions = <<<END
+<command name="tm" allow-files="false">
+	<usage>Time translation/computation.</usage>
+
+        <string name="difference, diff, d" min-arguments="2" max-arguments="2">
+                Computes the difference between two dates.
+                The output has the following form :
+                        total_offset_in_seconds # days # hours # minutes # seconds
+                Where :
+                - 'total_offset_in_seconds' is the total number of seconds between both dates
+                - '#' stands for the number of days or hours, minutes, seconds
+                If only one date is specified, the difference is computed relatively to January 1st, 1970.
+                Both dates can be specified in any order.
+        </string>
+
+        <string name="time, t">
+                Specifies a Unix time or date/time string to display in the following form :
+                unix_date day_of_week yyyy/mm/dd hh:mm:ss
+        </string>
+
+        <flag name="raw, r">
+                When specified, the output string consists only of the values separated by a semicolon.
+        </flag>
+
+        <exclusions name="difference"  	with="time"/>
+</command>
+END;
+
+
+	/*===========================================================================================
+
+		UnixTime -
+                        Converts anything into Unix time.
+
+	  ===========================================================================================*/
+        function  UnixTime ( $arg )
+           {
+                $arg = trim ( $arg ) ;
+
+                if  ( ! $arg )
+                        return ( 0 ) ;
+                else if  ( is_numeric ( $arg ) )
+                        return ( $arg ) ;
+                else
+                   {
+                        $value = strtotime ( $arg ) ;
+
+                        if  ( $value  ===  false )
+                                error ( "Invalid date/time specification : '$arg'." ) ;
+
+                        return ( $value ) ;
+                    }
+            }
+
+
+
+	/*===========================================================================================
+
+		DisplayRelative -
+                        Displays a difference between two dates.
+
+	  ===========================================================================================*/
+        function  DisplayRelative ( $value1, $value2, $raw )
+           {
+                // Convert date specifications and compute number of seconds between them
+                $value1 = UnixTime ( $value1 ) ;
+                $value2 = UnixTime ( $value2 ) ;
+
+                $date1  = min ( $value1, $value2 ) ;
+                $date2  = max ( $value1, $value2 ) ;
+
+                $delta  = $date2 - $date1 ;
+
+                // Compute day, hour, minute and second count
+                $day_count      =  ( integer ) floor ( $delta / ( 24 * 60 * 60 ) ) ;
+                $rem            =  $delta % ( 24 * 60 * 60 ) ;
+                $hour_count     =  ( integer ) floor ( $rem / ( 60 * 60 ) ) ;
+                $rem            =  $delta % ( 60 * 60 ) ;
+                $minute_count   =  ( integer ) floor ( $rem / 60 ) ;
+                $second_count   =  $delta % 60 ;
+
+                // Display the result
+                if  ( $raw )
+                        output ( "$delta;$day_count;$hour_count;$minute_count;$second_count" ) ;
+                else
+                        output ( "$delta total seconds : $day_count days $hour_count hours $minute_count minutes $second_count seconds." ) ;
+            }
+
+
+	/*===========================================================================================
+
+		DisplayTime -
+                        Displays a date/time value.
+
+	  ===========================================================================================*/
+        function  DisplayTime ( $arg, $raw )
+           {
+                $value = UnixTime ( $arg ) ;
+
+                if  ( $raw )
+                        output ( $value . ";" . date ( 'l', $value ) . ';' .
+                                                date ( 'Y/m/d', $value ) . ';' .
+                                                date ( 'H:i:s', $value ) ) ;
+                else
+                        output ( $value . " " . date ( 'l', $value ) .
+                                          " " . date ( 'Y/m/d', $value ) .
+                                          " " . date ( 'H:i:s', $value ) ) ;
+            }
+
+
+	/*===========================================================================================
+
+		Main program.
+
+	  ===========================================================================================*/
+
+	$CL 		=  new CLParser ( $Definitions ) ;
+	$Difference 	=  $CL -> difference ;
+	$Time		=  $CL -> time ;
+	$Raw 		=  $CL -> raw ;
+
+	if  ( $Difference )
+		DisplayRelative ( $Difference [0], $Difference [1], $Raw ) ;
+	else if  ( $Time )
+		DisplayTime ( $Time, $Raw ) ;
+ ?>

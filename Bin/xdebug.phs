@@ -1,0 +1,1007 @@
+<?php
+
+	//!phpcmd(PHP, 2.0) : XDebug configuration for PHP in CLI mode.
+	/***************************************************************************************************
+
+	    NAME
+		xdebug.phs
+
+	    DESCRIPTION
+		Configures XDebug for PHP in CLI mode.
+		The current version only takes care of profiling options.
+
+	    AUTHOR
+	     	Christian Vigh, 07/2013.
+
+	    HISTORY
+	    [Version : 1.0]	[Date : 2013/07/28]	[Author : CV]
+	     	Initial version.
+
+	 ***************************************************************************************************/
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Types\String ;
+	use  Thrak\IO\Path ;
+	use  Thrak\IO\AsciiReport ;
+
+	require ( "tools.phpinclude" ) ;
+
+
+	/*===========================================================================================
+
+		Global variables.
+
+	  ===========================================================================================*/
+	$PHPIni			=  null ;
+	$PHPIniLines		=  null ;
+	$ListSettings		=  false ;
+	$ListAllSettings	=  false ;
+	$XDebugOptions		=  array 
+	   (
+		"xdebug.cli_color"			=> array 
+		   (
+			'type'		=>  'integer',
+			'default'	=>  '0',
+			'version'	=>  '2.2',
+			'help'		=>  <<<END
+If this setting is 1, Xdebug will color var_dumps and stack traces output when in CLI mode and when the output is a tty. 
+On Windows, the ANSICON tool needs to be installed.
+
+If the setting is 2, then Xdebug will always color var_dumps and stack trace, no matter whether it's connected to a tty or 
+whether ANSICON is installed. In this case, you might end up seeing escape codes.
+END
+		    ),
+
+		"xdebug.overload_var_dump"		=>  array 
+		   (
+			'type'		=>  'boolean',
+			'default'	=>  '1',
+			'version'	=>  '2.1',
+			'help'		=>  <<<END
+By default Xdebug overloads var_dump() with its own improved version for displaying variables when the html_errors php.ini 
+setting is set to 1. In case you do not want that, you can set this setting to 0, but check first if it's not smarter to 
+turn off html_errors.
+END
+		    ),	
+		"xdebug.var_display_max_children"	=> array 
+		   (
+			'type'		=>  'integer',
+			'default'	=>  '128',
+			'version'	=>  'all',
+			'help'		=>  <<<END
+Controls the amount of array children and object's properties are shown when variables are displayed with either xdebug_var_dump(), 
+xdebug.show_local_vars or through Function Traces.
+To disable any limitation, use -1 as value.
+This setting does not have any influence on the number of children that is send to the client through the Remote Debugging feature.
+END
+		    ),
+		"xdebug.var_display_max_data"		=>  array
+		   (
+			'type'		=>  'integer',
+			'default'	=>  '512',
+			'version'	=>  'all',
+			'help'		=>  <<<END
+Controls the maximum string length that is shown when variables are displayed with either xdebug_var_dump(), xdebug.show_local_vars or through Function Traces. 
+To disable any limitation, use -1 as value.
+This setting does not have any influence on the number of children that is send to the client through the Remote Debugging feature.
+END
+		    ),
+		"xdebug.var_display_max_depth"		=>  array
+		   (
+			'type'		=>  'integer',
+			'default'	=>  '3',
+			'version'	=>  'all',
+			'help'		=>  <<<END
+Controls how many nested levels of array elements and object properties are when variables are displayed with either 
+xdebug_var_dump(), xdebug.show_local_vars or through Function Traces.
+The maximum value you can select is 1023. You can also use -1 as value to select this maximum number.
+This setting does not have any influence on the number of children that is send to the client through the Remote Debugging feature.
+END
+		    ),
+		"xdebug.collect_includes"		=>  array
+		   (
+			'type'		=>  'boolean',
+			'default'	=>  '1',
+			'version'	=>  'all',
+			'help'		=>  <<<END
+This setting, defaulting to 1, controls whether Xdebug should write the filename used in include(), include_once(), require() or require_once() to the trace files.
+END
+		    ),
+		"xdebug.collect_params"			=>  array
+		   (
+			'type'		=>  'integer',
+			'default'	=>  '0',
+			'version'	=>  'all',
+			'help'		=>  <<<END
+This setting, defaulting to 0, controls whether Xdebug should collect the parameters passed to functions when a function call 
+is recorded in either the function trace or the stack trace.
+The setting defaults to 0 because for very large scripts it may use huge amounts of memory and therefore make it impossible 
+for the huge script to run. You can most safely turn this setting on, but you can expect some problems in scripts with a lot 
+of function calls and/or huge data structures as parameters. Xdebug 2 will not have this problem with increased memory usage, 
+as it will never store this information in memory. Instead it will only be written to disk. 
+This means that you need to have a look at the disk usage though.
+
+This setting can have four different values. For each of the values a different amount of information is shown. 
+Below you will see what information each of the values provides. See also the introduction of the feature Stack Traces for a few screenshots.
+
+
+Value   Argument Information Shown
+0	None. 
+1	Type and number of elements (f.e. string(6), array(8)). 
+2	Type and number of elements, with a tool tip for the full information 1.
+3	Full variable contents (with the limits respected as set by xdebug.var_display_max_children, xdebug.var_display_max_data and xdebug.var_display_max_depth. 
+4	Full variable contents and variable name. 
+END
+		    ),
+		"xdebug.collect_vars"			=>  array
+		   (
+			'type'		=>  'boolean',
+			'default'	=>  '0',
+			'version'	=>  'all',
+			'help'		=>  <<<END
+This setting tells Xdebug to gather information about which variables are used in a certain scope. 
+This analysis can be quite slow as Xdebug has to reverse engineer PHP's opcode arrays. 
+This setting will not record which values the different variables have, for that use xdebug.collect_params. 
+This setting needs to be enabled only if you wish to use xdebug_get_declared_vars().
+END
+		    ),
+		"xdebug.dump.*"				=>  array
+		   (
+			'names'		=>  array
+			   (
+				"xdebug.dump.COOKIE",
+				"xdebug.dump.FILES",
+				"xdebug.dump.GET",
+				"xdebug.dump.POST",
+				"xdebug.dump.REQUEST",
+				"xdebug.dump.SERVER",
+				"xdebug.dump.SESSION"
+			    ),
+			'type'		=>  'string',
+			'default'	=>  '',
+			'version'	=>  'all',
+			'help'		=>  <<<END
+* can be any of COOKIE, FILES, GET, POST, REQUEST, SERVER, SESSION. These seven settings control which data from 
+the superglobals is shown when an error situation occurs.
+Each of those php.ini setting can consist of a comma seperated list of variables from this superglobal to dump, or * for all of them. 
+Make sure you do not add spaces in this setting.
+
+In order to dump the REMOTE_ADDR and the REQUEST_METHOD when an error occurs, and all GET parameters, add these settings:
+	xdebug.dump.SERVER = REMOTE_ADDR,REQUEST_METHOD
+	xdebug.dump.GET = *
+END
+ 		    ),
+		"xdebug.dump_globals"			=>  array
+		    (
+			'type'		=>  'boolean',
+			'default'	=>  '1',
+			'version'	=>  'all',
+			'help'		=>  <<<END
+Controls whether the values of the superglobals as defined by the xdebug.dump.* settings whould be shown or not.	
+END
+		    ),
+		"xdebug.dump_once"			=>  array
+		   (
+			'type'		=>  'boolean',
+			'default'	=>  '1',
+			'version'	=>  'all',
+			'help'		=>  <<<END
+Controls whether the values of the superglobals should be dumped on all error situations (set to 0) or only on the first (set to 1).
+END
+		    ),
+		"xdebug.dump_undefined"			=>  array
+		   (
+			'type'		=>  'boolean',
+			'default'	=>  '0',
+			'version'	=>  'all',
+			'help'		=>  <<<END
+If you want to dump undefined values from the superglobals you should set this setting to 1, otherwise leave it set to 0.
+END
+		    ),
+		"xdebug.file_link_format"		=>  array
+		   (
+			'type'		=>  'string',
+			'default'	=>  '',
+			'version'	=>  '2.1',
+			'help'		=>  <<<END
+This setting determines the format of the links that are made in the display of stack traces where file names are used. 
+This allows IDEs to set up a link-protocol that makes it possible to go directly to a line and file by clicking on the 
+filenames that Xdebug shows in stack traces. An example format might look like: 
+
+	myide://%f@%l
+
+The possible format specifiers are: 
+
+Specifier	Meaning
+%f		the filename 
+%l		the line number 
+END
+		    ),
+		"xdebug.manual_url"			=>  array
+		   (
+			'type'		=>  'string',
+			'default'	=>  'http://www.php.net',
+			'version'	=>  '2.2',
+			'help'		=>  <<<END
+This is the base url for the links from the function traces and error message to the manual pages of the function from 
+the message. It is advisable to set this setting to use the closest mirror.
+END
+		    ),
+		"xdebug.show_exception_trace"		=>  array
+		   (
+			'type'		=>  'integer',
+			'default'	=>  '0',
+			'version'	=>  'all',
+			'help'		=>  <<<END
+When this setting is set to 1, Xdebug will show a stack trace whenever an exception is raised - even if this exception is actually caught.	
+END
+		    ),
+		"xdebug.show_local_vars"		=>  array
+		   (
+			'type'		=>  'integer',
+			'default'	=>  '0',
+			'version'	=>  'all',
+			'help'		=>  <<<END
+When this setting is set to something != 0 Xdebug's generated stack dumps in error situations will also show all variables 
+in the top-most scope. Beware that this might generate a lot of information, and is therefore turned off by default.
+END
+		    ),
+		"xdebug.show_mem_delta"			=>  array
+		   (
+			'type'		=>  'integer',
+			'default'	=>  '0',
+			'version'	=>  'all',
+			'help'		=>  <<<END
+When this setting is set to something != 0 Xdebug's human-readable generated trace files will show the difference 
+in memory usage between function calls. If Xdebug is configured to generate computer-readable trace files then 
+they will always show this information.	
+END
+		    ),
+		"xdebug.var_display_max_data"		=>  array
+		   (
+			'type'		=>  'integer',
+			'default'	=>  '512',
+			'version'	=>  'all',
+			'help'		=>  <<<END
+Controls the maximum string length that is shown when variables are displayed with either xdebug_var_dump(), 
+xdebug.show_local_vars or through Function Traces. 
+To disable any limitation, use -1 as value.
+This setting does not have any influence on the number of children that is send to the client through the Remote Debugging feature.
+END
+		    ),
+		"xdebug.var_display_max_depth"		=>  array 
+		   (
+			'type'		=>  'integer',
+			'default'	=>  '3',
+			'version'	=>  'all',
+			'help'		=>  <<<END
+Controls how many nested levels of array elements and object properties are when variables are displayed with either 
+xdebug_var_dump(), xdebug.show_local_vars or through Function Traces.
+The maximum value you can select is 1023. You can also use -1 as value to select this maximum number.
+This setting does not have any influence on the number of children that is send to the client through the Remote Debugging feature.
+END
+		    ),
+		"xdebug.auto_trace"			=>  array
+		   (
+			'type'		=>  'boolean',
+			'default'	=>  '0',
+			'version'	=>  'all',
+			'help'		=>  <<<END
+When this setting is set to on, the tracing of function calls will be enabled just before the script is run. 
+This makes it possible to trace code in the auto_prepend_file.	
+END
+		    ),
+		"xdebug.collect_assignments"		=>  array
+		   (
+			'type'		=>  'boolean',
+			'default'	=>  '0',
+			'version'	=>  '2.1',
+			'help'		=>  <<<END
+This setting, defaulting to 0, controls whether Xdebug should add variable assignments to function traces.
+END
+		    ),
+		"xdebug.collect_includes"		=>  array
+		   (
+			'type'		=>  'boolean',
+			'default'	=>  '1',
+			'version'	=>  'all',
+			'help'		=>  <<<END
+This setting, defaulting to 1, controls whether Xdebug should write the filename used in include(), include_once(), 
+require() or require_once() to the trace files.
+END
+		    ),
+		"xdebug.collect_return"			=>  array
+		   (
+			'type'		=>  'boolean',
+			'default'	=>  '0',
+			'version'	=>  'all',
+			'help'		=>  <<<END
+This setting, defaulting to 0, controls whether Xdebug should write the return value of function calls to the trace files.	
+END
+		    ),
+		"xdebug.trace_enable_trigger"		=>  array
+		   (
+			'type'		=>  'boolean',
+			'default'	=>  '0',
+			'version'	=>  '2.2',
+			'help'		=>  <<<END
+When this setting is set to 1, you can trigger the generation of trace files by using the XDEBUG_TRACE GET/POST parameter, 
+or set a cookie with the name XDEBUG_TRACE. This will then write the trace data to defined directory. In order to prevent 
+Xdebug to generate trace files for each request, you need to set xdebug.auto_trace to 0.
+END
+		    ),
+		"xdebug.trace_format"			=>  array
+		   (
+			'type'		=>  'integer',
+			'default'	=>  '0',
+			'version'	=>  'all',
+			'help'		=>  <<<END
+The format of the trace file.
+
+Value	Description
+0	shows a human readable indented trace file with: time index, memory usage, memory delta (if the setting xdebug.show_mem_delta is enabled), 
+	level, function name, function parameters (if the setting xdebug.collect_params is enabled), filename and line number. 
+1	writes a computer readable format which has two different records. There are different records for entering a stack frame, and leaving a stack frame. 
+	The table below lists the fields in each type of record. Fields are tab separated.  
+2	writes a trace formatted in (simple) HTML. 
+END
+		    ),
+		"xdebug.trace_options"			=>  array
+		   (
+			'type'		=>  'integer',
+			'default'	=>  '0',
+			'version'	=>  'all',
+			'help'		=>  <<<END
+When set to '1' the trace files will be appended to, instead of being overwritten in subsequent requests.	
+END
+		    ),
+		"xdebug.trace_output_dir"		=>  array
+		   (
+			'type'		=>  'string',
+			'default'	=>  '/tmp',
+			'version'	=>  'all',
+			'help'		=>  <<<END
+The directory where the tracing files will be written to, make sure that the user who the PHP will be running as
+has write permissions to that directory.	
+END
+		    ),
+		"xdebug.trace_output_name"		=>  array 
+		   (
+			'type'		=>  'string',
+			'default'	=>  'trace.%c',
+			'version'	=>  'all',
+			'help'		=>  <<<END
+This setting determines the name of the file that is used to dump traces into. 
+The setting specifies the format with format specifiers, very similar to sprintf() and strftime(). 
+There are several format specifiers that can be used to format the file name. 
+The '.xt' extension is always added automatically.
+
+The possible format specifiers are: 
+
+Specifier	Meaning						Example Format			Example Filename
+%c		crc32 of the current working directory		trace.%c			trace.1258863198.xt 
+%p		pid						trace.%p			trace.5174.xt 
+%r		random number					trace.%r			trace.072db0.xt 
+%s		script name 					cachegrind.out.%s		cachegrind.out._home_httpd_html_test_xdebug_test_php 
+%t		timestamp (seconds)				trace.%t			trace.1179434742.xt 
+%u		timestamp (microseconds)			trace.%u			trace.1179434749_642382.xt 
+%H		\$_SERVER['HTTP_HOST']				trace.%H			trace.kossu.xt 
+%R		\$_SERVER['REQUEST_URI']			trace.%R			trace._test_xdebug_test_php_var=1_var2=2.xt 
+%U		\$_SERVER['UNIQUE_ID']				trace.%U			trace.TRX4n38AAAEAAB9gBFkAAAAB.xt 
+%S		session_id (from \$_COOKIE if set)		trace.%S			trace.c70c1ec2375af58f74b390bbdd2a679d.xt 
+%%		literal %					trace.%%			trace.%%.xt 
+END
+		    ),
+		"xdebug.profiler_append"			=>  array
+		   (
+			'type'		=>  'integer',
+			'default'	=>  '0',
+			'version'	=>  'all',
+			'help'		=>  <<<END
+When this setting is set to 1, profiler files will not be overwritten when a new request would map 
+to the same file (depending on the xdebug.profiler_output_name setting. 
+Instead the file will be appended to with the new profile.
+END
+		    ),
+		"xdebug.profiler_enable"			=>  array
+		   (
+			'type'		=>  'integer',
+			'default'	=>  '0',
+			'version'	=>  'all',
+			'help'		=>  <<<END
+Enables Xdebug's profiler which creates files in the profile output directory. 
+Those files can be read by KCacheGrind to visualize your data. 
+This setting can not be set in your script with ini_set(). 
+If you want to selectively enable the profiler, please set xdebug.profiler_enable_trigger to 1 instead of using this setting.
+END
+		    ),
+		"xdebug.profiler_enable_trigger"		=>  array
+		   (
+			'type'		=>  'integer',
+			'default'	=>  '0',
+			'version'	=>  'all',
+			'help'		=>  <<<END
+When this setting is set to 1, you can trigger the generation of profiler files by using the XDEBUG_PROFILE GET/POST parameter, 
+or set a cookie with the name XDEBUG_PROFILE. 
+This will then write the profiler data to defined directory. 
+In order to prevent the profiler to generate profile files for each request, you need to set xdebug.profiler_enable to 0.
+END
+		    ),
+		"xdebug.profiler_output_dir"			=>  array
+		   (
+			'type'		=>  'string',
+			'default'	=>  '/tmp',
+			'version'	=>  'all',
+			'help'		=>  <<<END
+The directory where the profiler output will be written to, make sure that the user who the PHP will be running as
+has write permissions to that directory. This setting can not be set in your script with ini_set().
+END
+		    ),
+		"xdebug.profiler_output_name"			=>  array
+		   (
+			'type'		=>  'string',
+			'default'	=>  'cachegrind.out.%p',
+			'version'	=>  'all',
+			'help'		=>  <<<END
+This setting determines the name of the file that is used to dump traces into. 
+The setting specifies the format with format specifiers, very similar to sprintf() and strftime(). 
+There are several format specifiers that can be used to format the file name.
+See the xdebug.trace_output_name documentation for the supported specifiers.
+END
+		    ),
+		"xdebug.extended_info"				=>  array
+		   (
+			'type'		=>  'integer',
+			'default'	=>  '1',
+			'version'	=>  'all',
+			'help'		=>  <<<END
+Controls whether Xdebug should enforce 'extended_info' mode for the PHP parser; this allows Xdebug to do 
+file/line breakpoints with the remote debugger.
+When tracing or profiling scripts you generally want to turn off this option as PHP's generated oparrays will increase 
+with about a third of the size slowing down your scripts. 
+This setting can not be set in your scripts with ini_set(), but only in php.ini.
+END
+		    ),
+		"xdebug.idekey"					=>  array
+		   (
+			'type'		=>  'string',
+			'default'	=>  '*complex*',
+			'version'	=>  'all',
+			'help'		=>  <<<END
+Controls which IDE Key Xdebug should pass on to the DBGp debugger handler. 
+The default is based on environment settings. 
+First the environment setting DBGP_IDEKEY is consulted, then USER and as last USERNAME. 
+The default is set to the first environment variable that is found. 
+If none could be found the setting has as default ''. If this setting is set, it always overrides the environment variables.
+END
+		    ),
+		"xdebug.remote_autostart"			=>  array
+		   (
+			'type'		=>  'boolean',
+			'default'	=>  '0',
+			'version'	=>  'all',
+			'help'		=>  <<<END
+Normally you need to use a specific HTTP GET/POST variable to start remote debugging (see Remote Debugging). 
+When this setting is set to 1, Xdebug will always attempt to start a remote debugging session and try to connect 
+to a client, even if the GET/POST/COOKIE variable was not present.
+END
+		    ),
+		"xdebug.remote_connect_back"			=>  array
+		   (
+			'type'		=>  'boolean',
+			'default'	=>  '0',
+			'version'	=>  '2.1',
+			'help'		=>  <<<END
+If enabled, the xdebug.remote_host setting is ignored and Xdebug will try to connect to the client that made the HTTP request. 
+It checks the \$_SERVER['REMOTE_ADDR'] variable to find out which IP address to use. 
+Please note that there is no filter available, and anybody who can connect to the webserver will then be able to start 
+a debugging session, even if their address does not match xdebug.remote_host.
+END
+		    ),
+		"xdebug.remote_cookie_expire_time"		=>  array
+		   (
+			'type'		=>  'integer',
+			'default'	=>  '3600',
+			'version'	=>  '2.1',
+			'help'		=>  <<<END
+This setting can be used to increase (or decrease) the time that the remote debugging session stays alive via the session cookie.
+END
+		    ),
+		"xdebug.remote_enable"				=>  array
+		   (
+			'type'		=>  'boolean',
+			'default'	=>  '0',
+			'version'	=>  'all',
+			'help'		=>  <<<END
+This switch controls whether Xdebug should try to contact a debug client which is listening on the host and port 
+as set with the settings xdebug.remote_host and xdebug.remote_port. 
+If a connection can not be established the script will just continue as if this setting was 0.
+END
+		    ),
+		"xdebug.remote_handler"				=>  array
+		   (
+			'type'		=>  'string',
+			'default'	=>  'dbgp',
+			'version'	=>  'all',
+			'help'		=>  <<<END
+Can be either 'php3' which selects the old PHP 3 style debugger output, 'gdb' which enables the GDB like debugger interface 
+or 'dbgp' - the debugger protocol. The DBGp protocol is the only supported protocol.
+
+Note: Xdebug 2.1 and later only support 'dbgp' as protocol.
+END
+		    ),
+		"xdebug.remote_host"				=>  array
+		   (
+			'type'		=>  'string',
+			'default'	=>  'localhost',
+			'version'	=>  'all',
+			'help'		=>  <<<END
+Selects the host where the debug client is running, you can either use a host name or an IP address. 
+This setting is ignored if xdebug.remote_connect_back is enabled.
+END
+		    ),
+		"xdebug.remote_log"				=>  array
+		   (
+			'type'		=>  'string',
+			'default'	=>  '',
+			'version'	=>  'all',
+			'help'		=>  <<<END
+If set to a value, it is used as filename to a file to which all remote debugger communications are logged. 
+The file is always opened in append-mode, and will therefore not be overwritten by default. 
+There is no concurrency protection available. The format of the file looks something like: 
+
+Log opened at 2007-05-27 14:28:15
+-> <init xmlns="urn:debugger_protocol_v1" xmlns:xdebug="http://xdebug.org/dbgp/x ... ight></init>
+<- step_into -i 1
+-> <response xmlns="urn:debugger_protocol_v1" xmlns:xdebug="http://xdebug.org/db ... ></response>
+END
+		    ),
+		"xdebug.remote_mode"				=>  array
+		   (
+			'type'		=>  'string',
+			'default'	=>  'req',
+			'version'	=>  'all',
+			'help'		=>  <<<END
+Selects when a debug connection is initiated. This setting can have two different values:
+req	Xdebug will try to connect to the debug client as soon as the script starts.
+jit	Xdebug will only try to connect to the debug client as soon as an error condition occurs.
+END
+		    ),
+		"xdebug.remote_port"				=>  array
+		   (
+			'type'		=>  'integer',
+			'default'	=>  '9000',
+			'version'	=>  'all',
+			'help'		=>  <<<END
+The port to which Xdebug tries to connect on the remote host. 
+Port 9000 is the default for both the client and the bundled debugclient. 
+As many clients use this port number, it is best to leave this setting unchanged.
+END
+		    ),
+		"xdebug.coverage_enable"			=>  array 
+		   (
+			'type'		=>  'boolean',
+			'default'	=>  '1',
+			'version'	=>  '2.2',
+			'help'		=>  <<<END
+If this setting is set to 0, then Xdebug will not set-up internal structures to allow code coverage.
+This speeds up Xdebug quite a bit, but of course, Code Coverage Analysis won't work.
+END
+		    ),
+		"xdebug.scream"					=>  array
+		   (
+			'type'		=>  'boolean',
+			'default'	=>  '0',
+			'version'	=>  '2.1',
+			'help'		=>  <<<END
+If this setting is 1, then Xdebug will disable the @ (shut-up) operator so that notices, warnings and errors are no longer hidden.
+END
+		    )
+	    ) ;
+
+
+	/*===========================================================================================
+
+		Command-line definitions.
+
+	  ===========================================================================================*/
+	$Definitions = <<<END
+<command name="xdebug">
+
+	<usage>
+		Manages XDebug options for PHP.
+	</usage>
+
+	<file name="phpini, configuration_file, cf" disposition="existing">
+		Specifies a configuration file different from the one currently used.
+		If not specified, the default configuration file will be the one used in CLI mode.
+	</file>
+
+	<flag name="list_settings, ls">
+		Lists the current XDebug settings defined in the PHP.INI file.
+	</flag>
+
+	<flag name="list_all_settings, las">
+		Lists all the XDebug settings, even those not specified in the PHP.INI file.
+	</flag>
+
+	<boolean name="profiling, p">
+		Enables/disables profiling.
+		This is a shortcut for :
+			xdebug -set xdebug.profiler_enable=on
+	</boolean>
+
+	<string name="set, s" multiple="true">
+		Sets the value of an XDebug parameter. The format is :
+			name=value
+		Where "name" is an existing XDebug setting.
+	</string>
+
+	<string name="show_help, sh">
+		Display help for the specified parameter name.
+		The "xdebug." prefix does not need to be specified.
+	</string>
+</command>
+END;
+
+
+	/*===========================================================================================
+
+	     FindPHPIni -
+		Tries to locate the PHP.ini file.
+
+	  ===========================================================================================*/
+	function  FindPHPIni ( $clfile )
+	   {
+		global		$PHPIni, $PHPIniLines ;
+
+
+		// A php.ini file has been specified on the command line
+		if  ( $clfile )
+			$PHPIni		=  $clfile ;
+		// Otherwise locate the PHP.ini file that is currently loaded into PHP
+		else
+		   {
+			exec ( "php --ini", $lines ) ;
+
+			foreach  ( $lines  as  $line )
+			   {
+				if  ( ! strncasecmp ( $line, "loaded", 6 ) )
+				   {
+					$line	=  trim ( $line ) ;
+	
+					if  ( preg_match ( '/File: \s+ (?P<filename> .*)/ix', $line, $match ) )
+					   {
+						$PHPIni		=  trim ( $match [ 'filename' ] ) ;
+
+						if  ( file_exists ( $PHPIni ) )
+							break ;
+					    }
+				    }
+			    }
+		    }
+
+		// Complain if no file could be found
+		if  ( ! $PHPIni  ||  ! file_exists ( $PHPIni ) )
+			error ( "Could not locate php.ini file." ) ;
+
+		// Load the file contents
+		$PHPIniLines	=  file ( $PHPIni ) ;
+
+		output ( "using PHP.INI file : $PHPIni ..." ) ;
+		output ( "" ) ;
+	    }
+
+
+	/*===========================================================================================
+
+	    LoadXDebugConfiguration -
+		Merges the XDebug configuration defined in the PHP.INI file with those defined in
+		this script.
+
+	  ===========================================================================================*/
+	function  LoadXDebugConfiguration ( )
+	   {
+		global		$PHPIni, $PHPIniLines, $XDebugOptions ;
+		global		$ListAllSettings ;
+		
+
+		// First pass through the lines of the PHP.INI file to collect defined settings
+		$index					=  0 ;
+		$highest_index				=  -1 ;
+		$XDebugOptions [ 'highest-index' ]	=  '' ;
+
+		foreach  ( $PHPIniLines  as  $line )
+		   {
+			$line	=  trim ( $line ) ;
+
+			if  ( ! strncasecmp ( $line, "xdebug.", 7 ) )
+			   {
+				if  ( preg_match ( '/xdebug \s* [.] \s* (?P<name> [a-z_][a-z0-9_]* ) \s* [=] \s* (?P<value> .*)/imsx', $line, $match ) )
+				   {
+					$pname		=  "xdebug." . $match [ 'name' ] ;
+					$pvalue		=  $match [ 'value' ] ;
+
+					if  ( ! isset ( $XDebugOptions ) )
+						warning ( "Option \"$pname\" defined in file \"$PHPIni\" is not a valid XDebug option." ) ;
+					else
+					   {
+						$XDebugOptions [ $pname ] [ 'value' ]	=  $pvalue ;
+						$XDebugOptions [ $pname ] [ 'line' ]	=  $index ;
+
+						// Remember the highest index seen so far
+						if  ( $index  >  $highest_index )
+						   {
+							$highest_index				=  $index ;
+							$XDebugOptions [ 'highest-index' ]	=  $pname ;
+						    }
+					    }
+				    }
+			    }
+
+			$index ++ ;
+		    }
+	    }
+
+
+	/*===========================================================================================
+
+	    ShowXDebugConfiguration -
+		Displays the current XDebug configuration.
+
+	  ===========================================================================================*/
+	function  ShowXDebugConfiguration ( )
+	   {
+		global		$XDebugOptions ;
+		global		$ListAllSettings ;
+		
+
+		// Now loop through $XDebugOptions to build the data we will output
+		$data		=  array ( ) ;
+
+		foreach  ( $XDebugOptions  as  $name => $option )
+		   {
+			if  ( ! is_array ( $option ) )
+				continue ;
+
+			$type		=  $option [ 'type' ] ;
+
+			if  ( $option [ 'type' ]  ==  'boolean' )
+				$default	=  ( $option [ 'default' ] ) ?  "on" : "off" ;
+			else
+				$default	=  $option [ 'default' ] ;
+
+			if  ( $option [ 'version' ]  ==  'all' )
+				$version	=  'all' ;
+			else
+				$version	=  ">" . $option [ 'version' ] ;
+
+			if  ( isset ( $option [ 'value' ] ) )
+				$specified	=  $option [ 'value' ] ;
+			else
+			   {
+				if  (  $ListAllSettings )
+					$specified	=  "-" ;
+				else
+					continue ;
+			    }
+
+			$data [ $name ]	=  array 
+			   (
+				'Setting'		=>  $name,
+				'Type'			=>  $type, 
+				'Version'		=>  $version,
+				'Default'		=>  $default,
+				'php.ini setting'	=>  $specified
+			    ) ;
+		    }
+
+		// Generate the report
+		$report		=  new AsciiReport
+		   (
+			array ( 'member' => 'Setting'					),
+			array ( 'member' => 'Type'					),
+			array ( 'member' => 'Version'					),
+			array ( 'member' => 'Default'		, 'align' => 'right'	),
+			array ( 'member' => 'php.ini setting'	, 'align' => 'right'	)
+		    ) ;
+
+		echo $report -> Generate ( $data ) ;
+		echo $report -> Summary ( 'setting' ) ;
+	    }
+
+
+	/*===========================================================================================
+
+	    NormalizeXDebugSetting -
+		Adds the "xdebug." prefix if none specified.
+
+	  ===========================================================================================*/
+	function  NormalizeXDebugSetting ( $name )
+	   {
+		if  ( strncasecmp ( $name, "xdebug.", 7 ) )
+			$name = "xdebug.$name" ;
+
+		return ( $name ) ;
+	    }
+
+
+	/*===========================================================================================
+
+	    ShowHelp -
+		Shows help for the specified xdebug setting name.
+
+	  ===========================================================================================*/
+	function  ShowHelp ( $name ) 
+	   {
+		global	$XDebugOptions ;
+
+
+		$name		=  NormalizeXDebugSetting ( $name ) ;
+
+		if  ( ! isset ( $XDebugOptions [ $name ] ) )
+			error ( "\"$name\" is not a valid XDebug option." ) ;
+
+		$option		=  $XDebugOptions [ $name ] ;
+
+		if  ( $option [ 'type' ]  ==  'boolean' )
+			$default	=  ( $option [ 'default' ] ) ?  "on" : "off" ;
+		else
+			$default	=  $option [ 'type' ] ;
+
+		if  ( isset ( $option [ 'value' ] ) )
+			$value		=  $option [ 'value' ] . " (defined at line #" . ( $option [ 'line' ] + 1 ) . ")" ;
+		else
+			$value		=  "-" ;
+
+		$text		=  $option [ 'help' ] ;
+		$text		=  "\t" . str_replace ( "\n", "\n\t", $text ) ;
+
+		output ( "Setting          : $name" ) ;
+		output ( "Type             : " . $option [ 'type' ] ) ;
+		output ( "Default value    : $default" ) ;
+		output ( "Configured value : $value" ) ;
+		output ( "Target version   : " . $option [ 'version' ] ) ;
+		output ( "Help             : " ) ;
+		output ( $text ) ;	
+		
+	    }
+
+
+	/*===========================================================================================
+
+	    SetXDebugOptions -
+		Configures one or more XDebug options.
+
+	  ===========================================================================================*/
+	function  SetXDebugOptions ( $options )
+	   {
+		global $XDebugOptions, $PHPIni ;
+
+		// Verify that all options are valid
+		$new_options		=  array ( ) ;
+
+		foreach  ( $options  as  $option )
+		   {
+			$option		=  NormalizeXDebugSetting ( $option ) ;
+
+			if  ( preg_match ( '/(?P<name> .*?) \s* [=] \s* (?P<value> .*)/imsx', $option, $match ) )
+			   {
+				$name		=  $match [ 'name' ] ;
+				$value		=  $match [ 'value' ] ;
+
+				if  ( ! isset ( $XDebugOptions [ $name ] ) )
+					error ( "XDebug option \"$name\" does not exist. No option written to \"$PHPIni\"." ) ;
+	
+				$option			=  $XDebugOptions [ $name ] ;
+
+				if   ( $option [ 'type' ]  ==  'boolean' )
+				   {
+					if  ( $value )
+						$value	=  'on' ;
+					else
+						$value	=  'off' ;
+				    }
+
+				$new_options [ $name ]	=  array ( 'value' => $value, 'found' => false ) ;				
+			    }
+		    }
+
+		// Read the php.ini file ; first find the min and max line index for xdebug options
+		$lines		=  file ( $PHPIni ) ;
+		$output_lines	=  array ( ) ;
+		$min_xdebug	=  count ( $lines ) - 1 ;
+		$max_xdebug	=  0 ;
+		$index		=  0 ;
+
+		foreach  ( $lines  as  $line )
+		   {
+			if  ( ! strncasecmp ( $line, "xdebug.", 7 ) )
+			   {
+				if  ( $index  <  $min_xdebug )
+					$min_xdebug	=  $index ;
+
+				if  ( $index  >  $max_xdebug ) 
+					$max_xdebug	=  $index ;
+			    }
+
+			$index ++ ;
+		    }
+
+		// Then loop between min and max index to search for the command-line specified settings
+		for  ( $i  =  $min_xdebug ; $i  <=  $max_xdebug ; $i ++ )
+		   {
+			foreach  ( $new_options  as  $name => &$new_option )
+			   {
+				if  ( ! strncasecmp ( $lines [$i], "$name ", strlen ( "$name " ) ) )
+				   {
+					if  ( $string  =  preg_replace ( '/=\s*.*/', "= " . $new_option [ 'value' ], $lines [$i] ) )
+					   {
+						$lines [$i]		=  $string ;
+						$new_option [ 'found' ]	=  true ;
+					    }
+				    }
+			    }
+		    }
+
+		// If some parameters were not processed, this means that they were not defined in th PHP.INI file. Add them after
+		// the really last xdebug parameter
+		foreach  ( $new_options  as  $name => $missed_option )
+		   {
+			if  ( ! $missed_option [ 'found' ] )
+				array_splice ( $lines, $max_xdebug + 1, 0, "$name = " . $missed_option [ 'value' ] . "\n" ) ;
+		    }
+
+		// Write back the PHP.INI file
+		file_put_contents ( $PHPIni, implode ( '', $lines ) ) ;
+	    }
+
+
+	/*===========================================================================================
+
+		Main program.
+
+	  ===========================================================================================*/
+	// Get command-line parameters
+	$CL 			=  new CLParser ( $Definitions ) ;
+	$PHPIni			=  $CL -> phpini ;
+	$ListSettings		=  $CL -> list_settings ;
+	$ListAllSettings	=  $CL -> list_all_settings ;
+	$ShowHelpFor		=  $CL -> show_help ;
+	$Set			=  $CL -> set ;
+	$Profiling		=  $CL -> profiling ;
+
+	// Sort options by name
+	ksort ( $XDebugOptions ) ;
+
+	// Try to locate the PHP.INI file
+	FindPhpIni ( $PHPIni ) ;
+
+	// Load current XDebug options
+	LoadXDebugConfiguration ( ) ;
+	
+	// If help requested for a given parameter, display it
+	if  ( $ShowHelpFor )
+	   {
+		ShowHelp ( $ShowHelpFor ) ;
+		exit ( ) ;
+	    }
+
+	// Show current XDebug configuration
+	if  ( $ListSettings  ||  $ListAllSettings )
+	   {
+		ShowXDebugConfiguration ( ) ;
+		exit ( ) ;
+	    }
+
+	// -profiling option
+	if  ( $Profiling )
+		$Set []		=  "xdebug.profiler_enable = on" ;
+	else
+		$Set []		=  "xdebug.profiler_enable = off" ;
+
+	// Assigns new values to XDebug parameters
+	if  ( $Set )
+	   {
+		SetXDebugOptions ( $Set ) ;
+		exit ( ) ;
+	    }

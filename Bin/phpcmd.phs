@@ -1,0 +1,357 @@
+<?php
+	//!phpcmd(Utilities, 2.0) : Displays brief information about PHP commands.
+	/***************************************************************************************************
+
+	    NAME
+		phpcmd.phs
+
+	    DESCRIPTION
+		Displays brief information about PHP commands.
+
+	    AUTHOR
+	     	Christian Vigh, 10/2012.
+
+	    HISTORY
+	    [Version : 1.0]	[Date : 2012/10/01]	[Author : CV]
+	     	Initial version.
+
+	    [Version : 1.0.1]	[Date : 2015/05/07]	[Author : CV]
+	 	. Added a third parameter to the !phpcmd() tag, which describes the current state of the 
+	 	  script and can be :
+	 	  - 'production' :
+	 		The script is available to run in a production environment.
+	 	  - 'development' :
+	 		The script is functionning but remains under development.
+	 	  - 'unfinished' :
+	 		The script may provide some functionnalities but is not fully functional.
+	
+	 	If not specified, the default state is considered to be 'production'.
+	  
+	 	- Added the -state option, used to filter results based on the supplied script state keyword.
+	 	- Included the script state in the output results of the -list_categories option.
+
+	 ***************************************************************************************************/
+	require ( "tools.phpinclude" ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\IO\AsciiReport ;
+	use  Thrak\Types\String ;
+	use  Thrak\IO\Path ;
+
+
+	/*==================================================================================================
+
+		Command line parameters.
+
+	  ==================================================================================================*/
+	$Definitions = <<<END
+	<command name="phpcmd" allow-files="false">
+
+		<usage>
+			Shows brief help about developed phpcommands.
+			To be listed by this command, the PHP script must contain a comment having the following form :
+
+				//!phpcmd(category [, version, [state]] ):help text
+			or
+				//!phpcmd:help text
+
+			where 'category' is the command class (a way to group , and 'command' the command name.
+			If no category is specified, the command is added to the common commands category.
+			Help text is given after the semicolon character (:).
+			The '//!' construct can also be specified as : '//*', '#!' or '#*'.
+		</usage>
+
+		<flag name="by_category, bc">
+			When specified, commands are sorted by category instead of command name.
+		</flag>
+
+		<string name="category, c" default="">
+			Lists only the commands belonging to the specified category.
+		</string>
+
+		<flag name="list_categories, lc">
+			Lists the available command categories.
+		</flag>
+		
+		<keyword name="state, s">
+			Filters the results based on the specified script state.
+			
+			<case name="production, prod, p">
+				Scripts that are in production state.
+			</case>
+			
+			<case name="development, dev, d">
+				Scripts that are in development state, ie functional but not yet fully tested.
+			</case>
+			
+			<case name="unfinished, u">
+				Scripts that are unfinished, ie that may provide some functionalities without
+				being fully functional.
+			</case>
+		</keyword>
+
+		<exclude name="list_categories" 	with="by_category, category"/>
+	</command>
+END;
+
+	/*==================================================================================================
+
+		Utility functions.
+
+	  ==================================================================================================*/
+	
+	// get_state -
+	//	Returns a unique state keyword even when abbreviations are given.
+	function  get_state ( $keyword, $default = 'production' )
+	   {
+		if  ( $keyword )
+			$keyword	=  strtolower ( $keyword ) ;
+		else
+			$keyword	=  strtolower ( $default ) ;
+		
+		switch  ( $keyword )
+		   {
+			case	'production' :
+			case	'prod' :
+			case	'p' :
+				return ( 'production' ) ;
+				
+			case	'development' :
+			case	'dev' :
+			case	'd' :
+				return ( 'development' ) ;
+				
+			case	'unfinished' :
+			case	'u' :
+				return ( 'unfinished' ) ;
+				
+			default :
+				return ( 'production' ) ;
+		    }
+	    }
+	
+
+	/*==================================================================================================
+
+	    GetPhpCommands -
+	    	Gets the list of PHP scripts found, having the "//*phpcmd" tag.
+
+	  ==================================================================================================*/
+	function  GetPhpCommands ( )
+	  {
+	  	global 		$Configuration ;
+
+	 	$commands 		=  array ( ) ;
+		$extensions 		=  $Configuration -> Get ( 'PhpTools/phpcmd/extensions' ) ;
+
+		if  ( $extensions  ===  false )
+			error ( "The configuration file should define an entry called \"PhpTools/phpcmd/extensions\" to list all the known PHP extensions." ) ;
+
+		// Regular expression used to isolate the '//!phpcmd' construct
+	   	$re		=  '/
+					( (\/\/) | (\#) ) \s* [!*]
+					\s*
+					phpcmd
+					\s*
+					(
+						\( \s*
+						(?P<category> .*?)
+						(
+							\s* , \s* 
+							(?P<version> [^,)]+)?
+							(
+								\s* , \s*
+								(?P<state> [^,)]+)?
+								)?
+							)?
+						\s* \)
+					)?
+					\s*:\s*
+					(?P<help> .*?)$
+				   /imsx' ;
+
+	   	// Get path environment variable
+	  	$Paths 		=  explode ( PATH_ENV_SEPARATOR, getenv ( "PATH" ) ) ;
+
+		// Loops through paths
+		foreach  ( $Paths  as  $Path )
+		   {
+		   	// Silently ignore unexisting paths or paths that are not a directory
+		   	if  ( ! file_exists ( $Path )  ||  ! is_dir ( $Path ) )
+		   		continue ;
+
+		   	// Loop through extension to search all files having the given extension within the current path
+		   	foreach  ( $extensions  as  $extension )
+		   	   {
+		   		$files 		=  glob ( "$Path/*$extension", GLOB_NOSORT ) ;
+
+		   		// No file match : process next extension
+		   		if (  ! $files )
+		   			continue ;
+
+		   		// Loop through filenames that match the current extension
+		   		foreach  ( $files  as  $file )
+		   		   {
+		   		   	// Check that this is a file, not a directory or else
+		   			if  ( ! is_file ( $file ) )
+		   				continue ;
+
+		   			$contents 	=  file_get_contents ( $file ) ;
+
+		   			// Add the file to the list if it contains the '//!phpcmd' construct
+		   			if  ( preg_match ( $re, $contents, $matches ) )
+		   			   {
+		   				$entry 	= array
+		   				   (
+		   				   	'file'		=>  Path::ToUnix ( $file ),
+		   				   	'name'		=>  basename ( $file ),
+		   				   	'category'	=>  'general',
+		   				   	'version'	=>  '',
+		   				   	'help'		=>  ''
+		   				    ) ;
+
+		   				if  ( isset ( $matches [ 'category' ] ) )
+		   				 	$entry [ 'category' ]	=  $matches [ 'category' ] ;
+
+		   				if  ( isset ( $matches [ 'version' ] ) )
+		   				 	$entry [ 'version' ]	=  $matches [ 'version' ] ;
+
+		   				if  ( isset ( $matches [ 'state' ] ) )
+		   				 	$entry [ 'state' ]	=  get_state ( $matches [ 'state' ] ) ;
+						else
+							$entry [ 'state' ]	=  get_state ( '' ) ;
+
+		   				if  ( isset ( $matches [ 'help' ] ) )
+		   				 	$entry [ 'help' ]	=  trim (  $matches [ 'help' ] ) ;
+
+		   				// Add to the command list
+						if  ( ! isset ( $commands [ $entry [ 'file' ] ] ) )
+		   					$commands [ $entry [ 'file' ] ] 	=  $entry ;
+		   			   }
+		   		    }
+		   	    }
+		    }
+
+		// All done, return the list of php commands
+		return ( $commands ) ;
+	   }
+
+
+	/*==================================================================================================
+
+	    DisplayCategoryNames -
+	    	Displays all the available category names.
+
+	  ==================================================================================================*/
+	function  DisplayCategoryNames ( $commands )
+	   {
+	   	$Categories 	=  array ( ) ;
+
+	   	foreach  ( $commands  as  $Parameter )
+	   	   {
+	   	   	$lowparam	=  strtolower ( $Parameter [ 'category' ] ) ;
+
+	   	   	if  ( ! trim ( $lowparam ) )
+	   	   		$lowparam 	=  "general" ;
+
+	   	   	if  ( ! array_key_exists ( $lowparam, $Categories ) )
+	   			$Categories [ $lowparam ] 	=  1 ;
+	            }
+
+	        ksort ( $Categories ) ;
+
+   		foreach  ( array_keys ( $Categories )  as  $Category )
+   			output ( $Category ) ;
+
+   		exit ( ) ;
+	    }
+
+
+	/*==================================================================================================
+
+	    DisplayCommands -
+	    	Displays the commands ; order either by command or category.
+
+	  ==================================================================================================*/
+	function  DisplayCommands ( $commands, $bycat, $category, $state )
+	   {
+		$cmp_byname	=  function ( $a, $b )
+		   { return ( strcasecmp ( $a [ 'name' ], $b [ 'name' ] ) ) ; } ;
+		
+		$cmp_bycat 	=  function ( $a, $b )
+		   {
+		   	$status  =  strcasecmp ( $a [ 'category' ], $b [ 'category' ] ) ;
+
+		   	if  ( $status  ==  0 )
+		   		$status = strcasecmp ( $a [ 'name' ], $b [ 'name' ] ) ;
+
+		   	return ( $status ) ;
+		    } ;
+		
+		$filter		=  function  ( $e ) use ( $category, $state )
+		   {
+			$same_category	=  ( $category ) ?  ! strcasecmp ( $e [ 'category' ], $category ) : true ;
+			$same_state	=  ( $state    ) ?  ! strcasecmp ( $e [ 'state'    ], $state    ) : true ;
+			
+			return ( $same_category  &&  $same_state ) ; 
+		    } ;
+
+		if  ( $category )
+			$bycat 		=  false ;
+
+		$commands	=  array_filter ( $commands, $filter ) ;
+
+		usort ( $commands, ( $bycat ) ?  $cmp_bycat : $cmp_byname ) ;
+
+		if  ( $category )
+		   {
+		   	output ( "Category $category :" ) ;
+			$report 	=  new  AsciiReport
+			   (
+			   	array ( 'member' => 'name'	, 'title' => 'Command' 		),
+			   	array ( 'member' => 'version'	, 'title' => 'Version' 		),
+			   	array ( 'member' => 'state'	, 'title' => 'State' 		),
+			   	array ( 'member' => 'help'	, 'title' => 'Description' 	)
+			    ) ;
+		    }
+		else
+			$report 	=  new  AsciiReport
+			   (
+			   	array ( 'member' => 'name'	, 'title' => 'Command' 		),
+			   	array ( 'member' => 'category'	, 'title' => 'Category'		),
+			   	array ( 'member' => 'version'	, 'title' => 'Version' 		),
+			   	array ( 'member' => 'state'	, 'title' => 'State' 		),
+			   	array ( 'member' => 'help'	, 'title' => 'Description' 	)
+			    ) ;
+
+		echo $report -> Generate ( $commands ) ;
+		echo $report -> Summary ( 'command' ) ;
+	    }
+
+
+	/*==================================================================================================
+
+		Main program.
+
+	  ==================================================================================================*/
+	$CL 		=  new CLParser ( $Definitions ) ;
+	$PhpCommands 	=  GetPhpCommands ( ) ;
+	$ByCategory	=  $CL -> by_category ;
+	$ListCategories =  $CL -> list_categories ;
+	$Category 	=  $CL -> category ;
+	$State		=  $CL -> state ;
+
+
+	// Exit if no commands found.
+	if  ( ! $PhpCommands )
+	   {
+		output ( "No PHP command found." ) ;
+		exit ( ) ;
+	    }
+
+	// Display available category names if required
+	if  ( $ListCategories )
+		DisplayCategoryNames ( $PhpCommands ) ;
+
+	// No other options : list the commands found
+	DisplayCommands ( $PhpCommands, $ByCategory, $Category, $State ) ;

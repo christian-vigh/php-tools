@@ -1,0 +1,119 @@
+<?php
+
+	//!phpcmd(Utilities, 2.0) : Extended file command.
+	/***************************************************************************************************
+
+	    NAME
+		ufile.phs
+
+	    DESCRIPTION
+		"ultra file", an extended file command that lists file types and content types.
+
+	    AUTHOR
+	     	Christian Vigh, 11/2014.
+
+	    HISTORY
+	    [Version : 1.0]	[Date : 2014/11/22]	[Author : CV]
+	     	Initial version.
+
+	 ***************************************************************************************************/
+	require ( "tools.phpinclude" ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Types\String ;
+	use  Thrak\IO\Path ;
+	use  Thrak\IO\AsciiReport ;
+		
+
+	/*===========================================================================================
+
+		Command-line definitions.
+
+	  ===========================================================================================*/
+	$Definitions = <<<END
+<command name="ufile">
+	<usage>
+		Determines type of files.
+	</usage>
+
+	<flag name="full_path, fp">
+		When specified, the full path of filenames is displayed.
+	</flag>
+	
+	<unnamed-parameters>
+		<file min-arguments="1" max-arguments="*" glob="false">
+			File(s) whose content are to be guessed.
+		</file>
+	</unnamed-parameters>
+</command>
+END;
+
+
+	/*===========================================================================================
+
+		Main program.
+
+	  ===========================================================================================*/
+
+	// Get command-line parameters
+	$CL 		=  new CLParser ( $Definitions ) ;
+	$Files		=  $CL -> UnnamedParameters [0] -> GetValue ( ) ;
+	$FullPath	=  $CL -> full_path ;
+	
+	// Create the report
+	$report		=  new AsciiReport 
+	   ([
+		[ 'member'	=>  'filename'	, 'title' => 'File'		],
+		[ 'member'	=>  'mimetype'	, 'title' => 'Mime type'	],
+		[ 'member'	=>  'encoding'	, 'title' => 'Encoding'		],
+		[ 'member'	=>  'contents'	, 'title' => 'Contents'		]
+	     ]) ;
+	$data		=  [] ;
+
+	// Loop through files
+	foreach  ( $Files  as  $specification )
+	   {
+		if  ( strcspn ( $specification, "[]*?" )  <  strlen ( $specification ) )
+			$file	=  $specification ;
+		else 
+			$file	=  '"' . $specification . '"' ;
+		
+		// Find first contents of file
+		$descriptions	=  null ;
+		exec ( "file -N $file", $descriptions ) ;
+
+		// Then encoding and charset 
+		$mimetypes	=  null ;
+		exec ( "file -N -i $file", $mimetypes ) ;
+		
+		for  ( $i = 0 ; $i  <  count ( $descriptions ) ; $i ++ )
+		   {
+			if  ( strpos ( $descriptions [$i], 'ERROR' )  !==  false )
+			   {
+				output ( $descriptions [$i] ) ;
+				continue ;
+			    }
+			
+			$file_info	=  explode ( ': ', trim ( $descriptions [$i] ) ) ;
+			$mime_info	=  explode ( ': ', trim ( $mimetypes [$i] ) ) ;
+			$file		=  $file_info [0] ;
+		
+			// Get mime type + encoding
+			$mime_parts	=  explode ( '; ', $mime_info [1] ) ;
+		
+			// Extract encoding character set
+			$charset_part	=  explode ( '=', $mime_parts [1] ) ;
+		
+			// Gather the collected information
+			$data []	=
+			   [
+				'filename'	=>  ( $FullPath ) ?  $file : basename ( $file ),
+				'mimetype'	=>  $mime_parts [0],
+				'encoding'	=>  $charset_part [1],
+				'contents'	=>  $file_info [1]
+			    ] ;
+		    }		
+	    }
+	
+	echo $report -> Generate ( $data ) ;
+	echo $report -> Summary ( "file" ) ;

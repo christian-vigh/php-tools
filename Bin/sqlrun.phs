@@ -1,0 +1,149 @@
+<?php
+
+	//!phpcmd(Database, 2.0) : SQL script files runner.
+	/***************************************************************************************************
+
+	    NAME
+		sqlrun.phs
+
+	    DESCRIPTION
+		Runs extended SQL scripts.
+
+	    AUTHOR
+	     	Christian Vigh, 03/2013.
+
+	    HISTORY
+	    [Version : 1.0]	[Date : 2013/03/13]	[Author : CV]
+	     	Initial version.
+
+	 ***************************************************************************************************/
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Types\String ;
+	use  Thrak\IO\Path ;
+	use  Thrak\IO\AsciiReport ;
+	use  Thrak\Processors\IniFile ;
+	use  Thrak\Processors\XQL\MySQL\MySQL	as  MySQL ;
+
+	require ( "tools.phpinclude" ) ;
+
+
+	/*===========================================================================================
+
+		Global variables.
+
+	  ===========================================================================================*/
+	$User			=  "" ;
+	$Password		=  "" ;
+	$Host			=  "" ;
+	$ConfigurationFile	=  "" ;
+
+
+	/*===========================================================================================
+
+		Command-line definitions.
+
+	  ===========================================================================================*/
+	$Definitions = <<<END
+<command name="sqlrun">
+
+	<usage>
+		Executes extended SQL scripts.
+	</usage>
+
+	<unnamed-parameters>
+		<file name="SQLFiles" min-args="0" max-args="*" value-text="SQL file(s)">
+			Extended SQL files to be processed and run.
+		</file>
+	</unnamed-parameters>
+
+	<file name="configuration_file, cf" disposition="existing" required="false">
+		Specifies a configuration file other than the default one (sqlrun.ini) located either in the 
+		directory of sqlrun.phs or in THRAK_PHPTOOLS\Data.
+	</file>
+</command>
+END;
+
+
+	/*===========================================================================================
+
+	    GetConfigurationFile -
+		Locates the configuration file.
+
+	  ===========================================================================================*/
+	function  GetConfigurationFile ( )
+	   {
+		global	$ConfigurationFile, $Host, $User, $Password ;
+		global  $THRAK_PHPTOOLS_DATA ;
+
+		
+		if  ( $ConfigurationFile )
+		   {
+			if  ( ! file_exists ( $ConfigurationFile ) )
+				error ( "Specified configuration file \"$ConfigurationFile\" does not exist." ) ;
+		    }
+		else
+		   {
+			$location	=  dirname ( __FILE__ ) . "/sqlrun.ini" ;
+
+			if  ( ! file_exists ( $location ) )
+				$location	=  "$THRAK_PHPTOOLS_DATA/sqlrun.ini" ;
+
+			if  ( ! file_exists ( $location ) )
+				error ( "Cannot locate configuration file \"sqlrun.ini\"" ) ;
+
+			$ConfigurationFile	=  $location ;
+		    }
+
+		$inifile	=  IniFile::LoadFromFile ( $ConfigurationFile, IniFile::LOAD_EXISTING ) ;
+
+		$Host		=  $inifile -> GetKey ( 'Connection', 'Host' ) ;
+		$User		=  $inifile -> GetKey ( 'Connection', 'User' ) ;
+		$Password	=  $inifile -> GetKey ( 'Connection', 'Password' ) ;
+	    }
+
+
+	/*===========================================================================================
+
+	    ProcessFiles -
+		Processes the SQL files specified on the command-line.
+
+	  ===========================================================================================*/
+	function  ProcessFiles ( $files )
+	   {
+		foreach  (  $files  as  $file )
+		   {
+			ProcessFile ( $file ) ;
+		    }
+	    }
+
+
+	function  ProcessFile ( $file )
+	   {
+		global		$Host, $User, $Password ;
+
+
+		$xql 	=  new  MySQL ( $file, $Host, $User, $Password ) ;
+		$xql -> Connect ( ) ;
+		$xql -> Parse ( ) ;
+		$xql -> Disconnect ( ) ;
+	    }
+
+
+	/*===========================================================================================
+
+		Main program.
+
+	  ===========================================================================================*/
+
+	// Get command-line parameters
+	$CL 		=  new CLParser ( $Definitions ) ;
+	$Files 		=  $CL -> Files ;
+
+	// Configuration file
+	if  ( $CL -> configuration_file )
+		$ConfigurationFile	=  $CL -> configuration_file ;
+
+	GetConfigurationFile ( ) ;
+
+	// Process the specified files.
+	ProcessFiles ( $CL -> UnnamedParameters [0] -> Values );

@@ -1,0 +1,115 @@
+<?php
+	//!phpcmd(Network, 1.0, production) : Displays top-level domain information.
+	/**************************************************************************************************************
+	
+	    NAME
+	        tld.php
+	
+	    DESCRIPTION
+	        Displays top-level domain information.
+	
+	    AUTHOR
+	        Christian Vigh, 07/2015.
+	
+	    HISTORY
+	    [Version : 1.0]    [Date : 2015/07/08]     [Author : CV]
+	        Initial version.
+	
+	 **************************************************************************************************************/
+	require ( "tools.phpinclude" ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Types\String ;
+	use  Thrak\IO\Path ;
+	use  Thrak\IO\AsciiReport ;
+	use  Thrak\Internet\TLDList ;
+
+
+	/*==================================================================================================
+
+		Command line parameters.
+
+	  ==================================================================================================*/
+	$Definitions = <<<END
+<command name="tld" allow-files="true" min-files="1" value-text="tld(s)" value-help="Top-level domains to be searched">
+
+	<usage>
+		Displays information about top-level domains.
+	</usage>
+</command>
+END;
+
+
+	/*==================================================================================================
+
+		Global constants and variables.
+
+	  ==================================================================================================*/
+	$CL 				=  new  CLParser ( $Definitions ) ;
+	$TLDs				=  $CL -> Files ;
+
+
+	/*==================================================================================================
+
+		Main program.
+
+	  ==================================================================================================*/
+	$report_headers		=  
+	   [
+		[ 'member' => 'tld'	, 'title' => 'TLD'				],
+		[ 'member' => 'type'	, 'title' => 'Type'				],
+		[ 'member' => 'idn'	, 'title' => 'IDN'	, 'align' => 'center'	],
+		[ 'member' => 'dnssec'	, 'title' => 'DNSSEC'	, 'align' => 'center'	],
+		[ 'member' => 'sld'	, 'title' => 'SLD'	, 'align' => 'center'	],
+		[ 'member' => 'entity'	, 'title' => 'Entity'				]
+	    ] ;
+	$data			=  [] ;
+	$tld_report		=  [] ;
+	$has_notes		=  false ;
+
+	// Create list of TLD objects
+	$tldlist	=  new TLDList ( ) ;
+	sort ( $TLDs ) ;
+
+	foreach  ( $TLDs  as $tld )
+	   {
+		if  ( isset ( $tldlist [ $tld ] ) )
+		   {
+			$tld_report_entry	=  $tldlist [ $tld ] ;
+
+			if  ( $tld_report_entry -> Notes )
+				$has_notes	=  true ;
+
+			$tld_report []		=  $tld_report_entry ;
+		    }
+		else
+			error ( "Top-level domain \"$tld\" is not referenced." ) ;
+	    }
+
+	// If some notes have been found, add an extra column
+	if  ( $has_notes )
+		$report_headers []	=  [ 'member' => 'notes', 'title' => 'Notes', 'width' => 60, 'overflow' => 'wrap' ] ;
+
+	// Create the report
+	$report		=  new AsciiReport ( $report_headers ) ;
+
+	// Create the data
+	foreach  ( $tld_report  as  $tld_report_entry ) 
+	   {
+		$row		= 
+		   [
+			'tld'		=>  $tld_report_entry -> Name,
+			'type'		=>  $tld_report_entry -> Type,
+			'entity'	=>  $tld_report_entry -> Entity,
+			'idn'		=>  ( $tld_report_entry -> IDN ) ?  '*' : '',
+			'dnssec'	=>  ( $tld_report_entry -> DNSSEC ) ?  '*' : '',
+			'sld'		=>  ( $tld_report_entry -> SLD ) ?  '*' : '',
+			'notes'		=>  $tld_report_entry -> Notes
+		    ] ;
+
+		$data []	=  $row ;
+	    }
+
+	// Echo the report
+	echo $report -> Generate ( $data ) ;
+	echo $report -> Summary ( 'top-level domain' ) ;

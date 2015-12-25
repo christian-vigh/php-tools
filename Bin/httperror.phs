@@ -1,0 +1,229 @@
+<?php
+	//!phpcmd(Utilities, 2.0, production) : Gives official information about http errors.
+	/***************************************************************************************************
+
+	    NAME
+		httperror.phs
+
+	    DESCRIPTION
+		Gives official information about http errors.
+
+	    AUTHOR
+	     	Christian Vigh, 06/2015.
+
+	    HISTORY
+	    [Version : 1.0]	[Date : 2015/06/06]	[Author : CV]
+	     	Initial version.
+
+	 ***************************************************************************************************/
+	require ( "tools.phpinclude" ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Types\String ;
+	use  Thrak\IO\Path ;
+	use  Thrak\IO\AsciiReport ;
+	use  Thrak\Processors\Xml\XmlFileDocument ;
+	use  Thrak\Types\String\Formatting ;
+	
+
+	/*==================================================================================================
+
+		Command line parameters.
+
+	  ==================================================================================================*/
+	$Definitions = <<<END
+<command name="httperror" allow-files="true" min-files="0" max-files="*" value-text="code" value-help="Http error code(s)">
+
+	<usage>
+		Displays official help about http errors.
+	</usage>
+	
+	<file name="cache_file, cf" disposition="any" default="thraktools://Data/httperrors.cache">
+		Path to the local copy of the W3C help page giving help on error descriptions.
+	</file>
+	
+	<flag name="reload, r">
+		Reloads the cached W3C help page.
+		If not specified, the page will be reloaded once a month.
+	</flag>
+	
+	<string name="url, u" default="http://www.w3.org/Protocols/rfc2616/rfc2616-sec10.html">
+		Url where http error descriptions can be found.
+	</string>
+</command>
+END;
+	
+
+	/*==================================================================================================
+
+	    CheckReload -
+		Checks if the cached file needs to be reloaded. Reloads it if the -reload parameter has been
+		specified, or if the cached file is older than 1 month (well, in fact it is systematically
+		reloaded every first day of the month).
+
+	  ==================================================================================================*/
+	function  CheckReload ( $cache_file, $url, $reload )
+	   {
+		if  ( $reload  ||  ! file_exists ( $cache_file )  ||  date ( 'd' )  ==  1 )
+		   {
+			$content	=  @file_get_contents ( $url ) ;
+			
+			if  ( $content )
+			   {
+				echo "Reloading $url..." ;
+				file_put_contents ( $cache_file, $content ) ;
+				
+				return ( $content ) ;
+			    }
+		    }
+		
+		$content	=  file_get_contents ( $cache_file ) ;
+		
+		return ( $content ) ;
+	    }
+	
+	
+	/*==================================================================================================
+
+	    GetBody -
+		Gets the body part of an html file.
+
+	  ==================================================================================================*/
+	function  GetBody ( $content )
+	   {
+		$document		=  new DOMDocument ( ) ;
+		$document -> loadHTML ( $content ) ;
+		$body			=  $document -> getElementsByTagName ( 'body' ) -> item ( 0 ) ;
+		
+		return ( $body ) ;
+	    }
+	
+
+	/*==================================================================================================
+
+	    GetErrorCodes -
+		Gets the available http error codes.
+
+	  ==================================================================================================*/
+	function  GetErrorCodes ( $body )
+	   {
+		$h3_re		=  '#^ \s*
+					(?P<section>
+						\d+ ( \. \d+ )+
+					)
+					\s+
+					(
+						(?P<code> \d+)
+						\s+
+					 )?
+					(?P<text> .*?)
+				    \s*$#imsx' ;
+		$result		=  [] ;
+		$nodes		=  $body -> childNodes ;
+		$current	=  false ;
+		
+		
+		for  ( $i = 0 ; $i  <  $nodes -> length ; $i ++ )
+		   {
+			$node	=  $nodes -> item ( $i ) ;
+			
+			if  ( ! strcasecmp ( $node -> nodeName, 'h3' ) )
+			   {
+				if  ( $current )
+					$result []	=  $current ;
+				
+				$current	=  [ 'text' => [] ] ;
+				
+				preg_match ( $h3_re, $node -> textContent, $match ) ;
+				
+				$current [ 'section' ]	=  $match [ 'section' ] ;
+				$current [ 'code' ]	=  $match [ 'code' ] ;
+				$current [ 'title' ]	=  $match [ 'text' ] ;
+				
+				if  ( ! $match [ 'code' ] )
+				   {
+					if  ( preg_match ( '/(?P<code>\dxx)/', $match [ 'text' ], $submatch ) )
+						$current [ 'code' ]	=  $submatch [ 'code' ] ;
+				    }
+			    }
+			else if  ( $current  !==  false ) 
+			   {
+				$text	=  trim ( $node -> textContent ) ;
+				
+				if  ( $text )
+				   {
+					$text	=  "\t" . preg_replace ( '/\r\n\s*/', ' ', $text ) ;
+					$current [ 'text' ] []	=  $text ;
+				    }
+			    }
+		    }
+		
+		$result []	=  $current ;
+		
+		return ( $result ) ;
+	    }
+	
+	
+	/*==================================================================================================
+
+	    DisplayErrorCodes -
+		Displays help about the specified error codes.
+
+	  ==================================================================================================*/
+	function  DisplayErrorCodes ( $codes, $error_codes )
+	   {
+		global		$Url, $Configuration ;
+		
+		$width	=  $Configuration -> Get ( 'Console/line-width' ) ;
+		
+		foreach  ( $codes  as  $code )
+		   {
+			$found		=  false ;
+			
+			foreach  ( $error_codes  as  $help )
+			   {
+				if  ( $help [ 'code' ]  ==  $code )
+				   {
+					$title	=  $help [ 'code' ] . ' - ' . $help [ 'title' ] . " ($Url#sec{$help [ 'section' ]}) :" ;
+					output ( $title ) ;
+				
+					foreach  ( $help [ 'text' ]  as  $text )
+					   {
+						$text	=  Formatting::FormatParagraph ( $text, TEXT_ALIGN_LEFT, $width, 7 ) ;
+						output ( "$text\n\n" ) ;
+					     }				
+					
+					$found	=  true ;
+				    }
+			    }
+			
+			if  ( ! $found )
+				error ( "Http code $code does not exist." ) ;
+		    }
+	    }
+	
+	
+	/*==================================================================================================
+
+		Global constants and variables.
+
+	  ==================================================================================================*/
+	$CL 			=  new  CLParser ( $Definitions ) ;
+	$CacheFile		=  $CL -> cache_file ;
+	$Reload			=  $CL -> reload ;
+	$Url			=  $CL -> url ;
+	$Codes			=  $CL -> Files ;
+	
+	// Reload the official documentation page, if necessary
+	$page			=  CheckReload ( $CacheFile, $Url, $Reload ) ;
+	
+	// Create a DOM document
+	$body			=  GetBody ( $page ) ;
+	
+	// Collect error codes
+	$error_codes		=  GetErrorCodes ( $body ) ;
+
+	if  ( count ( $Codes ) )
+	   {
+		DisplayErrorCodes ( $Codes, $error_codes ) ;
+	    }

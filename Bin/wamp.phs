@@ -1,0 +1,928 @@
+<?php
+	//!phpcmd(Windows, 2.0) : Wamp manager administration.
+	/***************************************************************************************************
+
+	    NAME
+		wamp.phs
+
+	    DESCRIPTION
+		Administrates the Wamp manager application.
+
+	    AUTHOR
+	     	Christian Vigh, 10/2012.
+
+	    HISTORY
+	    [Version : 1.0]	[Date : 2012/10/01]	[Author : CV]
+	     	Initial version.
+
+	 ***************************************************************************************************/
+	require ( "tools.phpinclude" ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Types\String ;
+	use  Thrak\IO\Path ;
+	use  Thrak\IO\AsciiReport ;
+	use  Thrak\Windows\Wamp\WampManager ;
+	use  Thrak\Windows\Wamp\WampConfigurableModule ;
+	use  Thrak\Windows\Wmi ;
+
+	/*==================================================================================================
+
+		Command line parameters.
+
+	  ==================================================================================================*/
+	$Definitions = <<<END
+<command name="wamp">
+
+	<usage>
+		Wamp server administration.
+	</usage>
+
+	<topic name="edit">
+		Editing Php, Mysql and Apache configuration files.
+		line2
+	</topic>
+
+	<topic name="config">
+		Php, Mysql and Apache configuration files management.
+	</topic>
+
+	<topic name="logs, log">
+		Log file management.
+	</topic>
+
+	<topic name="modules, module, mod">
+		Apache and Php modules/extensions management.
+	</topic>
+
+	<topic name="php">
+		Php-related options.
+	</topic>
+
+	<topic name="apache">
+		Apache-related options.
+	</topic>
+
+	<topic name="mysql">
+		Mysql-related options.
+	</topic>
+
+	<topic name="version">
+		Options for listing Wamp modules versions.
+	</topic>
+
+	<topic name="services, service">
+		Windows services management for Mysql and Apache.
+	</topic>
+
+	<topic name="wamp">
+		General options for managing WampServer.
+	</topic>
+
+	<keyword name="edit_configuration, ec" arguments="0..*" default="all" topic="edit, config">
+		Starts an editor session with the configuration files belonging to the specified Wamp module(s).
+
+		<case name="apache, a">
+			Apache configuration files.
+		</case>
+
+		<case name="mysql, m">
+			Mysql configuration file.
+		</case>
+
+		<case name="php, p">
+			Php configuration file.
+		</case>
+
+		<case name="all">
+			Edits all configuration files.
+		</case>
+	</keyword>
+
+
+	<keyword name="edit_logs, edit_log, el" arguments="0..*" default="all" topic="edit, log">
+		Starts an editor session with the log files belonging to the specified Wamp module(s).
+
+		<case name="apache, a">
+			Apache log files.
+		</case>
+
+		<case name="mysql, m">
+			Mysql log file.
+		</case>
+
+		<case name="php, p">
+			Php log file.
+		</case>
+
+		<case name="all">
+			Edits all log files.
+		</case>
+	</keyword>
+
+	<keyword name="reset_logs, reset_log, rl" arguments="0..*" default="all" topic="log">
+		Resets the log files belonging to the specified Wamp module(s).
+
+		<case name="apache, a">
+			Apache log files.
+		</case>
+
+		<case name="mysql, m">
+			Mysql log file.
+		</case>
+
+		<case name="php, p">
+			Php log file.
+		</case>
+
+		<case name="all">
+			Edits all log files.
+		</case>
+	</keyword>
+
+	<flag name="list_php_extensions, lpe, list_php_modules, lpm" topic="modules, php">
+		Lists the php extensions associated with the current php version.
+	</flag>
+
+	<flag name="list_apache_extensions, lae, list_apache_modules, lam" topic="modules, apache">
+		Lists the apache extensions associated with the current apache version.
+	</flag>
+
+	<flag name="list_active_versions, list_versions, lv" topic="apache, php, mysql, version">
+		Lists the active versions for PHP, MySql and Apache.
+	</flag>
+
+	<flag name="list_apache_versions, lav" topic="apache, version">
+		Lists the currently installed Apache versions.
+	</flag>
+
+	<flag name="list_installed_versions, liv" topic="apache, mysql, php, version">
+		Lists the currently installed versions for all Wampserver modules.
+	</flag>
+
+	<flag name="list_mysql_versions, lmv" topic="mysql, version">
+		Lists the currently installed MySql versions.
+	</flag>
+
+	<flag name="list_php_versions, lpv" topic="php, version">
+		Lists the currently installed PHP versions.
+	</flag>
+
+	<flag name="list_services, ls" topic="services">
+		Lists the currently defined wamp services.
+	</flag>
+
+	<string name="set_apache_version, sav" topic="apache, version">
+		Sets the currently running Apache version.
+	</string>
+
+	<string name="set_mysql_version, smv" topic="mysql, version">
+		Sets the currently running Mysql version.
+	</string>
+
+	<string name="set_php_version, spv" topic="php, version">
+		Sets the currently running Php version.
+	</string>
+
+	<flag name="restart, r" topic="wamp">
+		Restarts the wamp manager.
+	</flag>
+
+	<flag name="start, s" topic="wamp">
+		Starts the wamp manager.
+	</flag>
+
+	<flag name="terminate, t" topic="wamp">
+		Terminates the wamp manager.
+	</flag>
+
+	<flag name="restart_apache, ra" topic="service, apache">
+		Restarts the apache service.
+	</flag>
+
+	<flag name="start_apache, sa" topic="service, apache">
+		Starts the apache service.
+	</flag>
+
+	<flag name="terminate_apache, ta" topic="service, apache">
+		Stops the apache service.
+	</flag>
+
+	<flag name="restart_mysql, rm" topic="service, mysql">
+		Restarts the mysql service.
+	</flag>
+
+	<flag name="start_mysql, sm" topic="service, mysql">
+		Starts the mysql service.
+	</flag>
+
+	<flag name="terminate_mysql, tm" topic="service, mysql">
+		Stops the mysql service.
+	</flag>
+
+	<string name="install_apache_service, ias" arguments="2" value-text="httpd_conf_file service" topic="service, mysql">
+		Installs a new httpd service using the specified http.conf file. 
+		The second parameter is the service name.
+	</string>
+
+	<string name="install_mysql_service, ims" arguments="2" value-text="my_ini_file service" topic="service, mysql">
+		Installs a new mysql service using the specified my.ini file. 
+		The second parameter is the service name.
+	</string>
+
+	<string name="uninstall_apache_service, uas" value-text="service" topic="service, mysql">
+		Uninstalls the specified apache service.
+	</string>
+
+	<string name="uninstall_mysql_service, ums" value-text="service" topic="service, mysql">
+		Uninstalls the specified mysql service.
+	</string>
+</command>
+END;
+
+	
+	/*==================================================================================================
+
+		Support functions.
+
+	  ==================================================================================================*/
+
+	// check_base_service -
+	//	Checks that the service the user wants to install or uninstall is not one of the Wamp base
+	//	services (wampapache64 and wampmysqld64 for example).
+	//	Also checks that the associated configuration file exists.
+	function  check_base_service ( $service_type, $service_name, $configuration_file = false )
+	   {
+		global	$WampManager ;
+
+
+		if  ( $configuration_file  &&  ! file_exists ( $configuration_file ) )
+			error ( "Configuration file \"$configuration_file\" does not exists for $service_type service \"$service_name\"." ) ;
+
+		if  ( ! strcasecmp ( $WampManager -> Apache -> ServiceName, $service_name )  ||
+		      ! strcasecmp ( $WampManager -> MySql  -> ServiceName, $service_name ) )
+			error ( "You cannot install or uninstall one of the base Wamp services." ) ;
+	    }
+
+
+	/*==================================================================================================
+
+	    EditConfiguration -
+		Edits the configuration of the specified Wamp modules.
+
+	  ==================================================================================================*/
+	define ( 'CONF_APACHE'		, 0x01 ) ;
+	define ( 'CONF_PHP'		, 0x02 ) ;
+	define ( 'CONF_MYSQL'		, 0x04 ) ;
+
+	function  EditConfiguration ( $options )
+	   {
+		global		$WampManager, $Editor ;
+
+		$files		=  [] ;
+		$conf		=  0 ;
+
+		foreach  ( $options  as  $option )
+		   {
+			switch ( strtolower ( $option ) )
+			   {
+				case	'apache'	:  $conf  |=  CONF_APACHE ; break ;
+				case	'mysql'		:  $conf  |=  CONF_MYSQL  ; break ;
+				case	'php'		:  $conf  |=  CONF_PHP    ; break ;
+				default :
+					$conf  |=  CONF_APACHE | CONF_MYSQL | CONF_PHP ;
+			    }
+		    }
+
+		if  ( $conf & CONF_APACHE )
+			$files	=  array_merge ( $files, $WampManager -> Apache -> GetConfigurationFiles ( ) ) ;
+
+		if  ( $conf & CONF_MYSQL )
+			$files	=  array_merge ( $files, $WampManager -> MySql -> GetConfigurationFiles ( ) ) ;
+
+		if  ( $conf & CONF_PHP )
+			$files	=  array_merge ( $files, $WampManager -> Php -> GetConfigurationFiles ( ) ) ;
+
+		foreach  ( $files  as  &$file )
+			$file	=  Path::Quote ( $file ) ;
+
+		$WampManager -> WShell -> Exec ( $Editor . ' ' . implode ( ' ', $files ) ) ;
+	    }
+
+
+	/*==================================================================================================
+
+	    EditLogs -
+		Edits the logfiles of the specified Wamp modules.
+
+	  ==================================================================================================*/
+	function  EditLogs ( $options )
+	   {
+		global		$WampManager, $Editor ;
+
+		$files		=  [] ;
+		$conf		=  0 ;
+
+		foreach  ( $options  as  $option )
+		   {
+			switch ( strtolower ( $option ) )
+			   {
+				case	'apache'	:  $conf  |=  CONF_APACHE ; break ;
+				case	'mysql'		:  $conf  |=  CONF_MYSQL  ; break ;
+				case	'php'		:  $conf  |=  CONF_PHP    ; break ;
+				default :
+					$conf  |=  CONF_APACHE | CONF_MYSQL | CONF_PHP ;
+			    }
+		    }
+
+		if  ( $conf & CONF_APACHE )
+			$files	=  array_merge ( $files, $WampManager -> Apache -> GetLogFiles ( ) ) ;
+
+		if  ( $conf & CONF_MYSQL )
+			$files	=  array_merge ( $files, $WampManager -> MySql -> GetLogFiles ( ) ) ;
+
+		if  ( $conf & CONF_PHP )
+			$files	=  array_merge ( $files, $WampManager -> Php -> GetLogFiles ( ) ) ;
+
+		foreach  ( $files  as  &$file )
+			$file	=  Path::Quote ( $file ) ;
+
+		$WampManager -> WShell -> Exec ( $Editor . ' ' . implode ( ' ', $files ) ) ;
+	    }
+
+
+
+
+	/*==================================================================================================
+
+	    ResetLogs -
+		Resets the logfiles of the specified Wamp modules.
+
+	  ==================================================================================================*/
+	function  ResetLogs ( $options )
+	   {
+		global		$WampManager ;
+
+		$files		=  [] ;
+		$conf		=  0 ;
+
+		foreach  ( $options  as  $option )
+		   {
+			switch ( strtolower ( $option ) )
+			   {
+				case	'apache'	:  $conf  |=  CONF_APACHE ; break ;
+				case	'mysql'		:  $conf  |=  CONF_MYSQL  ; break ;
+				case	'php'		:  $conf  |=  CONF_PHP    ; break ;
+				default :
+					$conf  |=  CONF_APACHE | CONF_MYSQL | CONF_PHP ;
+			    }
+		    }
+
+		if  ( $conf & CONF_APACHE )
+			$files	=  array_merge ( $files, $WampManager -> Apache -> GetLogFiles ( ) ) ;
+
+		if  ( $conf & CONF_MYSQL )
+			$files	=  array_merge ( $files, $WampManager -> MySql -> GetLogFiles ( ) ) ;
+
+		if  ( $conf & CONF_PHP )
+			$files	=  array_merge ( $files, $WampManager -> Php -> GetLogFiles ( ) ) ;
+
+		echo ( "Stopping WampServer..." ) ;
+		$WampManager -> Stop ( ) ;
+		output ( "done" ) ;
+
+		foreach  ( $files  as  $file )
+		   {
+			$fp	=  @fopen ( $file, "w" ) ;
+
+			if  ( $fp )
+				fclose ( $fp ) ;
+		    }
+
+		echo ( "Starting WampServer..." ) ;
+		$WampManager -> Start ( ) ;
+		output ( "done" ) ;
+	    }
+
+
+	/*==================================================================================================
+
+	    ListApacheExtensions -
+		Lists the Apache extensions referenced by the httpd.conf file.
+
+	  ==================================================================================================*/
+	function  ListApacheExtensions ( )
+	   {
+		global		$WampManager ;
+
+		$modules	=  $WampManager -> Apache -> GetModules ( ) ;
+		$report		=  new AsciiReport 
+		   (
+			[ 'member'	=> 'name'	, 'title' => 'name'				],
+			[ 'member'	=> 'file'	, 'title' => 'File'				],
+			[ 'member'	=> 'enabled'	, 'title' => 'Enabled?', 'align' => 'center'	],
+			[ 'member'	=> 'missing'	, 'title' => 'Missing?', 'align' => 'center'	]
+		    ) ;
+		$data		=  [] ;
+
+		foreach  ( $modules  as  $module )
+		   {
+			switch ( $module [ 'state' ] )
+			   {
+				case	WampConfigurableModule::STATE_ENABLED :
+					$enabled	=  '*' ;
+					$missing	=  '' ;
+					break ;
+
+				case	WampConfigurableModule::STATE_DISABLED :
+					$enabled	=  '' ;
+					$missing	=  '' ;
+					break ;
+
+				case	WampConfigurableModule::STATE_ENABLED_MISSING :
+					$enabled	=  '*' ;
+					$missing	=  '*' ;
+					break ;
+
+				case	WampConfigurableModule::STATE_DISABLED_MISSING :
+					$enabled	=  '' ;
+					$missing	=  '*' ;
+					break ;
+			    }
+
+			$data []	=  [ 'name' => $module [ 'name' ], 'file' => $module [ 'file' ], 'enabled' => $enabled, 'missing' => $missing ] ;
+		    }
+
+		echo $report -> Generate ( $data ) ;
+		echo $report -> Summary ( 'extension' ) ;
+	    }
+
+
+	/*==================================================================================================
+
+	    ListPhpExtensions -
+		Lists the php extensions referenced by the php.ini file.
+
+	  ==================================================================================================*/
+	function  ListPhpExtensions ( )
+	   {
+		global		$WampManager ;
+
+		$modules	=  $WampManager -> Php -> GetModules ( ) ;
+		$report		=  new AsciiReport 
+		   (
+			[ 'member'	=> 'file'	, 'title' => 'File'				],
+			[ 'member'	=> 'enabled'	, 'title' => 'Enabled?', 'align' => 'center'	],
+			[ 'member'	=> 'missing'	, 'title' => 'Missing?', 'align' => 'center'	]
+		    ) ;
+		$data		=  [] ;
+
+		foreach  ( $modules  as  $module )
+		   {
+			switch ( $module [ 'state' ] )
+			   {
+				case	WampConfigurableModule::STATE_ENABLED :
+					$enabled	=  '*' ;
+					$missing	=  '' ;
+					break ;
+
+				case	WampConfigurableModule::STATE_DISABLED :
+					$enabled	=  '' ;
+					$missing	=  '' ;
+					break ;
+
+				case	WampConfigurableModule::STATE_ENABLED_MISSING :
+					$enabled	=  '*' ;
+					$missing	=  '*' ;
+					break ;
+
+				case	WampConfigurableModule::STATE_DISABLED_MISSING :
+					$enabled	=  '' ;
+					$missing	=  '*' ;
+					break ;
+			    }
+
+			$data []	=  [ 'file' => $module [ 'file' ], 'enabled' => $enabled, 'missing' => $missing ] ;
+		    }
+
+		echo $report -> Generate ( $data ) ;
+		echo $report -> Summary ( 'extension' ) ;
+	    }
+
+
+	/*==================================================================================================
+
+	    ListServices -
+		Lists the currently defined services.
+
+	  ==================================================================================================*/
+	function  ListServices ( )
+	   {
+		global		$WampManager, $Wmi ;
+
+		$apache		=  pathinfo ( $WampManager -> Apache -> ExecutableFile, PATHINFO_FILENAME ) ;
+		$mysql		=  pathinfo ( $WampManager -> MySql  -> ExecutableFile, PATHINFO_FILENAME ) ;
+		$query		=  "
+					SELECT *
+					FROM Win32_Service
+					WHERE
+						PathName LIKE '%$apache%' OR
+						PathName LIKE '%$mysql%'
+				   " ;
+		$services	=  $Wmi -> Query ( $query ) ;
+
+		if  ( ! $services )
+			output ( "No Wamp services are currently defined." ) ;
+		else
+		   {
+			$report		=  new AsciiReport
+			   (
+				[ 'member' => 'Name'		, 'title' => 'Name'					],
+				[ 'member' => 'ProcessId'	, 'title' => 'Pid'					],
+				[ 'member' => 'State'		, 'title' => 'State'					],
+				[ 'member' => 'AcceptPause'	, 'title' => 'Pausable?'	,  'align' => 'center'	],
+				[ 'member' => 'AcceptStop'	, 'title' => 'Stopable?'	,  'align' => 'center'  ]
+			    ) ;
+
+			$data		=  [] ;
+
+			foreach  ( $services  as  $service )
+			   {
+				$data []	=  
+				   [
+					'name'		=>  $service -> Name,
+					'pid'		=>  $service -> ProcessId,
+					'state'		=>  $service -> State,
+					'pause'		=>  ( $service -> AcceptPause ) ?  '*' : '',
+					'stop'		=>  ( $service -> AcceptStop  ) ?  '*' : ''
+				    ] ;
+			    }
+
+			echo $report -> Generate ( $services ) ;
+			echo $report -> Summary ( 'service' ) ;
+		    }
+	    }
+
+
+	/*==================================================================================================
+
+	    ListVersions -
+		Lists the currently installed versions fro wamp modules.
+
+	  ==================================================================================================*/
+	function  ListVersions ( $array_list, $active_only )
+	   {
+		$report		=  new AsciiReport
+		   (
+			[ 'member' => 'module'	, 'title' => 'Module'				],
+			[ 'member' => 'version'	, 'title' => 'Version'				],
+			[ 'member' => 'path'	, 'title' => 'Path'				],
+			[ 'member' => 'active'	, 'title' => 'Active?'	, 'align' => 'center'	]
+		    ) ;
+
+		$data		=  [] ;
+
+		foreach  ( $array_list  as  $list )
+		   {
+			foreach  ( $list  as  $version => $item )
+			   {
+				$active_version		=  $list -> GetActiveVersion ( ) ;
+
+				if  ( $active_only  &&  $version  !=  $active_version )
+					continue ;
+
+				$data []	=  
+				   [
+					'module'	=>  $item -> Name,
+					'version'	=>  $version,
+					'path'		=>  $item -> Path,
+					'active'	=>  ( $version  ==  $active_version ) ?  '*' : ''
+				    ] ;
+			    }
+		    }
+
+		echo $report -> Generate ( $data ) ;
+		echo $report -> Summary ( 'module' ) ;
+	    }
+
+	
+	/*==================================================================================================
+
+		Main program.
+
+	  ==================================================================================================*/	
+	$CL 			=  new CLParser ( $Definitions ) ;
+	$EditConfiguration	=  $CL -> edit_configuration ;
+	$EditLogs		=  $CL -> edit_logs ;
+	$InstallApacheService	=  $CL -> install_apache_service ;
+	$InstallMySqlService	=  $CL -> install_mysql_service ;
+	$ListActiveVersions	=  $CL -> list_active_versions ;
+	$ListApacheVersions	=  $CL -> list_apache_versions ;
+	$ListInstalledVersions	=  $CL -> list_installed_versions ;
+	$ListMySqlVersions	=  $CL -> list_mysql_versions ;
+	$ListPhpExtensions	=  $CL -> list_php_extensions ;
+	$ListApacheExtensions	=  $CL -> list_apache_extensions ;
+	$ListPhpVersions	=  $CL -> list_php_versions ;
+	$ListServices		=  $CL -> list_services ;
+	$ResetLogs		=  $CL -> reset_logs ;
+	$Restart		=  $CL -> restart ;
+	$RestartApache		=  $CL -> restart_apache ;
+	$RestartMySql		=  $CL -> restart_mysql ;
+	$Start			=  $CL -> start ;
+	$StartApache		=  $CL -> start_apache ;
+	$StartMySql		=  $CL -> start_mysql ;
+	$Terminate		=  $CL -> terminate ;
+	$TerminateApache	=  $CL -> terminate_apache ;
+	$TerminateMySql		=  $CL -> terminate_mysql ;
+	$SetApacheVersion	=  $CL -> set_apache_version ;
+	$SetMySqlVersion	=  $CL -> set_mysql_version ;
+	$SetPhpVersion		=  $CL -> set_php_version ;
+	$UninstallApacheService	=  $CL -> uninstall_apache_service ;
+	$UninstallMySqlService	=  $CL -> uninstall_mysql_service ;
+	$Command		=  $CL -> Files ;
+
+	$WampManager		=  new  WampManager ( ) ;
+	$Wmi			=  new  Wmi ( ) ;
+	$Editor			=  getenv ( "EDITOR" ) ;
+	$HadOption		=  false ;
+	$HadStartOption		=  false ;
+
+	if  ( ! $Editor )
+		$Editor		=  "notepad.exe" ;
+
+	// Start/stop/restart options
+	if  ( ! $HadOption  &&  $Terminate )
+	   {
+		$pid			=  $WampManager -> Stop ( true ) ;
+
+		if  ( $pid )
+			output ( "Process $pid terminated." ) ;
+		else
+			output ( "WampManager was not running." ) ;
+
+		$HadStartOption		=  true ;
+	    }
+
+	if  ( ! $HadOption  &&  $Start )
+	   {
+		$pid			=  $WampManager -> Start ( true ) ;
+
+		if  ( $pid )
+			output ( "WampManager started, pid = $pid." ) ;
+		else
+			output ( "WampManager failed to start." ) ;
+
+		$HadStartOption		=  true ;
+	    }
+
+	if  ( ! $HadOption  &&  $Restart )
+	   {
+		$pids			=  $WampManager -> Restart ( true ) ;
+
+		if  ( $pids [1] )
+			$extra	=  " (previous pid = {$pids [1]})" ;
+		else
+			$extra	=  " (WampManager was not running)" ;
+
+		if  ( $pids [0] )
+			output ( "WampManager started, pid = {$pids [0]}$extra." ) ;
+		else
+			output ( "WampManager failed to start$extra." ) ;
+
+		$HadStartOption		=  true ;
+	    }
+
+	// Start/stop/restart options for Apache
+	if  ( ! $HadStartOption  &&  $TerminateApache )
+	   {
+		$status			=  $WampManager -> Apache -> Stop ( ) ;
+
+		if  ( $status )
+			output ( "Apache service stopped." ) ;
+		else
+			output ( "Apache service was not running." ) ;
+
+		$HadStartOption		=  true ;
+	    }
+
+	if  ( ! $HadStartOption  &&  $StartApache )
+	   {
+		$status			=  $WampManager -> Apache -> Start ( ) ;
+
+		if  ( $status )
+			output ( "Apache service started." ) ;
+		else
+			output ( "Apache service was already running." ) ;
+
+		$HadStartOption		=  true ;
+	    }
+
+	if  ( ! $HadStartOption  &&  $RestartApache )
+	   {
+		$status			=  $WampManager -> Apache -> Restart ( ) ;
+
+		if  ( $status [1] )
+			$extra	=  '' ;
+		else
+			$extra  =  ' (service was not running)' ;
+
+		if  ( $status [0] )
+			output ( "Apache service started$extra." ) ;
+		else
+			output ( "A problem occurred while restarting the Apache service$extra." ) ;
+
+		$HadStartOption		=  true ;
+	    }
+
+
+	// Start/stop/restart options for MySql
+	if  ( ! $HadStartOption  &&  $TerminateMySql )
+	   {
+		$status			=  $WampManager -> MySql -> Stop ( ) ;
+
+		if  ( $status )
+			output ( "MySql service stopped." ) ;
+		else
+			output ( "MySql service was not running." ) ;
+
+		$HadStartOption		=  true ;
+	    }
+
+	if  ( ! $HadStartOption  &&  $StartMySql )
+	   {
+		$status			=  $WampManager -> MySql -> Start ( ) ;
+
+		if  ( $status )
+		   {
+			output ( "MySql service started." ) ;
+		    }
+		else
+			output ( "MySql service was already running." ) ;
+
+		$HadStartOption		=  true ;
+	    }
+
+	if  ( ! $HadStartOption  &&  $RestartMySql )
+	   {
+		$status			=  $WampManager -> MySql -> Restart ( ) ;
+		if  ( $status [1] )
+			$extra	=  '' ;
+		else
+			$extra  =  ' (service was not running)' ;
+
+		if  ( $status [0] )
+			output ( "MySql service started$extra." ) ;
+		else
+			output ( "A problem occurred while restarting the MySql service$extra." ) ;
+
+		$HadStartOption		=  true ;
+	    }
+
+	if  ( $HadStartOption )
+		$HadOption	=  true ;
+
+	// Version change
+	if  ( ! $HadOption  &&  $SetPhpVersion )
+	   {
+		if  ( ! $WampManager -> PhpPackages -> SetVersion ( $SetPhpVersion ) )
+			output ( "Specified Php version is identical to the active one. WampManager not restarted." ) ;
+
+		$HadOption	=  true ;
+	    }
+
+	if  ( ! $HadOption  &&  $SetApacheVersion )
+	   {
+		if  ( ! $WampManager -> ApachePackages -> SetVersion ( $SetApacheVersion ) )
+			output ( "Specified Apache version is identical to the active one. WampManager not restarted." ) ;
+
+		$HadOption	=  true ;
+	    }
+
+	if  ( ! $HadOption  &&  $SetMySqlVersion )
+	   {
+		if  ( ! $WampManager -> MySqlPackages -> SetVersion ( $SetMySqlVersion ) )
+			output ( "Specified MySql version is identical to the active one. WampManager not restarted." ) ;
+
+		$HadOption	=  true ;
+	    }
+
+	// Service list
+	if  ( ! $HadOption  &&  $ListServices )
+	   {
+		ListServices ( ) ;
+		$HadOption	=  true ;
+	    }
+
+	// Version list 
+	if  ( $ListActiveVersions  ||  $ListInstalledVersions  ||  $ListApacheVersions  ||  $ListMySqlVersions  ||  $ListPhpVersions )
+	   {
+		if  ( $ListActiveVersions )
+			$list			=  [ $WampManager -> ApachePackages, $WampManager -> MySqlPackages, $WampManager -> PhpPackages ] ;
+		else if  ( $ListInstalledVersions )
+		   {
+			$list			=  [ $WampManager -> ApachePackages, $WampManager -> MySqlPackages, $WampManager -> PhpPackages ] ;
+			$ListActiveVersions	=  false ;
+		    }
+		else if  ( $ListApacheVersions )
+			$list			=  [ $WampManager -> ApachePackages ] ;
+		else if  ( $ListMySqlVersions )
+			$list			=  [ $WampManager -> MySqlPackages ] ;
+		else if  ( $ListPhpVersions )
+			$list			=  [ $WampManager -> PhpPackages ] ;
+
+		ListVersions ( $list, $ListActiveVersions ) ;
+		$HadOption	=  true ;
+	    }
+
+	// -list_php_extensions :
+	//	Lists the php extensions referenced by php.ini.
+	if  ( ! $HadOption  &&  $ListPhpExtensions )
+	   {
+		ListPhpExtensions ( ) ;
+		$HadOption	=  true ;
+	    }
+
+	// -list_apache_extensions :
+	//	Lists the apache extensions referenced by httpd.conf.
+	if  ( ! $HadOption  &&  $ListApacheExtensions )
+	   {
+		ListApacheExtensions ( ) ;
+		$HadOption	=  true ;
+	    }
+
+	// -edit_configuration :
+	//	Edits the configuration files for the specified Wamp modules.
+	if  ( ! $HadOption  &&  $CL -> IsSpecified ( 'edit_configuration' ) )
+	   {
+		EditConfiguration ( $EditConfiguration ) ;
+		$HadOption	=  true ;
+	    }
+
+	// -edit_logs :
+	//	Edits the log files for the specified Wamp modules.
+	if  ( ! $HadOption  &&  $CL -> IsSpecified ( 'edit_logs' ) )
+	   {
+		EditLogs ( $EditLogs ) ;
+		$HadOption	=  true ;
+	    }
+
+	// -reset_logs :
+	//	Resets the log files for the specified Wamp modules.
+	if  ( ! $HadOption  &&  $CL -> IsSpecified ( 'reset_logs' ) )
+	   {
+		ResetLogs ( $EditLogs ) ;
+		$HadOption	=  true ;
+	    }
+
+	// -install_apache_service :
+	//	Creates a new Apache service.
+	if  ( ! $HadOption  &&  $InstallApacheService )
+	   {
+		$service_config	=  $InstallApacheService [0] ;
+		$service_name	=  $InstallApacheService [1] ;
+
+		check_base_service ( 'apache', $service_name, $service_config ) ;
+		echo ( $WampManager -> Apache -> Install ( $service_name, $service_config ) ) ;
+		$HadOption	=  true ;
+	    }
+
+
+	// -uninstall_apache_service :
+	//	Removes an existing Apache service.
+	if  ( ! $HadOption  &&  $UninstallApacheService )
+	   {
+		$service_name	=  $UninstallApacheService ;
+
+		check_base_service ( 'apache', $service_name ) ;
+		echo ( $WampManager -> Apache -> Uninstall ( $service_name ) ) ;
+		$HadOption	=  true ;
+	    }
+
+
+	// -install_mysql_service :
+	//	Creates a new mysql service.
+	if  ( ! $HadOption  &&  $InstallMySqlService )
+	   {
+		$service_config	=  $InstallMySqlService [0] ;
+		$service_name	=  $InstallMySqlService [1] ;
+
+		check_base_service ( 'mysql', $service_name, $service_config ) ;
+		echo ( $WampManager -> MySql -> Install ( $service_name, $service_config ) ) ;
+		$HadOption	=  true ;
+	    }
+
+
+	// -uninstall_mysql_service :
+	//	Removes an existing mysql service.
+	if  ( ! $HadOption  &&  $UninstallMySqlService )
+	   {
+		$service_name	=  $UninstallMySqlService ;
+
+		check_base_service ( 'mysql', $service_name ) ;
+		echo ( $WampManager -> MySql -> Uninstall ( $service_name ) ) ;
+		$HadOption	=  true ;
+	    }
+
+	// Display help if no option specified
+	if  ( ! $HadOption )
+		$CL -> DisplayHelp ( ) ;

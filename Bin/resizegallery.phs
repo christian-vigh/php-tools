@@ -1,0 +1,1088 @@
+<?php
+	//!phpcmd(Graphics, 1.0) : Generates gallery image files in different resolutions.
+	/**************************************************************************************************************
+
+	    NAME
+		resizegallery.php
+
+	    DESCRIPTION
+		Resizes galleries held in one or more directories.
+
+	    AUTHOR
+		Christian Vigh, 04/2015.
+
+	    HISTORY
+	    [Version : 1.0]    [Date : 2015/04/17]     [Author : CV]
+		Initial version.
+
+	 **************************************************************************************************************/
+	require ( "tools.phpinclude" ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\IO\Path ;
+	use  Thrak\IO\AsciiReport ;
+	use  Thrak\Processors\IniFile ;
+	use  Thrak\Processors\VariableStore ;
+	use  Thrak\Runtime\AsynchronousCommand ;
+	use  Thrak\Types\AssociativeArray ;
+	use  Thrak\Types\ArrayHelpers ;
+	use  Thrak\Types\String ;
+	use  Thrak\Types\String\Regex ;
+
+	
+	/*==================================================================================================
+
+		Command line parameters.
+
+	  ==================================================================================================*/
+	$Definitions = <<<END
+<command allow-files="true" min-files="0" max-files="*" value-text="directory(-ies)" value-help="List of directories to be processed">
+
+	<usage>
+		Resizes graphic files in one or more directories, to be later used for HTML galleries.
+		This script needs the nconvert program.
+	</usage>
+
+	<file name="configuration_file, cf" disposition="existing" default="thraktools://Data/resizegallery.ini">
+		Resizer configuration file.
+	</file>
+	
+	<flag name="norun, dry_run, just_print, n">
+		Run resizegallery without executing any command. Displays the commands that would have been executed.
+	</flag>
+	
+	<flag name="verbose, v">
+		Verbose output.
+	</flag>
+</command>
+END;
+
+	
+	/**************************************************************************************************************
+	 **************************************************************************************************************
+	 **************************************************************************************************************
+	 ******                                                                                                  ******
+	 ******                                                                                                  ******
+	 ******                                      UTILITY FUNCTIONS                                           ******
+	 ******                                                                                                  ******
+	 ******                                                                                                  ******
+	 **************************************************************************************************************
+	 **************************************************************************************************************
+	 **************************************************************************************************************/
+	
+	// execute_command -
+	//	Executes a command and displays output results.
+	function  execute_command ( $win_command, $unix_command = null )
+	   {
+		global		$NoRun ;
+		
+		
+		if  ( IS_WINDOWS )
+			$command	=  $win_command ;
+		else
+			$command	=  $unix_command ;
+		
+		if  ( ! $unix_command )
+			$command	=  $win_command ;
+		
+		output ( "\t$command" ) ;
+		
+		if  ( $NoRun )
+			return ( 0 ) ;
+
+		$cmd	=  new AsynchronousCommand ( $command ) ;
+		$cmd -> SetPollTimeout ( 200 ) ;
+		$cmd -> Run ( ) ;
+
+		// Get command output and log it
+		while  ( $cmd -> IsRunning ( ) )
+		   {
+			while ( ( $line = $cmd -> ReadLine ( ) )  !==  false )
+			   {
+				$line	=  trim ( $line ) ;
+						
+				// Ignore empty lines, along with summary lines
+				if  ( ! $line )
+					continue ;
+				
+				output ( "\t\t$line" ) ;
+			    }						
+		    }
+		
+		// Display exit code if non-zero
+		$status		=  $cmd -> GetExitCode ( ) ;
+		
+		if  ( $status ) 
+			output ( "\t\t*** exit code = $status ***" ) ;
+		
+		return ( $status ) ;
+	    }
+	
+	
+	// format_filename -
+	//	Formats a filename according to its specifications.
+	//	For group conversions, $individual must be set to false and $index is ignored ($index is used
+	//	for %# format specifiers).
+	//	Otherwise, $individual must be set to true and $index will be ignored.
+	function  format_filename ( $path, $format_string, $format_name, $input_path, $individual, $index = -1 )
+	   {
+		// Format specifiers substitutions - result in nconvert output format specifiers (-o parameter) whenever possible
+		$substitutions	= 
+		   [
+			'/%f/'	=>  ( $individual ) ?  basename ( $path ) : '%',
+			'/%#/'	=>  ( $individual ) ?  $index : '#',
+			'/%i/'	=>  ( $individual ) ?  $input_path : '$',
+			'/%o/'	=>  dirname ( $path ),
+			'/%d/'	=>  ( $individual ) ?  $input_path : dirname ( $path ),
+			'/%n/'	=>  $format_name
+		    ] ;
+
+		// Individual processing : cancel "[[...]]]" constructs
+		if  ( $individual )
+		   {
+			$re	=
+			   [
+				'/ \[\[ ([^]]*) \] \] /imsx'	=>  '',
+				'/ \[ ([^\]]*) \] /imsx'	=>  '\1',
+			    ] ;
+		    }
+		// Group processing : cancel "[...]" constructs 
+		else
+		   {
+			$re	=
+			   [
+				'/ \[\[ ([^]]*) \] \] /imsx'	=>  '\1',
+				'/ \[ ([^\]]*) \] /imsx'	=>  '',
+			    ] ;
+		    }
+
+		$new_path	=  preg_replace ( array_keys ( $re ), array_values ( $re ), $format_string ) ;
+
+		// Now perform substitutions
+		$new_path	=  preg_replace ( array_keys ( $substitutions ), array_values ( $substitutions ), $new_path ) ;
+		
+		return ( Path::ToHost ( $new_path ) ) ;
+	    }
+	
+	// get_extensions -
+	//	Retrieves all the file extensions listed in the specified key and section.
+	//	Returns an array of extensions without the leading dot.
+	function  get_extensions ( $config, $section, $key )
+	   {
+		$value		=  $config -> GetKey ( $section, $key ) ;
+		
+		if  ( $value )
+		   {
+			$extensions	=  [] ;
+			$list		=  explode ( ' ', $value ) ;
+			
+			foreach  ( $list  as  $item )
+				$extensions []	=  ( $item [0]  ==  '.' ) ?  substr ( $item, 1 ) : $item ;
+			
+			return ( $extensions ) ;
+		    }
+		else
+			return ( false ) ;
+	    }
+
+	
+	// get_extension_case -
+	//	Returns a constant value describing the operation to apply on input file extension.
+	function  get_extension_case ( $config, $section, $key )
+	   {
+		$value		=  $config -> GetKey ( $section, $key ) ;
+		
+		if  ( $value )
+		   {
+			switch  ( strtolower ( $value ) )
+			   {
+				case	'lower'	:  return ( CASE_LOWER ) ;
+				case	'upper'	:  return ( CASE_UPPER ) ;
+				case	'asis'  :  return ( CASE_ASIS  ) ;
+				
+				default		:
+					error ( "Invalid keyword '$value' for the ExtensionCase key in the [$section] section of " .
+						"configuration file \"{$ConfigurationFile -> File}\"." ) ;
+			    }
+		    }
+		
+		return ( false ) ;
+	    }
+	
+	
+	// get_nconvert_section -
+	//	Collects the contents of an nconvert parmeter section (either 'options' or 'process', for the moment)
+	function  get_nconvert_section ( &$results, $lines, &$index, $count )
+	   {
+		static	$nconvert_section_re	=  '/^ ( options | process | ( available \s+ format s? ) ) \s*: \s*$/imsx' ;
+		
+		// Holds the name of the last option encountered without description and help text : this means that the option is an alias
+		// (eg, "truecolors" and "truecolours")
+		$last_option	=  '' ;
+		
+		// Loop through options
+		for  ( $i = $index ; $i  <  $count ; $i ++ )
+		   {
+			$line	=  trim ( $lines [$i] ) ;
+			
+			// Ignore line if empty
+			if  ( ! $line )
+				continue ;
+			// Stop if a new section start has been detected
+			else if  ( preg_match ( $nconvert_section_re, $line ) )
+				break ;
+			
+			// Extract option name and description
+			preg_match ( '/^(?P<option> - [^\s]+) (?P<description> .*) $/imsx', $line, $match ) ;
+			$option		=  $match [ 'option' ] ;
+			$description	=  trim ( $match [ 'description' ] ) ;
+			$extra		=  [] ;
+			
+			// Most option descriptions start with ':' ; suppress the semicolon
+			if  ( $description  &&  $description [0]  ==  ':' )
+				$description	=  trim ( substr ( $description, 1 ) ) ;
+			
+			// Collect consecutive lines until the next option description is encountered
+			for  ( $j = $i + 1 ; $j  <  $count ; $j ++ )
+			   {
+				$extra_line	=  trim ( $lines [$j] ) ;
+				
+				if  ( ! $extra_line  ||  $extra_line [0]  ==  '-'  ||  preg_match ( $nconvert_section_re, $extra_line ) )
+				   {
+					$j -- ;
+					break ;
+				    }
+				
+				$extra []	=  $extra_line ;
+			    }
+			
+			// If an alias was found (ie, an option without any description or help text), add it to the current list of option names
+			if  ( $last_option )
+				$options	=  [ substr ( $option, 1 ), substr ( $last_option, 1 ) ] ;
+			else
+				$options	=  [ substr ( $option, 1 ) ] ;
+			
+			// No description and no help text : option is an alias to be collected on next loop turn
+			if  ( ! $description  &&  ! count ( $extra ) )
+				$last_option		=  $option ;
+			// Normal entry, with description and optional help text
+			else
+			   {
+				$results [ $option ]	=  [ 'name' => $options, 'description' => $description, 'help' => $extra ] ;
+				$last_option		=  '' ;
+			    }
+			
+			$i			=  $j ;
+		    }
+		
+		// Output index must point to the line before the last line checked so far
+		$index	=  $i - 1 ;
+		
+		// Sort the results
+		ksort ( $results ) ;
+	    }
+
+	
+	// get_nconvert_options -
+	//	Parse nconvert options.
+	function  get_nconvert_options ( )
+	   {
+		global		$NConvertFormatAliases, $NConvertCommonFormats ;
+		global		$NConvertOptions, $NConvertProcessOptions, $NConvertFormats ;
+		
+		// Regular expression for file formats
+		static		$format_re	=  '/^
+							\[
+							(?P<name> [^\]]+)
+							\]
+							\s+
+							(
+								(?P<write> \*)
+								\s+
+							 )?
+							:
+							\s*
+							(?P<description> .*)
+						    /imsx' ;
+		
+		// Get nconvert help
+		$lines	=  [] ;
+		exec ( 'nconvert -help', $lines ) ;
+		$count	=  count ( $lines ) ;
+		
+		// Look for "Options :", "Process :" and "Available format:" strings
+		$NConvertOptions	=  [] ;
+		$NConvertProcessOptions	=  [] ;
+		$NConvertFormats	=  new AssociativeArray ( ) ;
+
+		for  ( $i = 0 ; $i  <  $count ; $i ++ )
+		   {
+			$line	=  trim ( $lines [$i] ) ;
+			
+			// Collect the parameters of the 'Options' section
+			if  ( preg_match ( '/^Options \s* :/imsx', $line ) )
+			   {
+				$i ++ ;
+				get_nconvert_section ( $NConvertOptions, $lines, $i, $count ) ;
+			    }
+			// Collect the parameters of the 'Process' section
+			else if  ( preg_match ( '/^Process \s* :/imsx', $line ) )
+			   {
+				$i ++ ;
+				get_nconvert_section ( $NConvertProcessOptions, $lines, $i, $count ) ;
+			    }
+			// Collect the available file formats
+			else if  ( preg_match ( '/^Available \s+ format s? \s* :/imsx', $line ) )
+			   {
+				// Default case : there is always a "-1" option that says that input file format should be automatically detected.
+				// Hardcode it, to simplify $format_re
+				$NConvertFormats []	=  
+				   [ 
+					'name'		=>  [ '-1' ], 
+					'description'	=>  'Automatic (only for input)', 
+					'write'		=>  false, 
+					'common'	=>  1 
+				    ] ;
+				
+				// The "+3" here skips :
+				// - the header columns
+				// - the default "-1" input format
+				for  ( $j = $i + 3 ; $j  <  $count ; $j ++ )
+				   {
+					$line	=  trim ( $lines [$j] ) ;
+					
+					// File format match
+					if  ( preg_match ( $format_re, $line, $match ) )
+					   {
+						// Format name
+						$name		=  strtolower ( trim ( $match [ 'name' ] ) ) ;
+						
+						// Format can be generated on output when there is a "*" in the input line
+						$write		=  ( isset ( $match [ 'write' ] )  &&  $match [ 'write' ]  ==  '*' ) ?  true : false ;
+						
+						// Our custom list of "common" file formats ; this is here to restrict the output of available file formats
+						$common		=  ( $NConvertCommonFormats -> iin_array ( $name ) ) ?  true : false ;
+						
+						// Format description
+						$description	=  trim ( $match [ 'description' ] ) ;
+						
+						// Build a list of name and aliases for this format ; this is used for example to accept format names
+						// like 'jpg' while nconvert only accepts 'jpeg'
+						$names		=  [ $name ] ;
+						
+						if  ( isset ( $NConvertFormatAliases [ $name ] ) )
+							$names	=  array_merge ( $names, $NConvertFormatAliases [ $name ] ) ;
+						
+						$NConvertFormats []	=  
+						   [ 
+							'name'		=>  $names, 
+							'description'	=>  $description, 
+							'write'		=>  $write, 
+							'common'	=>  $common 
+						    ] ;
+					    }
+				    }
+					
+				break ;
+			    }
+		    }
+	    }
+	
+	
+	/**************************************************************************************************************
+	 **************************************************************************************************************
+	 **************************************************************************************************************
+	 ******                                                                                                  ******
+	 ******                                                                                                  ******
+	 ******                                  COMMAND-LINE OPTIONS HANDLING				         ******
+	 ******                                                                                                  ******
+	 ******                                                                                                  ******
+	 **************************************************************************************************************
+	 **************************************************************************************************************
+	 **************************************************************************************************************/
+
+	/*==================================================================================================
+	
+	    LoadSettings -
+	        Loads the settings defined in the configuration file.
+	
+	  ==================================================================================================*/
+	function  LoadSettings ( )
+	   {
+		global		$ConfigurationFile, $ConfigurationObject ;
+		global		$Extensions, $ExtensionCase, $ResizeIfSmaller, $ResizeFormats, $OutputFilePattern, $CreateSubdirectories, $CreateZipfile,
+				$GroupConversions, $OutputFileFormat, $NConvertFormats ;
+		
+		// Load configuration file
+		$ConfigurationObject	=  IniFile::LoadFromFile ( $ConfigurationFile ) ;
+		
+		// Get nconvert options and supported file formats
+		get_nconvert_options ( ) ;
+		
+		// [Settings] section, Extensions key :
+		//	Defines the recognized graphic file extensions.
+		$value		=  get_extensions ( $ConfigurationObject, 'Settings', 'Extensions' ) ;
+		
+		if  ( $value )
+			$Extensions	=  $value ;
+		
+		// [Settings] section, ExtensionCase key :
+		//	Specifies whether the graphic files extension case should be altered or not.
+		//	Authorized values are : lower, upper and asis.
+		$value		=  get_extension_case ( $ConfigurationObject, 'Settings', 'ExtensionCase' ) ;
+
+		if  ( $value  !==  false )
+			$ExtensionCase	=  $value ;
+		
+		// [Settings] section, ResizeIfSmaller key :
+		//	Indicates if images smaller than the destination size should be resized (and therefore enlarged)
+		$value		=  $ConfigurationObject -> GetBooleanKey ( 'Settings', 'ResizeIfSmaller' ) ;
+		
+		if  ( $value  !==  null )
+			$ResizeIfSmaller	=  $value ;
+		
+		// [Settings] section, CreateSubdirectories key :
+		//	Indicates if images smaller than the destination size should be resized (and therefore enlarged)
+		$value		=  $ConfigurationObject -> GetBooleanKey ( 'Settings', 'CreateSubdirectories' ) ;
+		
+		if  ( $value  !==  null )
+			$CreateSubdirectories	=  $value ;
+		
+		// [Settings] section, CreateZipfile key :
+		//	Indicates whether a .zip file should be created or not, using the original images.
+		$value		=  $ConfigurationObject -> GetBooleanKey ( 'Settings', 'CreateZipfile' ) ;
+		
+		if  ( $value  !==  null )
+			$CreateZipfile	=  $value ;
+		
+		// [Settings] section, GroupConversions key :
+		//	Indicates whether nconvert should be called for each file or for the whole set of files.
+		$value		=  $ConfigurationObject -> GetBooleanKey ( 'Settings', 'GroupConversions' ) ;
+		
+		if  ( $value  !==  null )
+			$GroupConversions	=  $value ;
+		
+		// [Settings] sections, OutputFilePattern key :
+		//	Specifies the renaming scheme for resizing.
+		$value		=  $ConfigurationObject -> GetKey ( 'Settings', 'OutputFilePattern' ) ;
+		
+		if  ( $value )
+			$OutputFilePattern	=  $value ;
+		
+		// [Settings] sections, OutputFileFormat key :
+		//	Specifies the output graphical file format.
+		$value		=  $ConfigurationObject -> GetKey ( 'Settings', 'OutputFileFormat' ) ;
+		
+		if  ( $value )
+		   {
+			if  ( ( $format_index = $NConvertFormats -> iin_subarray ( 'name', $value ) )  ===  false )
+				error ( "The '$value' value specified for the OutputFileFormat key in the [Settings] section of " .
+					"configuration file \"$ConfigurationFile\" does not reference any valid graphic file format." ) ;
+			
+			$OutputFileFormat	=  $NConvertFormats [ $format_index ] [ 'name' ] [0] ;
+		    }
+		
+		// [Settings] sections, ResizeFormats key :
+		//	Specifies the names of the [Format:*] sections that define the resize operations to be performed.
+		$value		=  $ConfigurationObject -> GetKey ( 'Settings', 'ResizeFormats' ) ;
+		
+		if  ( $value )
+		   {
+			$value		=  preg_replace ( '/\s+/', ' ', $value ) ;
+			$list		=  '(' . implode ( ' | ', explode ( ' ', $value ) ) . ')' ;
+			$sections	=  $ConfigurationObject -> GetSections ( 'Format \s* : \s* ' . $list ) ;
+			
+			if  ( ! $sections ) 
+				error ( "No [Format:*] section(s) found in configuration file \"$ConfigurationFile\" ." ) ;
+			
+			// Loop through [Format:] sections
+			foreach  ( $sections  as  $section )
+			   {
+				$section_string				=  $section [ 'name' ] ;
+				$section_name				=  $section [ 'match' ] [1] ;
+				$data					=  [] ;
+				
+				// Name key -
+				//	Name that can be used in resized file names. Defaults to the format section name.
+				$value					=  $ConfigurationObject -> GetKey ( $section_string, 'Name' ) ;	
+				$data [ 'name' ]			=  ( $value ) ?  $value : $section_name ;
+				
+				// Extensions -
+				//	List of processed file extensions. Defaults to the value of the Extensions key of the [Settings] section.
+				$value					=  get_extensions ( $ConfigurationObject, $section_string, 'Extensions' ) ;
+				$data [ 'extensions' ]			=  ( $value ) ?  $value : $Extensions ;
+
+				// CreateSubdirectory -
+				//	Indicates whether a subdirectory should be created to put the resized files.
+				$value					=  $ConfigurationObject -> GetBooleanKey ( $section_string, 'CreateSubdirectory' ) ;
+				$data [ 'create-subdir' ]		=  ( $value  ===  null ) ?  $CreateSubdirectories : $value ;
+
+				// CreateZipfile -
+				//	Indicates whether a zip file should be created using the original images
+				$value					=  $ConfigurationObject -> GetBooleanKey ( $section_string, 'CreateZipfile' ) ;
+				$data [ 'create-zipfile' ]		=  ( $value  ===  null ) ?  false : $value ;
+
+				// ExtensionCase -
+				//	Indicates whether files smaller that the destination should be resized.
+				$value					=  $ConfigurationObject -> GetBooleanKey ( $section_string, 'ExtensionCase' ) ;
+				$data [ 'extension-case' ]		=  ( $value  ===  null ) ?  $ExtensionCase : $value ;
+
+				// ResizeIfSmaller -
+				//	Indicates whether files smaller that the destination should be resized.
+				$value					=  $ConfigurationObject -> GetBooleanKey ( $section_string, 'ResizeIfSmaller' ) ;
+				$data [ 'resize-if-smaller' ]		=  ( $value  ===  null ) ?  $ResizeIfSmaller : $value ;
+				
+				// OutputFilePattern -
+				//	Renaming format specific to this resize operation.
+				$value					=  $ConfigurationObject -> GetKey ( $section_string, 'OutputFilePattern' ) ;
+				$data [ 'output-file-pattern' ]		=  ( $value ) ?  $value : $OutputFilePattern ;
+				
+				// OutputFileFormat -
+				//	Renaming format specific to this resize operation.
+				$value					=  $ConfigurationObject -> GetKey ( $section_string, 'OutputFileFormat' ) ;
+				$value					=  ( $value ) ?  srtolower ( $value ) : $OutputFileFormat ;
+				
+				if  ( $value  &&  ( $format_index = $NConvertFormats -> iin_subarray ( 'name', $value ) )  ===  false )
+					error ( "The '$value' value specified for the OutputFileFormat key in the [$section_string] " .
+						"section of configuration file \"$ConfigurationFile\" does not reference any valid graphic file format." ) ;
+				
+				$data [ 'output-file-format' ]		=  $NConvertFormats [ $format_index ] [ 'name' ] [0] ;
+				
+				// NewSize -
+				//	New picture size.
+				$value					=  $ConfigurationObject -> GetKey ( $section_string, 'NewSize' ) ;
+				$size_re				=  '#
+										(?P<width> \d+)
+										(
+											([x*.\-])
+											|
+											(\s+)
+										 )
+										(?P<height> \d+)
+									    #imsx' ;
+										
+				if  ( ! $value )
+					error ( "The NewSize key in the [$section_string] section of configuration file \"$ConfigurationFile\" " .
+						"is either missing or empty." ) ;
+				
+				if  ( ! preg_match ( $size_re, $value, $matches ) )
+					error ( "The value '$value' for the NewSize key in the [$section_string] section of configuration file " . 
+						"\"$ConfigurationFile\" is not a valid dimension." ) ;
+					
+				$data [ 'width' ]	=  $matches [ 'width' ] ;
+				$data [ 'height' ]	=  $matches [ 'height' ] ;
+				
+				$ResizeFormats []	=  $data ;
+			    }
+		    }
+		else
+			error ( "The ResizeFormats key in the [Settings] section of configuration file \"$ConfigurationFile\" " .
+				"is either missing or empty." ) ;
+	    }
+	
+
+	/*==================================================================================================
+
+	    ProcessGallery, ProcessGalleries -
+		Process galleries.
+
+	  ==================================================================================================*/
+	function  ProcessGallery ( $path, $resize_formats )
+	   {
+		global		$NoRun, $Verbose, $OutputFilePattern, $CreateZipfile, $GroupConversions, $OutputFileFormat ;
+		
+
+		require_directory ( $path ) ;
+		
+		// Counters
+		$input_files_processed		=  0 ;
+		$renamed_files			=  0 ;
+		$resized_files			=  0 ;
+		$copied_files			=  0 ;
+		$output_files_generated		=  0 ;
+		$output_directories_created	=  0 ;
+		$removed_files			=  0 ;
+		$removed_directories		=  0 ;
+		
+		// Files to be zipped
+		$zippath			=  Path::RealPath ( $path ) ;
+		
+		$pictures			=  
+		   [
+			''	=>  
+			   [ 
+				'input-directory'	=>  $path, 
+				'output-directory'	=>  Path::ToHost ( $path ), 
+				'output'		=>  basename ( $zippath ) . ".zip", 
+				'create-subdir'		=>  false,
+				'create-zipfile'	=>  $CreateZipfile,
+				'output-file-pattern'	=>  $OutputFilePattern,
+				'output-file-format'	=>  $OutputFileFormat,
+				'files'			=>  [] 
+			    ]
+		    ] ;
+		
+		if (  $Verbose )
+			output ( "Processing directory $path contents :" ) ;
+		
+		// Get directory contents - but without the graphic files that may come from a previous call to resizegallery
+		$operations			=  [] ;
+		$files				=  glob ( "$path/*" ) ;
+		
+		// Create subdirectories if needed
+		foreach  ( $resize_formats  as  $format )
+		   {
+			if  ( $format [ 'create-subdir' ] )
+			   {
+				$new_path	=  Path::ToHost ( "$path/{$format [ 'name' ]}" )  ;
+				$operations []	=  
+				   [ 
+					'operation'	=>  'mkdir', 
+					'file'		=>  $new_path
+				    ] ; 
+				
+				$pictures [ $format [ 'name' ] ]	=  
+				   [
+					'input-directory'	=>  $path, 
+					'output-directory'	=>  Path::ToHost ( $new_path ),
+					'output'		=>  "{$format [ 'name' ]}.zip",
+					'create-subdir'		=>  $format [ 'create-subdir' ],
+					'create-zipfile'	=>  $format [ 'create-zipfile' ],
+					'output-file-pattern'	=>  $format [ 'output-file-pattern' ],
+					'output-file-format'	=>  $format [ 'output-file-format' ],
+					'files'			=>  [],
+					'width'			=>  $format [ 'width' ],
+					'height'		=>  $format [ 'height' ]
+				    ] ;
+			    }
+		    }
+
+		// Loop through files in the specified directory
+		foreach  ( $files  as  $file )
+		   {
+			$file		= Path::ToHost ( $file ) ;
+			
+			// Remove existing directories referenced by the resize format entries ('create-subdir' = true)
+			if  ( is_dir ( $file ) )
+			   {
+				foreach  ( $resize_formats  as  $format )
+				   {
+					if  ( $format [ 'create-subdir' ]  &&  Path::ContainsDirectory ( $file, $format [ 'name' ] ) )
+					   {
+						$operations []	=  [ 'operation' => 'rmdir', 'file' => $file ] ;
+						continue 2 ;
+					    }
+				    }
+			    }
+			
+			// Do the same with files that may have been generated from a previous call to resizegallery ('create-subdir' = false)
+			// (deletions must occur first)
+			if  ( is_file ( $file ) )
+			   {
+				foreach  ( $resize_formats  as  $format )
+				   {
+					// Check if the current file contains the resize format name either as an extension (create-subdir = false)
+					// or as a directory.
+					if  ( $format [ 'create-subdir' ] )
+						$selected	=  Path::ContainsDirectory ( $file, $format [ 'name' ] ) ;
+					else
+						$selected	=  Path::ContainsExtension ( $file, $format [ 'name' ] ) ;
+				
+					if  ( $selected )
+					   {
+						$operations []	=  [ 'operation' => 'rm', 'file' => $file ] ;
+						continue 2 ;
+					    }
+				    }				
+			    }
+			
+			// Process each [Format:*] section
+			$index			=  0 ;
+			
+			// Renaming files depends on the extension list supplied by each resize format entry
+			// We thus have to loop through each of them ; the drawback is that we have to keep track of files renamed
+			// so far in order to generate only one renaming operation
+			$renamed_file_list	=  [] ;
+			
+			foreach  ( $resize_formats  as  $format )
+			   {
+				$index ++ ;
+				
+				// If the found file has a supported extension, check if we have to apply some processing on the extension
+				if  ( Path::HasExtension ( $file, $format [ 'extensions' ], $found_extension, $original_extension ) )
+				   {
+					// Processing may be : lower- or upper-case the extension
+					switch  ( $format [ 'extension-case' ] )
+					   {
+						case	CASE_LOWER	:
+							$found_extension	=  strtolower ( $found_extension ) ;
+							$new_file		=  str_ireplace ( ".$original_extension", ".$found_extension" , $file ) ;
+							break ;
+								
+						case	CASE_UPPER :
+							$found_extension	=  strtoupper ( $found_extension ) ;
+							$new_file		=  str_ireplace ( ".$original_extension", ".$found_extension" , $file ) ;
+							break ;
+								
+						case	CASE_ASIS :
+							$new_file		=  $file ;
+							break ;
+							
+						default :
+							error ( new \Thrak\System\ParanoidException ( "Incorrect value '{$format [ 'extension-case' ]}' for " .
+									"extension case processing." ) ) ;
+					    }
+
+					// If extension case changed, add a rename operation - but only if this file has not been previously renamed
+					if  ( ! isset ( $renamed_file_list [ $new_file ] )  &&  strcmp ( $file, $new_file ) )
+					   {
+						$operations []	=
+						   [
+							'operation'	=>  'rename',
+							'old'		=>  $file,
+							'new'		=>  $new_file
+						    ] ;
+						
+						$renamed_file_list [ $new_file ]	=  $file ;
+					    }
+					
+					// Get additional information about the image size
+					$image_size	=  getimagesize ( $file ) ;
+					$image_width	=  $image_size [0] ;
+					$image_height	=  $image_size [1] ;
+						
+					// Get real output path (either in a subdirectory or in a file at the same level)
+					if  ( $format [ 'create-subdir' ] )
+						$target_base	=  Path::ToHost ( "$path/{$format [ 'name' ]}/" . basename ( $new_file ) ) ;
+					else
+						$target_base	=  $new_file ;
+						
+					// Add either a resizing or copy operation, if the dimensions are less that the target dimensions
+					// and pictures which are in such a case do not have to be enlarged
+					$resize	=  false ;
+						
+					if  ( $format [ 'resize-if-smaller' ] )
+						$resize	=  true ;
+					else	// dont't resize if the original picture is smaller than the original in width or height
+					   {
+						if  ( $image_width  >=  $format [ 'width' ]  ||  $image_height  >=  $format [ 'height' ] )
+							$resize	=  true ;
+					    }
+						
+					// Input image needs to be resized
+					if  ( $resize )
+					   {
+						// Group conversions : simply add the base file name to a list which will be processed
+						// after the last operation
+						if  ( $GroupConversions	)
+						   {
+							// ... but only for subdirectory generation ; $pictures [ '' ] is only here for generating
+							// a zip file if needed
+							if  ( $format [ 'name' ] )
+							   {
+								$pictures [ $format [ 'name' ] ] [ 'files' ] []	=  basename ( $new_file ) ;  
+							    }
+						    }
+						else
+						   {
+							// Interpret the output naming format
+							$new_target	=  format_filename ( $target_base, $format [ 'output-file-pattern' ], $format [ 'name' ], 
+												$path, true, $index ) ;
+						
+							// Add this file to the list of files to be zipped and group-processed, if needed
+							$operation	=
+							   [
+								'operation'		=>  'resize',
+								'old'			=>  $new_file,
+								'new'			=>  $target_base,
+								'width'			=>  $format [ 'width' ],
+								'height'		=>  $format [ 'height' ],
+								'output-file-format'	=>  $format [ 'output-file-format' ]
+							    ] ;
+
+							$operations []	=  $operation ;
+						    }
+					    }
+					else
+					   {
+						// Interpret the output naming format
+						$new_target	=  format_filename ( $target_base, $format [ 'output-file-pattern' ], $format [ 'name' ], 
+											$path, ! $GroupConversions, $index ) ;
+						$new_target	=  str_replace ( '%', basename ( $target_base ), $new_target ) ;
+						
+						// Add this file to the list of files to be copied as is
+						$operation	=
+						   [
+							'operation'		=>  'copy',
+							'old'			=>  $new_file,
+							'new'			=>  $new_target,
+							'width'			=>  $format [ 'width' ],
+							'height'		=>  $format [ 'height' ]
+						    ] ;
+
+						$operations []	=  $operation ;
+					    }
+					
+					$input_files_processed ++ ;
+				    }
+				// File extension is not in the list ; ignore the file
+				else
+					continue 2 ;
+			    }
+
+			// Add this file to the list of files to be zipped, if needed
+			$pictures [ '' ] [ 'files' ] []	=  basename ( $new_file ) ;
+		    }
+		
+		// Delete operations must appear first 
+		uksort ( $operations, 
+				function ( $a, $b ) use ( $operations )
+				   {
+					if  ( $operations [$a] [ 'operation' ]  ==  'rm'  ||  $operations [$a] [ 'operation' ]  ==  'rmdir' )
+						return ( -1 ) ;
+					else if  ( $operations [$b] [ 'operation' ]  ==  'rm'  ||  $operations [$b] [ 'operation' ]  ==  'rmdir' )
+						return ( 1 ) ;
+					else
+						return ( $a - $b ) ;
+				    }
+			) ;
+		
+		// Loop through operations to be performed
+		//dump ( $operations);
+		//dump ( $resize_formats ) ;
+		//dump ($pictures); 
+		//exit ;
+		foreach  ( $operations  as  $operation )
+		   {
+			$output		=  [] ;
+			$command	=  '' ;
+			$status		=  0 ;
+			
+			switch  ( $operation [ 'operation' ] )
+			   {
+				// 'copy' -
+				//	Occurs when the ResizeIfSmaller .ini parameter is false and the file is smaller than
+				//	the specified size, whatever the value of the GroupConversions parameter.
+				case	'copy' :
+					$status		=  execute_command 
+					   ( 
+						"COPY {$operation [ 'old' ]} {$operation [ 'new' ]}",
+						"cp {$operation [ 'old' ]} {$operation [ 'new' ]}"
+					    ) ;
+					$copied_files ++ ;
+					$output_files_generated ++ ;
+					break ;
+					
+				// 'resize' :
+				//	Individually resize the current file. Occurs when the GroupConversions .ini parameter is set to false.
+				case	'resize' :
+					$outfmt		=  ( $operation [ 'output-file-format' ] ) ?  "-out {$operation [ 'output-file-format' ]}" : '' ;
+					$command	=  "nconvert $outfmt -ratio -resize {$operation [ 'width' ]} {$operation [ 'height' ]} " .
+							   "-o \"{$operation [ 'new' ]}\" \"{$operation [ 'old' ]}\"" ;
+					$status		=  execute_command ( $command ) ;
+					$resized_files ++ ;
+					$output_files_generated ++ ;
+					break ;
+				
+				// 'rename' -
+				//	Happens when the ExtensionCase .ini parameter is different from 'asis'.
+				case	'rename' :
+					$status		=  execute_command 
+					   ( 
+						"REN \"{$operation [ 'old' ]}\" \"" . basename ( $operation [ 'new' ] ) . '"',
+						"mv \"{$operation [ 'old' ]}\" \"{$operation [ 'new' ]}\""
+					    ) ;
+
+					$renamed_files ++ ;
+					break ;
+					
+				// 'mkdir' -
+				//	Happens when the CreateSubdirectory key of a [Format:*] section parameter is set to true.
+				case	'mkdir' :
+					$status		=  execute_command 
+					   ( 
+						"MD {$operation [ 'file' ]}",
+						"mkdir {$operation [ 'file' ]}"
+					    ) ;
+					$output_directories_created ++ ;
+					break ;
+					
+				// 'rmdir' -
+				//	Happens when the CreateSubdirectory key of a [Format:*] section is set to true and this
+				//	subdirectory (which has the value of the Name key) does not exist.
+				case	'rmdir' :
+					$status		=  execute_command 
+					   ( 
+						"RD /S /Q {$operation [ 'file' ]}",
+						"rm -rf {$operation [ 'file' ]}"
+					    ) ;
+					$removed_directories ++ ;
+					break ;
+					
+				// 'rm' -
+				//	Happens when the CreateSubdirectory key of a [Format:*] section is set to false, and a file
+				//	coming from a previous run has been found.
+				case	'rm' :
+					$status		=  execute_command 
+					   ( 
+						"DEL /Q {$operation [ 'file' ]}",
+						"rm -f {$operation [ 'file' ]}"
+					    ) ;
+					$removed_files ++ ;
+					break ;
+				
+				// If we arrive here, then there is a logic error in this code...
+				default :
+					error ( new \Thrak\System\ParanoidException ( "Undefined operation '{$operation [ 'operation' ]}'" ) ) ;
+			     }
+		    }
+
+		// Process group conversions and create zipfiles if needed 
+		foreach  ( $pictures  as  $key => $item )
+		   {
+			// Group-convert files
+			if  ( $key  ||  $item [ 'create-subdir' ] )
+			   {
+				$format		=  format_filename ( $item [ 'output-directory' ] . '/junk', $item [ 'output-file-pattern' ], $key, 
+									$path, false ) ;
+				
+				$files		=  [] ;
+				
+				foreach  ( $item [ 'files' ]  as  $file )
+					$files []	=  '"' . Path::ToHost ( "$path/$file" ) . '"' ;
+				
+				$outfmt		=  ( $item [ 'output-file-format' ] ) ?  "-out {$item [ 'output-file-format' ]}" : '' ;
+				$command	=  "nconvert $outfmt -ratio -resize {$item [ 'width' ]} {$item [ 'height' ]} " .
+						   "-o \"$format\" " .
+						   implode ( ' ', $files ) ;
+				
+				$output		=  [] ;
+				$status		=  execute_command ( $command ) ;
+
+				$count				 =  count ( $item [ 'files' ] ) ;
+				$output_files_generated		+=  $count ;
+				$resized_files			+=  $count ;
+			    }
+
+			// Create zipfile if needed
+			if  ( $item [ 'create-zipfile' ] )
+			   {
+				// Set current directory to the output directory - needed for not including the directory
+				// part of input files
+				$oldcwd		=  getcwd ( ) ;
+				chdir ( $item [ 'output-directory' ] ) ;
+
+				// Remove any previously generated zip file
+				if  ( file_exists ( $item [ 'output' ] ) )
+					unlink ( $item [ 'output' ] ) ;
+
+				// Run the zip command
+				$files		=  [] ;
+				
+				foreach  ( $item [ 'files' ]  as  $file )
+					$files []	=  '"' . $file . '"' ;
+				
+				$command	=  "zip -D \"{$item [ 'output' ]}\" " . implode ( ' ', $files ) ;
+				$output		=  [] ;
+				$status		=  execute_command ( $command ) ;
+
+				// Restore initial current directory
+				chdir ( $oldcwd ) ;
+			     }
+		    }
+		
+		// Display a summary
+		if  ( $Verbose )
+		   {
+			output ( "Input files processed         : $input_files_processed" ) ;
+			output ( "Removed files                 : $removed_files" ) ;
+			output ( "Removed directories           : $removed_directories" ) ;
+			output ( "Renamed files                 : $renamed_files" ) ;
+			output ( "Resized files                 : $resized_files" ) ;
+			output ( "Files copied (without resize) : $copied_files" ) ;
+			output ( "Output files generated        : $output_files_generated" ) ;
+			output ( "Output directories created    : $output_directories_created" ) ;
+		    }
+	    }
+	
+	
+	function  ProcessGalleries ( $paths, $resize_formats )
+	   {
+		foreach  ( $paths  as  $path )
+			ProcessGallery ( $path, $resize_formats ) ;
+	    }
+	
+	
+	/*==================================================================================================
+
+		Global variables & constants.
+
+	  ==================================================================================================*/
+	$ConfigurationObject		=  false ;			// .ini configuration file object
+	$CreateSubdirectories		=  false ;			// Specifies if files or subdirectories should be created by the resizing process
+	$CreateZipfile			=  false ;			// Specifies whether a .zip file should be created with gallery contents
+	$Extensions			=  [ 'jpg' ] ;			// List of processed extensions
+	$ExtensionCase			=  CASE_ASIS ;			// Action on file extension case
+	$GroupConversions		=  false ;			// Specifies whether nconvert should be run on as many files as possible in one shot
+	$NConvertCommonFormats		=  new AssociativeArray		// Convenience list of common file formats
+	   ([
+               '-1',
+               'bmp',
+               'emf',
+               'eps',
+	       'gif',
+               'icl',
+               'ico',
+               'jpeg',
+               'ps',
+               'psd',
+               'psp',
+               'raw',
+               'tga',
+               'tiff',
+               'wmf',
+               'wmz',
+               'xbm',
+               'xcf'
+	   
+	     ]) ;
+	$NConvertFormatAliases	=  new AssociativeArray			// Aliases for nconvert file formats
+	   ([
+		'jpeg'		=>  [ 'jpg' ]
+	    ]) ;
+	$NConvertFormats		=  false ;			// List of graphic formats supported by nconvert
+	$NConvertOptions		=  false ;			// nconvert options, section 'Options'
+	$NConvertProcessOptions		=  false ;			// nconvert processing options ('Process' section)
+	$OutputFilePattern		=  '%n.%e' ;			// Default output file pattern
+	$OutputFileFormat		=  'jpeg' ;			// Default output file graphic format
+	$ResizeFormats			=  [] ;				// Descriptions of resizing operations
+	$ResizeIfSmaller		=  true ;			// Specifies whether files smaller than the target resolution should be resized or not
+
+	
+	/*==================================================================================================
+
+		Main program.
+
+	  ==================================================================================================*/
+
+	// Parameters
+	$CL 				=  new  CLParser ( $Definitions ) ;
+	
+	$ConfigurationFile		=  $CL -> configuration_file ;
+	$Files				=  $CL -> Files ;
+	$NoRun				=  $CL -> norun ;
+	$Verbose			=  $CL -> verbose ;
+	$HadOption			=  false ;
+
+
+	// Load settings
+	LoadSettings ( ) ;
+
+	// Process directories
+	if  ( ! $HadOption )
+	   {
+		if  ( ! count ( $Files ) )
+			error ( "No directory specified." ) ;
+		
+		ProcessGalleries ( $Files, $ResizeFormats ) ;
+	    }

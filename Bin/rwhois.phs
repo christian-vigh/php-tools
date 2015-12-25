@@ -1,0 +1,142 @@
+<?php
+	//!phpcmd(Network, 2.0) : Whois query utility.
+	/***************************************************************************************************
+
+	    NAME
+		rwhois.phs
+
+	    DESCRIPTION
+		Whois query utility.
+
+	    AUTHOR
+	     	Christian Vigh, 11/2014.
+
+	    NOTES
+	 	This utility relies on the following external commands :
+	 	- PSLIST, from SysInternals
+	 
+	    HISTORY
+	    [Version : 1.0]	[Date : 2014/11/30]	[Author : CV]
+	     	Initial version.
+
+	 ***************************************************************************************************/
+	require ( "tools.phpinclude" ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Types\String ;
+	use  Thrak\IO\Path ;
+	use  Thrak\IO\AsciiReport ;
+	use  Thrak\Network\RfcProtocols\WhoisDatabase ;
+
+
+	/*==================================================================================================
+
+		Command line parameters.
+
+	  ==================================================================================================*/
+	$Definitions = <<<END
+<command name="rwhois" allow-files="true" min-files="1" max-files="*" value-text="domain(s)">
+
+	<usage>
+		Whois server query tool.
+	</usage>
+	
+	<flag name="all, a">
+		Displays all Whois attributes, including the empty ones.
+	</flag>
+	
+	<file name="configuration_file, cf" disposition="any" default="thraktools://Data/rwhois.ini">
+		Specifies the location of the rwhois.ini file, which contains the list of servers to be queried.
+	</file>
+	
+	<flag name="raw, r">
+		Outputs domain data in raw format.
+	</flag>
+</command>
+END;
+
+
+	/*==================================================================================================
+
+		Global constants and variables.
+
+	  ==================================================================================================*/
+	$CL 			=  new CLParser ( $Definitions ) ;
+	$ConfigurationFile	=  $CL -> configuration_file ;
+	$Domains		=  $CL -> Files ;
+	$Raw			=  $CL -> raw ;
+	$All			=  $CL -> all ;
+
+	// Load the default whois database
+	$WhoisDb		=  new WhoisDatabase ( ) ;
+	
+	// Add the specified extra whois database, if any
+	if  ( file_exists ( $ConfigurationFile ) )
+		$WhoisDb -> AddDatabase ( $ConfigurationFile ) ;
+	
+	// Loop through each specified domain
+	foreach  ( $Domains  as  $domain )
+	   {
+		// Get the domain entry
+		$whois	=  $WhoisDb -> Query ( $domain ) ;
+		
+		// Matched domain
+		if  ( $whois -> Matches ( ) )
+		   {
+			$index	=  0 ;
+			
+			// Loop through domain indirections ("whois server" entries)
+			foreach  ( $whois  as  $info )
+			   {
+				if  ( $index )
+					output ( "" ) ;
+				
+				output ( "********** Data from {$info -> GetServer ( )}:" ) ;
+
+				if  ( $Raw )
+					output ( $info -> GetData ( ) ) ;
+				else
+				   {
+					$report		=  new  AsciiReport 
+					   ( 
+						[ 'member' => 'name'	, 'title' => 'Attribute'	, 'align' => 'left' ],
+						[ 'member' => 'value'	, 'title' => 'Value'		, 'align' => 'left' ]
+					    ) ;
+					$data		=  [] ;
+					
+					foreach  ( $info -> GetAttributes ( )  as  $item )
+					   {
+						$name		=  $item [ 'name' ] ;
+						$value		=  $item [ 'value' ] ;
+						$is_array	=  is_array ( $value ) ;
+						
+						if  ( ! $All  &&  ( ( $is_array  &&  ! count ( $value ) )  ||  ! $value ) )
+							continue ;
+						
+						if  ( $is_array )
+							$value	=  implode ( "\n", $value ) ;
+						
+						$data []	=  [ 'name' => $name, 'value' => $value ] ;
+					    }
+					
+					echo $report -> Generate ( $data ) ;
+					$index ++ ;
+				    }
+			    }
+		    }
+		// No match : either display the raw data or a laconic message...
+		else
+		   {
+			foreach  ( $whois  as  $info )
+			   {
+				if  ( $Raw )
+				   {
+					output ( "********** Data from {$info -> GetServer ( )}:" ) ;
+					output ( $info -> GetData ( ) ) ;
+				    }
+				else
+					output ( "No match for $domain at server {$whois -> GetServer ( )}." ) ;
+			    }
+		    }
+	    }
+	

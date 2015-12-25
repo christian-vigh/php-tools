@@ -1,0 +1,2571 @@
+<?php
+	//!phpcmd(Internet, 2.0) : IE cache analysis and management tool.
+	/***************************************************************************************************
+
+	    NAME
+		IeCache.phs
+
+	    DESCRIPTION
+		IE cache analysis and management tool.
+
+	    AUTHOR
+	     	Christian Vigh, 11/2014.
+	 
+	    HISTORY
+	    [Version : 1.0]	[Date : 2014/11/21]	[Author : CV]
+	     	Initial version.
+
+	    [Version : 1.0.1]	[Date : 2014/11/29]	[Author : CV]
+	     	. Added the -skip_ignored_extensions flag.
+		. Added the is_valid_domain() function to exclude domain names that use non-ascii characters.
+
+	    [Version : 1.0.2]	[Date : 2014/12/04]	[Author : CV]
+		. Enabled the call to is_valid_domain(), which was commented out.
+		. ScanFile() function : call urldecode() on each domain found.
+		. Added the wipe_scheme() function, to remove url scheme from a domain ; impacts the
+		  BlockDomain(), IgnoreDomain(), UnblockDomain() and UnignoreDomain() functions.
+	 
+	    [Version : 1.0.3]	[Date : 2014/12/05]	[Author : CV]
+		. Added the possibility to specify repetitions in domain names for the -block_domain
+	 	  parameter ( [a-z], [0-9], etc. ).
+		. Renamed the wipe_scheme() function to wipe_domain() ; removed extra url parts
+	 
+	    [Version : 1.0.4]	[Date : 2015/01/08]	[Author : CV]
+		. Added support to search into cookie data
+	 
+	    [Version : 1.0.5]	[Date : 2015/01/19]	[Author : CV]
+	 	. Changed the LoadList() method to build associative arrays with the lowercased version of
+	 	  each entry. The array keys will later be checked against by the ScanFile() method using the 
+	 	  lowercased version of each domain found in the scanned file.
+	 	. Performed various optimizations in the ScanFile() method :
+	 	  . Removed the is_valid_domain() function to directly embed its code in the function.
+	 	  . Call the Path::Match() function only if wildcard characters are found in the ignored
+		    domain.
+	 	. Use the file_get_contents() function instead of the file() function and called 
+	 	  preg_match() on the whole file contents instead of calling it line by line.
+	 	These improvements on a specific test set reduced execution time from 11mn 30s to 0mn 25s.
+	 
+	    [Version : 1.0.6]	[Date : 2015/02/20]	[Author : CV]
+		. Sort the banned domains by the last two domain components.
+	 
+	    [Version : 1.0.7]	[Date : 2015/04/10]	[Author : CV]
+		. Added the -delete_cookies option.
+	 
+	 ***************************************************************************************************/
+	require ( "tools.phpinclude" ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Types\String ;
+	use  Thrak\IO\Path ;
+	use  Thrak\IO\AsciiReport ;
+	use  Thrak\Processors\IniFile ;
+	use  Thrak\Windows\Registry ;
+	use  Thrak\Math ;
+	   
+	
+	/*==================================================================================================
+
+		Globals and constants.
+
+	  ==================================================================================================*/
+	$HOSTSFILE	=  'C:/Windows/System32/Drivers/Etc/Hosts' ;
+	
+	// Starting and ending lines that isolate IeCache blocked domains in the Hosts file
+	define ( 'IECACHE_HOSTS_START'			, '# IeCache entries' ) ;
+	define ( 'IECACHE_HOSTS_END'			, '# End of IeCache entries' ) ;
+	
+	// Constants used for converting Windows FILETIME to Unix time
+	define ( 'FILETIME_DIVIDER'			, 1E-7 ) ;
+	define ( 'FILETIME_OFFSET'			, 11644473600 ) ;
+
+	// Cookie flags
+	define ( 'INTERNET_COOKIE_IS_SECURE'		, 0x00000001 ) ;
+	define ( 'INTERNET_COOKIE_IS_SESSION'		, 0x00000002 ) ;
+	define ( 'INTERNET_COOKIE_THIRD_PARTY'		, 0x00000010 ) ;
+	define ( 'INTERNET_COOKIE_PROMPT_REQUIRED'	, 0x00000020 ) ;
+	define ( 'INTERNET_COOKIE_EVALUATE_P3P'		, 0x00000040 ) ;
+	define ( 'INTERNET_COOKIE_APPLY_P3P'		, 0x00000080 ) ;
+	define ( 'INTERNET_COOKIE_P3P_ENABLED'		, 0x00000100 ) ;
+	define ( 'INTERNET_COOKIE_IS_RESTRICTED'	, 0x00000200 ) ;
+	define ( 'INTERNET_COOKIE_IE6'			, 0x00000400 ) ;
+	define ( 'INTERNET_COOKIE_IS_LEGACY'		, 0x00000800 ) ;
+	define ( 'INTERNET_COOKIE_NON_SCRIPT'		, 0x00001000 ) ;
+	define ( 'INTERNET_COOKIE_HTTPONLY'		, 0x00002000 ) ;
+	define ( 'INTERNET_COOKIE_RESTRICTED_ZONE'	, 0x00020000 ) ;
+	define ( 'INTERNET_COOKIE_NO_CALLBACK'		, 0x40000000 ) ;
+	define ( 'INTERNET_COOKIE_ECTX_3RDPARTY'	, 0x80000000 ) ;
+
+	// Cookie sort options
+	define ( 'SORT_COOKIE_BY_FILENAME'		, 1 ) ;
+	define ( 'SORT_COOKIE_BY_DOMAIN'		, 2 ) ;
+	define ( 'SORT_COOKIE_BY_SIZE'			, 3 ) ;
+	define ( 'SORT_COOKIE_BY_VARIABLE'		, 4 ) ;
+	define ( 'SORT_COOKIE_BY_VALUE'			, 5 ) ;
+	define ( 'SORT_COOKIE_BY_CREATION_DATE'		, 6 ) ;
+	
+	/*==================================================================================================
+
+		Command line parameters.
+
+	  ==================================================================================================*/
+	$Definitions = <<<END
+<command name="iecache" allow-files="true" min-files="0">
+
+	<usage>
+		IE cache analysis and management tool.
+	</usage>
+	
+	<string name="block_domain, bd" arguments="1..*" allow-factorization="true">
+		Blocks the specified domain. Domain name can include "multiplication" expressions such as :
+			[a-z].domain.com 
+		which will be developed as : a.domain.com, b.domain.com etc.
+		Numeric values can also be specified and combined with letter values :
+			[a-z][0-9].domain.com
+		which will develop to a0.domain.com, a1.domain.com, ..., a9.domain.com, b0.domain.com, ...
+	</string>
+	
+	<flag name="block_domains, bds">
+		Updates the hosts file with the list of currently blocked domains.
+	</flag>
+	
+	<ip-address name="block_ip, bi" arguments="1..*">
+		Adds the specified address to the list of banned ips.
+		You need to specify the -block_ips parameter to update the route tables.
+	</ip-address>
+	
+	<flag name="block_ips, bis">
+		Applies the current list of blocked ips.
+	</flag>
+	
+	<file name="configuration_file, cf" disposition="existing" default="thraktools://Data/iecache.ini">
+		Specifies the location of the IeCache .ini file.
+	</file>
+
+	<string name="delete_cookies, delete_cookie, dc" arguments="0..*">
+		Delete cookies either by specifying a variable name, a domain name or a file name.
+		Note that a reference to a variable or a domain will delete all the cookies containing
+		this variable or referencing this domain.
+		Wildcards are allowed.
+		If no argument is specified, all the cookies will be deleted.
+	</string>
+	
+	<flag name="export_route_blocking, erb">
+		Exports the commands needed to block ip addresses.
+	</flag>
+	
+	<flag name="export_route_unblocking, eru">
+		Exports the commands needed to unblock the blocked ip addresses.
+	</flag>
+	
+	<file name="hosts_file, hf" disposition="existing" default="$HOSTSFILE">
+		Specifies the location of the hosts file.
+	</file>
+	
+	<string name="ignore_domain, id" arguments="1..*">
+		Adds a domain to the list of ignored domains.
+		The specified domain can either be a wildcard or a regular expression enclosed in slashes.
+	</string>
+	
+	<flag name="ignore_scanned_pages, isp">
+		Normally, pages scanned with the -scan_cache options are not rescanned.
+		This option which is to be specified along with the -scan_cache option tells IeCache to perform a full
+		scan again.
+	</flag>
+	
+	<flag name="list_blocked_domains, lbd">
+		Lists blocked domains (raw format).
+	</flag> 
+	
+	<flag name="list_blocked_ips, lbi">
+		Lists blocked ips (raw format).
+	</flag> 
+	
+	<flag name="list_cookies, lc">
+		Displays summary information about stored cookies.
+	</flag>
+	
+	<string name="list_cookie_variables, lcv" arguments="0..1" value-text="pattern">
+		Display cookie variables. The optional pattern can be a regular expression that will be matched
+		against the variable name, value and domain name.
+	</string>
+	
+	<flag name="list_ignored_domains, lid">
+		Lists ignored domains (raw format).
+	</flag> 
+	
+	<integer name="max_scanned_pages, msp" min-value="0" default="0">
+		Max number of scanned pages results to show. Zero (the default) shows all the results.
+	</integer>
+
+	<flag name="reset_cache_upto, rcu">
+		Resets the cache up (but not including) the specified scan id or time.
+	</flag>
+	
+	<flag name="reset_visited_pages, rvp">
+		Resets the file containing the path of pages already scanned.
+		Next scan will be a full scan.
+	</flag>
+	
+	<flag name="scan_cache, sc">
+		Scans the Internet Explorer cached pages.
+	</flag>
+	
+	<string name="set_cookie_value, scv" arguments="2..3" value-text="name value [cookie id]">
+		Changes the value of a cookie variable.
+		The optional cookie id is the base filename of the cookie .txt file, as show by the
+		-list_cookies or -list_cookie_variables options.
+	</string>
+	
+	<flag name="show_blocked_domains, sbd">
+		Shows blocked domains (nice format).
+	</flag> 
+	
+	<flag name="show_blocked_ips, sbi">
+		Shows blocked ips (nice format).
+	</flag> 
+	
+	<flag name="show_ignored_domains, sid">
+		Shows ignored domains (nice format).
+	</flag> 
+	
+	<flag name="show_scans, ss">
+		Shows the list of cache scans.
+	</flag>
+	
+	<string name="since, s" default="">
+		Scans the cache since the specified last scan.
+		The last scan can be specified either by its id or by a complete or partial date/time that can be understood
+		by the strtotime() function.
+	</string>
+	
+	<flag name="skip_excluded_extensions, see">
+		Skips the ignored extensions list.
+	</flag>
+	
+	<keyword name="sort_cookies_by, sort_cookie_by, scb">
+		Determines the sort order for the cookie list options. Only the creation, domain and size
+		options will be taken into account for the -list_cookies option.
+		
+		<case name="creation, c" value="6">
+			Sorts results by cookie creation date.
+		</case>
+		
+		<case name="domain, d" value="2">
+			Sorts results by domain name.
+		</case>
+		
+		<case name="filename, name, f, n" value="1">
+			Sort results by filename.
+		</case>
+		
+		<case name="size, s" value="3">
+			Sorts results by cookie file size.
+		</case>
+		
+		<case name="value, val" value="5">
+			Sorts results by variable value.
+		</case>
+		
+		<case name="variable, v" value="4">
+			Sorts results by variable name.
+		</case>
+	</keyword>
+	
+	<string name="unblock_domain, ud" arguments="1..*" allow-factorization="true">
+		Unblocks the specified domain.
+	</string>
+	
+	<flag name="unblock_domains, uds">
+		Updates the hosts file to remove the list of currently blocked domains.
+	</flag>
+	
+	<ip-address name="unblock_ip, ui" arguments="1..*">
+		Removes the specified address from the list of banned ips.
+		You need to specify the -block_ips parameter to update the route tables.
+	</ip-address>
+	
+	<flag name="unblock_ips, uis">
+		Cancels the blocking of the current list of blocked ips.
+	</flag>
+	
+	<string name="unignore_domain, uid" arguments="1..*">
+		Removes a domain to the list of ignored domains.
+	</string>
+	
+	<flag name="verbose, v">
+		Displays verbose output. 
+	</flag>
+	
+	<flag name="very_verbose, vv">
+		Displays very verbose output. 
+	</flag>
+</command>
+END;
+
+	
+	/**************************************************************************************************************
+	 **************************************************************************************************************
+	 **************************************************************************************************************
+	 ******                                                                                                  ******
+	 ******                                                                                                  ******
+	 ******                                     UTILITY FUNCTIONS					         ******
+	 ******                                                                                                  ******
+	 ******                                                                                                  ******
+	 **************************************************************************************************************
+	 **************************************************************************************************************
+	 **************************************************************************************************************/
+
+	/*==================================================================================================
+
+	    compare_ips -
+		Compare two IP addresses.
+
+	  ==================================================================================================*/
+	function  compare_ips ( $ip_a, $ip_b )
+	   {
+		$a_parts	=  explode ( '.', $ip_a ) ;
+		$b_parts	=  explode ( '.', $ip_b ) ;
+		
+		for  ( $i = 0 ; $i  < min ( count ( $a_parts ), count ( $b_parts ) ) ; $i ++ )
+		   {
+			if  ( $a_parts [$i]  !=  $b_parts [$i] )
+				return ( $a_parts [$i] - $b_parts [$i] ) ;
+		    }
+		
+		return ( count ( $a_parts )  -  count ( $b_parts ) ) ;
+	    }
+
+
+	/*==================================================================================================
+
+	    flush_dns -
+		Flushes DNS entries
+
+	  ==================================================================================================*/
+	function  flush_dns ( )
+	   {
+		exec ( "IPCONFIG /FLUSHDNS" ) ;
+	    }
+	
+
+	/*==============================================================================================================
+	
+	    find_cookie_variable -
+	        Locates a cookie variable. Sets $cookie_data to hold all the values in the cookie file, and $index to
+		the index of the searched variable.
+		Issues an error if no cookie file id has been specified and the variable is present in more than one
+		file, or if the variable was not found.
+	
+	  ==============================================================================================================*/
+	function  find_cookie_variable ( $variable, $cookie_id, &$cookie_data )
+	   {
+		$cookie_data	=  [] ;
+		$cookies	=  get_cookie_store_data ( ) ;
+		$current_index	=  0 ;
+		
+		foreach  ( $cookies  as  $cookie )
+		   {
+			if  ( ! strcasecmp ( $cookie [ 'variable' ], $variable )  &&
+				( ! $cookie_id  ||
+				  ! strcasecmp ( $cookie [ 'cookie' ], $cookie_id ) ) )
+			   {
+				$cookie_data []	=  $cookie ;
+			    }
+			
+			$current_index ++ ;
+		    }
+
+		return ( ( count ( $cookie_data ) ) ?  true : false ) ;
+	    }
+	
+	
+	/*==================================================================================================
+
+	    get_ie_paths -
+		Get all IE possible cache paths.
+
+	  ==================================================================================================*/
+	function  get_ie_paths ( $subkey = 'Cache', $title = 'cache', $subdir = "/Content.IE5" )
+	   {
+		$registry_keys =
+		   [
+			[ Registry::HKEY_CURRENT_USER, 'Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders'	, $subkey ],
+			[ Registry::HKEY_CURRENT_USER, 'Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders'	, $subkey ]
+		    ] ;	
+		
+		$registry			=  new Registry ( ) ;
+		$paths				=  [] ;
+		
+		// Get IE cache paths
+		foreach  ( $registry_keys  as  $key )
+		   {
+			$value		=  $registry -> GetStringValue ( $key [0], $key [1], $key [2] ) . $subdir ;
+			
+			if  ( ! $value )
+				continue ;
+			
+			$found		=  false ;
+			
+			foreach  ( $paths  as  $path )
+			   {
+				if  ( ! strcasecmp ( $path, $value ) )
+				   {
+					$found	=  true ;
+					break ;
+				    }
+			    }
+			
+			if  ( ! $found )
+			   {
+				if  ( ! file_exists ( $value )  ||  ! is_dir ( $value ) )
+					error ( "Incorrect IE $title path $path." ) ;
+				
+				$paths []	=  $value ;
+			    }
+		    }
+		
+		if  ( ! count ( $paths ) )
+			error ( "IE $title path not found." ) ;
+		
+		return ( $paths ) ;
+	    }
+	
+
+	/*==============================================================================================================
+	
+	    get_cookie_data -
+	        Returns formatted cookie data from a cookie data file.
+	
+	  ==============================================================================================================*/
+	function  get_cookie_data ( $file, &$cookies )
+	   {
+		$fp	=  fopen ( $file, "r" ) ;
+		$file	=  Path::ToWindows ( Path::RealPath ( $file ) ) ;
+		$size	=  filesize ( $file ) ;
+				
+		while  ( $data = get_cookie_variable ( $fp ) )
+		   {
+			$data [ 'file' ]	=  $file ;
+			$data [ 'filesize' ]	=  $size ;
+			$data [ 'cookie' ]	=  pathinfo ( $file, PATHINFO_FILENAME ) ;
+					
+			$cookies []		=  $data ;
+		    }
+				
+		fclose ( $fp ) ;
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    get_cookie_store_data -
+	        Returns formatted cookie data.
+	
+	  ==============================================================================================================*/
+	function  get_cookie_store_data ( )
+	   {
+		static		$registry_keys =
+		   [
+			[ Registry::HKEY_CURRENT_USER, 'Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders'	, 'Cookies' ],
+			[ Registry::HKEY_CURRENT_USER, 'Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders'	, 'Cookies' ]
+		    ] ;	
+		
+		global		$CookieData ;
+		
+		
+		if  ( $CookieData  !==  false )
+			return ( $CookieData ) ;
+		
+		$paths		=  get_ie_paths ( 'Cookies', 'cookies', '' ) ;
+		$CookieData	=  [] ;
+		
+		foreach  ( $paths  as  $path )
+		   {
+			$files	=  glob ( "$path/*" ) ;
+			
+			foreach  ( $files  as  $file )
+			   {
+				if  ( ! is_file ( $file ) )
+					continue ;
+				
+				if  ( strcasecmp ( pathinfo ( $file, PATHINFO_EXTENSION ), 'txt' ) )
+					continue ;
+				
+				get_cookie_data ( $file, $CookieData ) ;
+			    }
+		    }
+		
+		return ( $CookieData ) ;
+	    }
+	
+	
+	/*==================================================================================================
+
+	    get_cookie_variable -
+		Returns the next cookie variable from the specified file descriptor.
+		Returns false if no more cookies are available.
+	  
+	 	The format of an IE cookie file is a sequence of the following data lines :
+	 		variable name
+	 		variable value
+	 		flags
+	 		expiration time (low)
+	 		expiration time (high)
+	 		creation time (low)
+	 		creation time (high)
+	  
+	 	"flags" needs to be documented.
+	 	Expiration/creation times are Microsoft FILETIME values expressed in hundredths of 
+	 	nanoseconds since January 1st, 1601. The following expression converts it to Unix time :
+	  
+	 		unixtime	=  1E-7 * ( ( High << 32 ) | Low ) - 11644473600 
+	  
+	 	where :
+	 		. 1E-7 is the divider to convert the (hundreths of nanoseconds) result into seconds.
+	 		. "11644473600" is the number of seconds elapsed between 01/01/1601 and 01/01/1970.
+	 
+	  ==================================================================================================*/
+	function  get_cookie_variable ( $fp )
+	   {
+		// Read lines until EOF or until the first non-empty line is encountered
+		while  ( ( $line = fgets ( $fp ) )  !==  false )
+		   {
+			$line	=  trim ( $line ) ;
+			
+			if  ( $line  !=  '' )
+				break ;
+		    }
+
+		// No more cookie available in this file
+		if  ( ! $line )
+			return ( false ) ;
+		
+		// At least one cookie is available ; collect data until the separator ('*') is found
+		$lines	=  [] ;
+
+		do
+		   {
+			$line		=  trim ( $line ) ;
+			
+			if  ( $line  ==  '*' )
+				break ;
+			
+			$lines []	=  $line ;
+			
+		    } while  ( $line = fgets ( $fp ) ) ;
+		
+		// There must be at least 8 lines for cookie data
+		if  ( count ( $lines )  <  8 )
+			return ( false ) ;
+		
+		// Get individual elements
+		$vname			=  $lines [0] ;
+		$vvalue			=  trim ( $lines [1] ) ;
+		$domain			=  $lines [2] ;
+		$flags			=  ( integer ) $lines [3] ;
+		$expiration_time_low	=  ( double ) $lines [4] ;
+		$expiration_time_high	=  ( double ) $lines [5] ;
+		$creation_time_low	=  ( double ) $lines [6] ;
+		$creation_time_high	=  ( double ) $lines [7] ;
+		
+		// Analyze the contents of the variable value
+		// Quoted string : 
+		//	This syntax seems to allow special characters such as ';' or '%' not to be interpreted.
+		if  ( isset ( $vvalue [0] )  &&  $vvalue [0]  ==  '"' )
+		   {
+			$vvalue		=  substr ( $vvalue, 1, strlen ( $vvalue ) - 2 ) ;
+			$type		=  'string' ;
+		    }
+		// Encoded url data
+		else if  ( strpos ( $vvalue, '%' )  !==  false )
+		   {
+			$vvalue		=  rawurldecode ( $vvalue ) ;
+			$type		=  'url' ;
+		    }
+		// Other cases : raw data
+		else
+		   {
+			$type	=  'raw' ;
+		    }
+
+		// Cookie flags decoded
+		$flagnames	=  [] ;
+		$tempflags	=  $flags ;
+		
+		if  ( $tempflags  ==  0xFFFFFFFF  ||  $tempflags  ==  0x7FFFFFFF )
+			$flagnames []	=  sprintf ( "0x%08X", $flags ) ;
+		else
+		   {
+			if  ( $tempflags  &  INTERNET_COOKIE_IS_SECURE )
+			   {
+				$flagnames []	 =  'IS_SECURE' ;
+				$tempflags	&=  ~INTERNET_COOKIE_IS_SECURE ;
+			    }
+		
+			if  ( $tempflags  &  INTERNET_COOKIE_IS_SESSION )
+			   {
+				$flagnames []	 =  'IS_SESSION' ;
+				$tempflags	&=  ~INTERNET_COOKIE_IS_SESSION ;
+			    }
+		
+			if  ( $tempflags  &  INTERNET_COOKIE_THIRD_PARTY )
+			   {
+				$flagnames []	 =  'THIRD_PARTY' ;
+				$tempflags	&=  ~INTERNET_COOKIE_THIRD_PARTY ;
+			    }
+		
+
+			if  ( $tempflags  &  INTERNET_COOKIE_PROMPT_REQUIRED )
+			   {
+				$flagnames []	 =  'PROMPT_REQUIRED' ;
+				$tempflags	&=  ~INTERNET_COOKIE_PROMPT_REQUIRED ;
+			    }
+		
+			if  ( $tempflags  &  INTERNET_COOKIE_APPLY_P3P )
+			   {
+				$flagnames []	 =  'APPLY_P3P' ;
+				$tempflags	&=  ~INTERNET_COOKIE_APPLY_P3P ;
+			    }
+		
+			if  ( $tempflags  &  INTERNET_COOKIE_EVALUATE_P3P )
+			   {
+				$flagnames []	 =  'EVALUATE_P3P' ;
+				$tempflags	&=  ~INTERNET_COOKIE_EVALUATE_P3P ;
+			    }
+		
+			if  ( $tempflags  &  INTERNET_COOKIE_P3P_ENABLED )
+			   {
+				$flagnames []	 =  'P3P_ENABLED' ;
+				$tempflags	&=  ~INTERNET_COOKIE_P3P_ENABLED ;
+			    }
+		
+			if  ( $tempflags  &  INTERNET_COOKIE_IS_RESTRICTED )
+			   {
+				$flagnames []	 =  'IS_RESTRICTED' ;
+				$tempflags	&=  ~INTERNET_COOKIE_IS_RESTRICTED ;
+			    }
+		
+			if  ( $tempflags  &  INTERNET_COOKIE_IE6 )
+			   {
+				$flagnames []	 =  'IE6' ;
+				$tempflags	&=  ~INTERNET_COOKIE_IE6 ;
+			    }
+		
+			if  ( $tempflags  &  INTERNET_COOKIE_IS_LEGACY )
+			   {
+				$flagnames []	 =  'IS_LEGACY' ;
+				$tempflags	&=  ~INTERNET_COOKIE_IS_LEGACY ;
+			    }
+		
+			if  ( $tempflags  &  INTERNET_COOKIE_NON_SCRIPT )
+			   {
+				$flagnames []	 =  'NON_SCRIPT' ;
+				$tempflags	&=  ~INTERNET_COOKIE_NON_SCRIPT ;
+			    }
+		
+			if  ( $tempflags  &  INTERNET_COOKIE_HTTPONLY )
+			   {
+				$flagnames []	 =  'HTTPONLY' ;
+				$tempflags	&=  ~INTERNET_COOKIE_HTTPONLY ;
+			    }
+		
+			if  ( $tempflags  &  INTERNET_COOKIE_RESTRICTED_ZONE )
+			   {
+				$flagnames []	 =  'RESTRICTED_ZONE' ;
+				$tempflags	&=  ~INTERNET_COOKIE_RESTRICTED_ZONE ;
+			    }
+		
+			if  ( $tempflags  &  INTERNET_COOKIE_NO_CALLBACK )
+			   {
+				$flagnames []	 =  'NO_CALLBACK' ;
+				$tempflags	&=  ~INTERNET_COOKIE_NO_CALLBACK ;
+			    }
+		
+			if  ( $tempflags  &  INTERNET_COOKIE_ECTX_3RDPARTY )
+			   {
+				$flagnames []	 =  'ECTX_3RDPARTY' ;
+				$tempflags	&=  ~INTERNET_COOKIE_ECTX_3RDPARTY ;
+			    }
+		
+			if  ( $tempflags )
+				$flagnames []	=  sprintf ( "0x%08X", $tempflags ) ;
+		    }
+		
+		// Build cookie information
+		$expires	=  ( FILETIME_DIVIDER * ( ( $expiration_time_high * pow ( 2, 32 ) ) + $expiration_time_low ) ) - FILETIME_OFFSET ;
+		$created	=  ( FILETIME_DIVIDER * ( ( $creation_time_high   * pow ( 2, 32 ) ) + $creation_time_low   ) ) - FILETIME_OFFSET ;
+		$cookie		=  
+		   [
+			'variable'		=>  $vname,
+			'value'			=>  $vvalue,
+			'flags'			=>  $flags,
+			'flag-constants'	=>  $flagnames,
+			'flag-string'		=>  implode ( "\n", $flagnames ),
+			'domain'		=>  $domain,
+			'type'			=>  $type,
+			'expires'		=>  date ( 'Y/m/d H:i:s', $expires ),
+			'created'		=>  date ( 'Y/m/d H:i:s', $created ),
+			'expiration-time-low'	=>  $expiration_time_low,
+			'expiration-time-high'	=>  $expiration_time_high,
+			'creation-time-low'	=>  $creation_time_low,
+			'creation-time-high'	=>  $creation_time_high,
+		    ] ;	
+		
+		return ( $cookie ) ;
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    has_same_cookie_file -
+	        Ensures that all items in a cookie data array reference the same file.
+	
+	  ==============================================================================================================*/
+	function  has_same_cookie_file ( $cookie_data )
+	   {
+		$files	=  [] ;
+		
+		foreach  ( $cookie_data  as  $cookie )
+		   {
+			if  ( ! isset ( $files [ $cookie [ 'cookie' ] ] ) )
+				$files [ $cookie [ 'cookie' ] ]	=  true ;
+		    }
+		
+		return ( ( count ( $files )  >  1 ) ?  array_keys ( $files ) : false ) ;
+	    }
+	
+	
+	/*==================================================================================================
+
+	    is_non_empty -
+		Returns true if the specified line is neither comment nor an empty line.
+
+	  ==================================================================================================*/
+	function  is_non_empty ( $line )
+	   {
+		if  ( ! $line  ||  $line [0]  ==  '#' )
+			return ( false ) ;
+		else
+			return ( true ) ;
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    wipe_domain -
+	        Removes the url scheme part from a domain.
+	
+	  ==============================================================================================================*/
+	function  wipe_domain ( $domain )
+	   {
+		$wiped	=  preg_replace ( [ '#^[\w.]+://#', '#/.*$#' ], '', $domain ) ;
+		
+		return ( $wiped ) ;
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    write_cookie_file -
+	        Writes back a cookie file.
+	
+	  ==============================================================================================================*/
+	function  write_cookie_file ( $file, $data )
+	   {
+		$fp	=  fopen ( $file, "w" ) ;
+		
+		foreach  ( $data  as  $item )
+		   {
+			fputs ( $fp, $item [ 'variable'		    ] . "\n" ) ;
+			fputs ( $fp, $item [ 'value'		    ] . "\n" ) ;
+			fputs ( $fp, $item [ 'domain'		    ] . "\n" ) ;
+			fputs ( $fp, $item [ 'flags'		    ] . "\n" ) ;
+			fputs ( $fp, $item [ 'expiration-time-low'  ] . "\n" ) ;
+			fputs ( $fp, $item [ 'expiration-time-high' ] . "\n" ) ;
+			fputs ( $fp, $item [ 'creation-time-low'    ] . "\n" ) ;
+			fputs ( $fp, $item [ 'creation-time-high'   ] . "\n" ) ;
+			fputs ( $fp, "*\n" ) ;
+		    }
+		
+		fclose ( $fp ) ;
+	    }
+	
+	
+	/*==================================================================================================
+
+	    write_hostfile -
+		Writes the host file and make a backup.
+
+	  ==================================================================================================*/
+	function  write_hostfile ( $hostsfile, $new_contents, $old_contents )
+	   {
+		// Save original contents 
+		$backup		=  $hostsfile . "." . date ( 'Ymd-His' ) . '.backup' ;
+		file_put_contents ( $backup, $old_contents ) ;
+
+		// Write back the hosts file
+		exec ( "ATTRIB -R $hostsfile" ) ;
+		file_put_contents ( $hostsfile, $new_contents ) ;
+		exec ( "ATTRIB +R $hostsfile" ) ;
+		
+		// Return backup file name
+		return ( $backup ) ;
+	    }
+	
+	
+	/**************************************************************************************************************
+	 **************************************************************************************************************
+	 **************************************************************************************************************
+	 ******                                                                                                  ******
+	 ******                                                                                                  ******
+	 ******                                     SETTINGS MANAGEMENT				                 ******
+	 ******                                                                                                  ******
+	 ******                                                                                                  ******
+	 **************************************************************************************************************
+	 **************************************************************************************************************
+	 **************************************************************************************************************/
+	
+	/*==================================================================================================
+
+	    LoadSettings -
+		Loads IeCache settings.
+
+	  ==================================================================================================*/
+	function  LoadList ( $file, &$array, $associative = true )
+	   {
+		if  ( ! file_exists ( $file ) )
+			$array	=  [] ;
+		else
+		   {
+			$lines	=  file ( $file ) ;
+			$array	=  [] ;
+			
+			foreach  ( $lines  as  $line )
+			   {
+				$line			=  trim ( $line ) ;
+				
+				if  ( $associative )
+					$array [ strtolower ( $line ) ]	=  $line ;
+				else 
+					$array []			=  $line ;
+			    }
+		    }
+	    }
+	
+	
+	function  LoadSettings ( $configuration_file ) 
+	   {
+		global		$BannedIpsFile, $BannedDomainsFile, $VisitedPagesFile, $IgnoredDomainsFile,
+				$BannedIps, $BannedDomains, $VisitedPages, $IgnoredDomains,
+				$SaveVisitedPages,
+				$RouteTo,
+				$IgnoredExtensions ;
+		
+		
+		if  ( ! file_exists ( $configuration_file ) )
+			error ( "Could not open configuration file $configuration_file." ) ;
+		
+		$inifile		=  IniFile::LoadFromFile ( $configuration_file ) ;
+		
+		// Banned Ips
+		$BannedIpsFile		=  $inifile -> GetKey ( 'Settings', 'BannedIps' ) ;
+		LoadList ( $BannedIpsFile, $BannedIps ) ;
+		
+		// Banned domains
+		$BannedDomainsFile	=  $inifile -> GetKey ( 'Settings', 'BannedDomains' ) ;
+		LoadList ( $BannedDomainsFile, $BannedDomains ) ;
+		
+		// Ignored domains
+		$IgnoredDomainsFile	=  $inifile -> GetKey ( 'Settings', 'IgnoredDomains' ) ;
+		LoadList ( $IgnoredDomainsFile, $IgnoredDomains ) ;
+		
+		// Visited pages
+		$VisitedPagesFile	=  $inifile -> GetKey ( 'Settings', 'VisitedPages' ) ;
+		LoadList ( $VisitedPagesFile, $VisitedPages, false ) ;
+		
+		// Remove visited page references that do not exist any more (but keep comments !)
+		$count	=  count ( $VisitedPages ) ;
+		
+		for  ( $i = 0 ; $i  <  $count ; $i ++ )
+		   {
+			if  ( isset ( $VisitedPages [$i] )  &&  is_non_empty ( $VisitedPages [$i] )  &&  ! file_exists ( $VisitedPages [$i] ) )
+			   {
+				array_splice ( $VisitedPages, $i, 1 ) ;
+				$SaveVisitedPages	=  true ;
+				$count -- ;
+			    }
+		    }
+		
+		// Settings/RouteTo :
+		//	Route banned ips to this address.
+		$RouteTo		=  $inifile -> GetKey ( 'Settings', 'RouteTo' ) ;	// Where to route banned ips to
+		
+		if  ( ! $RouteTo )
+			error ( "No route defined for banned ip addresses." ) ;
+		
+		// Scan/IgnoredExtensions :
+		//	Ignored extensions for cache scanner.
+		$value			=  $inifile -> GetKey ( 'Scan', 'IgnoredExtensions' ) ;
+		$extensions		=  explode ( ' ', preg_replace ( '/[\s,]+/', ' ', $value ) ) ;
+		$IgnoredExtensions	=  [] ;
+		
+		foreach  ( $extensions  as  $extension )
+		   {
+			$extension	=  strtolower ( $extension ) ;
+			
+			if  ( $extension [0]  ==  '.' )
+				$extension	=  substr ( $extension, 1 ) ;
+			
+			if  ( ! in_array ( $extension, $IgnoredExtensions ) )
+				$IgnoredExtensions []	=  $extension ;
+		    }
+	    }
+	
+	
+	/*==================================================================================================
+
+	    SaveSettings -
+		Saves IeCache settings.
+
+	  ==================================================================================================*/
+	function  sort_by_domain ( $a, $b )
+	   {
+		$aparts		=  explode ( '.', $a ) ;
+		$bparts		=  explode ( '.', $b ) ;
+		$acount		=  count ( $aparts ) ;
+		$bcount		=  count ( $bparts ) ;
+		
+		
+		if  ( $acount  >  1  &&  $bcount  >  1 )
+		   {
+			$a	=  $aparts [ $acount - 2 ] . '.' . $aparts [ $acount - 1 ] ;
+			$b	=  $bparts [ $bcount - 2 ] . '.' . $bparts [ $bcount - 1 ] ;
+		    }
+		
+		return ( strcasecmp ( $a, $b ) ) ;
+	    }
+	
+	function  SaveSettings ( $configuration_file ) 
+	   {
+		global		$BannedIpsFile, $BannedDomainsFile, $VisitedPagesFile, $IgnoredDomainsFile,
+				$BannedIps, $BannedDomains, $VisitedPages, $IgnoredDomains ;
+		global		$SaveBannedIps, $SaveBannedDomains, $SaveIgnoredDomains, $SaveVisitedPages ;
+		
+		
+		if  ( $SaveBannedIps )
+		   {
+			file_put_contents ( $BannedIpsFile	, implode ( PHP_EOL, $BannedIps ) ) ;
+		    }
+		
+		if  ( $SaveBannedDomains )
+		   {
+			usort ( $BannedDomains, 'sort_by_domain' ) ;
+			file_put_contents ( $BannedDomainsFile	, implode ( PHP_EOL, $BannedDomains ) ) ;
+		    }
+		
+		if  ( $SaveIgnoredDomains )
+		   {
+			sort ( $IgnoredDomains, SORT_STRING | SORT_FLAG_CASE ) ;
+			file_put_contents ( $IgnoredDomainsFile	, implode ( PHP_EOL, $IgnoredDomains ) ) ;
+		    }
+		
+		if  ( $SaveVisitedPages )
+		   {
+			file_put_contents ( $VisitedPagesFile	, implode ( PHP_EOL, $VisitedPages ) ) ;
+		    }
+	    }
+	
+	
+	/*==================================================================================================
+
+	    CollectScans -
+		Collects timestamps in the visited pages array.
+
+	  ==================================================================================================*/
+	function  CollectScans ( &$visited_pages, &$collected_scans )
+	   {
+		global	$SaveVisitedPages ;
+		
+		static	$re		=  '#
+						(?P<date> 
+							(?P<year> \d{2,4})
+							[-]?
+							(?P<month> \d{1,2})
+							[-]?
+							(?P<day> \d{1,2})
+						 )
+						 \s*
+						(?P<time> 
+							(?P<hour> \d{1,2})
+							[:]?
+							(?P<minute> \d{1,2})
+							(
+								[:]?
+								(?P<second> \d{1,2})
+							 )
+						 )
+						\s+
+						\(?
+							(?P<crc> \d+)
+						\)?
+					    #imsx' ;
+						
+		$collected_scans	=  [] ;
+		$index			=  0 ;
+		
+		// Initial scan may not have a timestamp
+		if  ( isset ( $visited_pages [0] )  &&  ! preg_match ( $re, $visited_pages [0] ) )
+		   {
+			$collected_scans []	=  [ 'date' => '0000-00-00', 'time' => '00:00:00', 'crc' => 0, 'page' => 0 ] ;
+		    }
+		
+		// Scan visited pages for a potential timestamp
+		foreach  ( $visited_pages  as  $page )
+		   {
+			if  ( preg_match ( $re, $page, $match ) )
+			   {
+				$year	=  isset ( $match [ 'year'   ] ) ?  sprintf ( "%04d", $match [ 'year'   ] ) : "0000" ;
+				$month	=  isset ( $match [ 'month'  ] ) ?  sprintf ( "%02d", $match [ 'month'  ] ) : "00" ;
+				$day	=  isset ( $match [ 'day'    ] ) ?  sprintf ( "%02d", $match [ 'day'    ] ) : "00" ;
+				$hour	=  isset ( $match [ 'hour'   ] ) ?  sprintf ( "%02d", $match [ 'hour'   ] ) : "00" ;
+				$minute	=  isset ( $match [ 'minute' ] ) ?  sprintf ( "%02d", $match [ 'minute' ] ) : "00" ;
+				$second	=  isset ( $match [ 'second' ] ) ?  sprintf ( "%02d", $match [ 'second' ] ) : "00" ;
+				$crc	=  $match [ 'crc' ] ;
+				
+				$collected_scans []	=  
+				   [ 
+					'date'	=>  "$year-$month-$day",
+					'time'	=>  "$hour:$minute:$second", 
+					'crc'	=>  $crc, 
+					'page'	=>  $index 
+				    ] ;
+				$count			=  count ( $collected_scans ) ;
+			
+				// If we have more than 1 scan available, then check that the previous one is not empty
+				if  ( $count  >  1 )
+				   {
+					$last1	=  $collected_scans [ $count - 1 ] ;
+					$last2	=  $collected_scans [ $count - 2 ] ;
+		
+					// Last one is empty...
+					if  ( $last1 [ 'page' ]  ==  $last2 [ 'page' ] + 1 )
+					   {
+						array_splice ( $collected_scans, $count - 2, 1 ) ;
+						array_splice ( $visited_pages  , $collected_scans [ $count - 2 ] [ 'page' ], 1 ) ;
+						$SaveVisitedPages	=  true ;
+					    }
+				    }
+			    }
+			
+			$index ++ ;
+		    }
+
+		// Set the page count for each collected scan 
+		for  ( $i = 0 ; $i  < count ( $collected_scans ) - 1 ; $i ++ )
+			$collected_scans [$i] [ 'page-count' ]	=  $collected_scans [$i + 1] [ 'page' ] - $collected_scans [$i] [ 'page' ] - 1 ;
+		
+		$last	= count ( $collected_scans ) - 1 ;
+
+		if  ( $last  >  0 )
+			$collected_scans [$last] [ 'page-count' ]	=  $index - $collected_scans [$last] [ 'page' ] - 1 ;
+		else 
+			$collected_scans [0] [ 'page-count' ]		=  $index - 1 ;
+	    }
+
+	
+	/*==================================================================================================
+
+	    GetScanIndex -
+		Analyze the value specified with the -since parameter and returns the index of the first 
+		visited page that needs to be rescanned.
+
+	  ==================================================================================================*/
+	function  GetScanIndex ( $since, &$message, $reset = false )
+	   {
+		global		$VisitedPages, $CollectedScans, $IgnoreScannedPages ;
+
+
+		$scan_index	=  false ;
+		$scan_keys	=  array_keys ( $CollectedScans ) ;
+		
+		// If -ignore_scanned_pages flag specified, scan from the beginning
+		if  ( $IgnoreScannedPages )
+			$scan_index	=  0 ;
+		// No -since parameter specified : start scan from last scan
+		else if  ( $since  ===  "" )
+		   {
+			$scan_index	=  count ( $CollectedScans ) - 1 ;
+			$entry		=  $CollectedScans [ $scan_keys [ $scan_index ] ] ;
+			
+			if  ( $reset )
+				$message	=  "Resetting up to scan results dated from {$entry [ 'date' ]} at {$entry [ 'time' ]}..."  ;
+			else
+				$message	=  "Scanning after last scan results dated from {$entry [ 'date' ]} at {$entry [ 'time' ]}..."  ;
+			
+			return ( count ( $VisitedPages ) ) ;
+		    }
+		// Check if a CRC value has been given
+		else if  ( preg_match ( '/^\d+$/', $since ) )
+		   {
+			for  ( $i = count ( $scan_keys ) - 1 ;  $i  >=  0 ; $i -- )
+			   {
+				if  ( $CollectedScans [ $scan_keys [$i] ] [ 'crc' ]  ==  $since )
+				    {
+					$scan_index	=  $i ;
+					break ;
+				     }
+			    }
+			
+			if  ( $scan_index  ===  false )
+				error ( "Invalid scan crc value \"$since\"." ) ;
+		    }
+		// Otherwise this may be a date/time value in a format understable by the strtotime() function
+		else if  ( ! $reset )
+		   {
+			$date	=  strtotime ( $since ) ;
+			
+			if  ( $date  ===  false )
+				error ( "Invalid date/time specification : \"$since\"." ) ;
+			
+			for  ( $i = count ( $scan_keys ) - 1 ;  $i  >=  0 ; $i -- )
+			   {
+				$entry		=  $CollectedScans [ $scan_keys [$i] ] ;
+				$current_date	=  strtotime ( $entry [ 'date' ] . " " . $entry [ 'time' ] ) ;
+				
+				if  ( $current_date  <=  $date )
+				   {
+					$scan_index	=  ( $i + 1 )  <  count ( $CollectedScans ) ?  $i + 1 : $i ;
+					break ;
+				    }
+			    }
+			
+			if  ( $scan_index  ===  false )
+				error ( "Invalid scan date/time specification \"$since\"." ) ;
+		    }
+		
+
+		// If scan index is zero, then we will have to search from the beginning
+		if  ( $scan_index  ===  0 )
+		    {
+			$scan_index	=  count ( $CollectedScans ) - 1 ;
+			$entry		=  $CollectedScans [ $scan_keys [ $scan_index ] ] ;
+			
+			if  ( $reset )
+				$message	=  "Resetting from the beginning..." ;
+			else
+				$message	=  "Scanning from the beginning..." ;
+			
+			return ( 0 ) ;
+		     }
+		// Otherwise, start scan from the first collected scan information which matches the date or crc supplied
+		else
+		    {
+			$entry	=  $CollectedScans [ $scan_keys [ $scan_index ] ] ;
+			
+			$message	=  "Scanning after scan results dated from {$entry [ 'date' ]} at {$entry [ 'time' ]}..."  ;
+			return ( $entry [ 'page' ] ) ;
+		     }
+	    }
+
+	
+	/*==================================================================================================
+
+	    ResetCache -
+		Resets the cache up to but not including the specified scan id.
+
+	  ==================================================================================================*/
+	function  ResetCache ( $index, $message )
+	   {
+		global		$VisitedPages ;
+		
+		
+		output ( $message ) ;
+		$deleted_files		= 0 ;
+		
+		for  ( $i = 0 ; $i  <  $index ; $i ++ )
+		   {
+			if  ( is_non_empty ( $VisitedPages [$i] ) )
+			   {
+				output ( "Deleting {$VisitedPages [$i]}..." ) ;
+				unlink ( $VisitedPages [$i] ) ;
+				$deleted_files ++ ;
+			    }
+			
+			array_slice ( $VisitedPages, $i, 1 ) ;
+		    }
+		
+		output ( "$deleted_files files deleted." ) ;
+	    }
+	
+	
+	/**************************************************************************************************************
+	 **************************************************************************************************************
+	 **************************************************************************************************************
+	 ******                                                                                                  ******
+	 ******                                                                                                  ******
+	 ******                                 OPTION PROCESSING FUNCTIONS					 ******
+	 ******                                                                                                  ******
+	 ******                                                                                                  ******
+	 **************************************************************************************************************
+	 **************************************************************************************************************
+	 **************************************************************************************************************/
+
+	
+	/*==============================================================================================================
+	
+	    DeleteCookies -
+	        Delete cookies either by domain name, variable name or file name.
+	
+	  ==============================================================================================================*/
+	function  DeleteCookies ( $patterns )
+	   {
+		$cookies	=  get_cookie_store_data ( ) ;
+		$deleted_files	=  [] ;
+		
+		// Patterns specified : match on both variable name, domain name or cookie filename
+		if  ( count ( $patterns ) )
+		   {
+			foreach  ( $cookies  as  $cookie )
+			   {
+				foreach  ( $patterns  as  $pattern )
+				   {
+					if  ( String::Matches ( $cookie [ 'variable' ], $pattern, true )  ||
+					      String::Matches ( $cookie [ 'domain'   ], $pattern, true )  ||
+					      String::Matches ( $cookie [ 'cookie'   ], $pattern, true ) )
+						$deleted_files [ $cookie [ 'cookie' ] ]	=  $cookie ;
+				    }
+			    }
+		    }
+		// No pattern specified : delete everything
+		else
+		   {
+			foreach  ( $cookies  as  $cookie )
+				$deleted_files [ $cookie [ 'cookie' ] ]	=  $cookie ;
+		    }
+
+		// Deletion loop
+		$total_size	=  0 ;
+		
+		foreach  ( $deleted_files  as  $file )
+		   {
+			unlink ( $file [ 'file' ] ) ;
+			$total_size	+=  $file [ 'filesize' ] ;
+		    }
+		
+		// Generate a report
+		if  ( count ( $deleted_files ) )
+		   {
+			$report		=  new AsciiReport
+			   (
+				[ 'member'	=>  'file'	, 'title' => 'File'	],
+				[ 'member'	=>  'filesize'	, 'title' => 'Size'	],
+				[ 'member'	=>  'created'	, 'title' => 'Created'	],
+				[ 'member'	=>  'expires'	, 'title' => 'Expires'	]
+			    ) ;
+		
+			echo $report -> Generate ( $deleted_files ) ;
+			echo $report -> Summary ( 'cookie file', null, ', ' . number_format ( $total_size, 0, '.', ' ' ) . ' bytes freed' ) ;
+		    }
+		else
+			output ( "Specified argument(s) did not match any cookie. No cookie file deleted." ) ;
+	    }
+
+	
+	/*==============================================================================================================
+	
+	    DisplayCookies -
+	        Displays summary cookie information.
+	
+	  ==============================================================================================================*/
+	function  DisplayCookies ( )
+	   {
+		global		$SortCookiesBy ;
+		
+		$cookies	=  get_cookie_store_data ( ) ;
+		$files		=  [] ;
+		$data		=  [] ;
+		$total_size	=  0 ;
+
+		foreach  ( $cookies  as  $cookie )
+		   {
+			$file	=  $cookie [ 'file' ] ;
+			
+			if  ( ! isset ( $files [ $file ] ) )
+				$files [ $file ]	=  
+				   [ 
+					'file'		=> $file,
+					'domains'	=> [], 
+					'variables'	=> [], 
+					'size'		=> $cookie [ 'filesize' ],
+					'created'	=> filectime ( $file ) 
+				    ] ;
+			
+			if  ( ! in_array ( $cookie [ 'domain' ], $files [ $file ] [ 'domains' ] ) )
+				$files [ $file ] [ 'domains' ] []	=  $cookie [ 'domain' ] ;
+			
+			if  ( ! in_array ( $cookie [ 'variable' ], $files [ $file ] [ 'variables' ] ) )
+				$files [ $file ] [ 'variables' ] []	=  $cookie [ 'variable' ] ;
+
+			$total_size		+=  $cookie [ 'filesize' ] ;
+		    }
+		
+		$sort_function		=  function  ( $a, $b ) use ( $SortCookiesBy )
+		   {
+			switch  ( $SortCookiesBy )
+			   {
+				case	SORT_COOKIE_BY_FILENAME :
+					return ( strcmp ( $a [ 'file' ], $b [ 'file' ] ) ) ;
+					
+				case	SORT_COOKIE_BY_SIZE :
+					return ( $a [ 'size' ] - $b [ 'size' ] ) ;
+					
+				case	SORT_COOKIE_BY_CREATION_DATE :
+				default :
+					return ( strcasecmp ( $a [ 'created' ], $b [ 'created' ] ) ) ;
+			    }
+		    } ;
+		
+		usort ( $files, $sort_function ) ;
+		
+		foreach  ( $files  as  $info )
+		   {
+			$row		=  
+			   [
+				'Cookie'	=>  pathinfo ( $info [ 'file' ], PATHINFO_FILENAME ),
+				'Domain'	=>  implode ( "\n", $info [ 'domains' ] ),
+				'Variables'	=>  implode ( "\n", $info [ 'variables' ] ),
+				'Size'		=>  number_format ( $info [ 'size' ], 0, '.', ' ' ),
+				'Creation date'	=>  date ( 'Y/m/d H:i:s', $info [ 'created' ] ) 
+			    ] ;
+			
+			$data []	=  $row ;
+		    }
+		
+		$data []	=  "!=" ;
+		$data []	=  
+		   [
+			'Cookie'	=>  '',
+			'Domain'	=>  '',
+			'Variables'	=>  '',
+			'Size'		=>  number_format ( $total_size, 0, '.', ' ' ),
+			'Creation date'	=>  'Total size'
+		    ] ;
+		
+		$report		=  new AsciiReport
+		   (
+			[ 'member' => 'Creation date'				],
+			[ 'member' => 'Domain'					],
+			[ 'member' => 'Variables'				],
+			[ 'member' => 'Size'		, 'align' => 'right'	],
+			[ 'member' => 'Cookie'		, 'align' => 'left'	]
+		    ) ;
+		
+		echo $report -> Generate ( $data ) ;
+		echo $report -> Summary ( 'cookie', null, null, 1 ) ;
+	    }
+	
+
+	/*==============================================================================================================
+	
+	    DisplayCookieVariables -
+	        Displays cookie variables.
+	
+	  ==============================================================================================================*/
+	function  DisplayCookieVariables ( $pattern )
+	   {
+		global		$SortCookiesBy ;
+		
+		$cookies	=  get_cookie_store_data ( ) ;
+		
+		if  ( $pattern )
+		   {
+			$data		=  [] ;
+			$re		=  "/$pattern/imsx" ;
+			$test_result	=  @preg_match ( $re, "" ) ;
+			
+			if  ( $test_result  ===  false )
+				error ( "Invalid regular expression : $pattern" ) ;
+			
+			foreach  ( $cookies  as  $cookie )
+			   {
+				if  ( preg_match ( $re, $cookie [ 'variable' ] )  ||
+				      preg_match ( $re, $cookie [ 'value'    ] )  ||
+				      preg_match ( $re, $cookie [ 'domain'   ] )  ||
+				      preg_match ( $re, $cookie [ 'file'     ] ) )
+					$data []	=  $cookie ;
+			    }
+		    }
+		else
+			$data	=  $cookies ;
+
+		$sort_function		=  function  ( $a, $b ) use ( $SortCookiesBy )
+		   {
+			switch  ( $SortCookiesBy )
+			   {
+				case	SORT_COOKIE_BY_FILENAME :
+					return ( strcmp ( $a [ 'file' ], $b [ 'file' ] ) ) ;
+					
+				case	SORT_COOKIE_BY_CREATION_DATE :
+					return ( strcasecmp ( $a [ 'created' ], $b [ 'created' ] ) ) ;
+					
+				case    SORT_COOKIE_BY_DOMAIN :
+					return ( strcasecmp ( $a [ 'domain' ], $b [ 'domain' ] ) ) ;
+					
+				case    SORT_COOKIE_BY_VALUE :
+					return ( strcasecmp ( $a [ 'value' ], $b [ 'domain' ] ) ) ;
+					
+				case	SORT_COOKIE_BY_VARIABLE :
+				default :
+					return ( strcasecmp ( $a [ 'variable' ], $b [ 'variable' ] ) ) ;
+			    }
+		    } ;
+		
+		if  ( count ( $data ) )
+		   {
+			usort ( $data, $sort_function ) ;
+		
+			$report		=  new AsciiReport
+			   (
+				[ 'member' => 'variable'	, 'title' => 'Variable'	, 'width' => 24, 'overflow' => 'wrap'				],
+				[ 'member' => 'value'		, 'title' => 'Value'	, 'width' => 40, 'overflow' => 'wrap', 'align' => 'left'	],
+				[ 'member' => 'domain'		, 'title' => 'Domain'	, 'width' => 30, 'overflow' => 'wrap'				],
+				[ 'member' => 'cookie'		, 'title' => 'Cookie'									],
+				[ 'member' => 'type'		, 'title' => 'Type'									],
+				[ 'member' => 'flag-string'	, 'title' => 'Flags'	, 'width' => 15, 'overflow' => 'wrap', 'align' => 'left'	],
+				[ 'member' => 'expires'		, 'title' => 'Expires'									]
+			    ) ;
+		
+			echo $report -> Generate ( $data ) ;
+			echo $report -> Summary ( 'variable', null, null, 1 ) ;
+		    }
+		else
+			output ( "no match." ) ;
+	    }
+	
+
+	/*==============================================================================================================
+	
+	    DisplayList -
+	        Displays a list of blocked/ignored things.
+	
+	  ==============================================================================================================*/
+	function  DisplayList ( $title, $array, $nice, $sort = false, $sort_function = false )
+	   {
+		if  ( $sort )
+		   {
+			if  ( $sort_function )
+				usort ( $array, $sort_function ) ;
+			else
+				sort ( $array, SORT_STRING |  SORT_FLAG_CASE ) ;
+		    }
+		
+		if  ( $nice )
+		   {
+			$report		=  new  AsciiReport ( [ [ 'member' => 'item', 'title' => $title ] ] ) ;
+			$data		=  [] ;
+			
+			foreach  ( $array  as  $item )
+			   {
+				if  ( is_non_empty ( $item ) )
+					$data []	=  [ 'item' => $item ] ;
+			    }
+			
+			echo  $report -> Generate ( $data ) ;
+			echo  $report -> Summary ( strtolower ( $title ) ) ;
+		    }
+		else
+		   {
+			foreach  ( $array  as  $item )
+			   {
+				if  ( is_non_empty ( $item ) )
+					output ( $item ) ;
+			    }
+		    }
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    DisplayRoutes -
+	        Displays the list of commands needed to block or unblock ip addresses.
+	
+	  ==============================================================================================================*/
+	function  DisplayRoutes ( $ips, $unblock = false )
+	   {
+		foreach  ( $ips  as  $item )
+		   {
+			if  ( is_non_empty ( $item ) )
+			   {
+				if  ( $unblock ) 
+					$cmd	=  "ROUTE DELETE $item" ;
+				else
+					$cmd	=  "ROUTE ADD $item MASK 255.255.255.255 $$item -p" ;				
+				
+				output ( $cmd ) ;
+			    }
+		    }
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    DisplayScans -
+	        Display past scan timestamps.
+	
+	  ==============================================================================================================*/
+	function  DisplayScans ( $scans )
+	   {
+		global		$VisitedPages ;
+		
+		$report		=  new AsciiReport
+		  (
+			[ 'member' => 'date'		, 'title' => 'Date'						],
+			[ 'member' => 'time'		, 'title' => 'Time'						],
+			[ 'member' => 'crc'		, 'title' => 'crc16'						],
+			[ 'member' => 'page-count'	, 'title' => 'Pages'						],
+			[ 'member' => 'size'		, 'title' => 'Size'   , 'align' => 'right'			],
+			[ 'member' => 'max-size'	, 'title' => 'Max'    , 'align' => 'right'			],
+			[ 'member' => 'guilty-file'	, 'title' => 'File'   , 'width' => 80, 'overflow' => 'wrap'	]
+		   ) ;
+		
+		$total_size		=  0 ;
+		$total_max_size		=  0 ;
+		$keys			=  array_keys ( $VisitedPages ) ;
+
+		foreach  ( $scans  as  &$scan )
+		   {
+			$size		=  0 ;
+			$max_size	=  0 ;
+			$start_index	=  $scan [ 'page' ] ;
+			$end_index	=  min ( $start_index + $scan [ 'page-count' ], count ( $keys ) ) ;
+			$guilty		=  "" ;
+		
+			for  (  $i = $start_index ; isset ( $keys [$i] )  &&  $i  <  $end_index ; $i ++ )
+			   {
+				$page	=  $VisitedPages [ $keys [$i] ] ;
+				
+				if  ( is_non_empty ( $page )  &&  file_exists ( $page ) )
+				   {
+					$filesize	=  filesize ( $page ) ;
+					
+					$size		+=  $filesize ;
+					$total_size	+=  $filesize ;
+					
+					if  ( $max_size  <  $filesize )
+					   {
+						$max_size		=  $filesize ;
+						$guilty			=  basename ( dirname ( $page ) ) . "\\" . basename ( $page ) ;
+					    }
+					
+					if  ( $total_max_size  <  $filesize )
+						$total_max_size		=  $filesize ;
+				    }
+			    }
+			
+			$scan [ 'size' ]	=  number_format ( $size, 0, '.', ' ' ) ;
+			$scan [ 'max-size' ]	=  number_format ( $max_size, 0, '.', ' ' ) ;
+			$scan [ 'guilty-file' ]	=  $guilty ;
+		    }
+		
+		$page_count	=  count ( $VisitedPages )  -  count ( $scans ) ;
+		
+		if  ( $scans [0] [ 'date' ]  !=  '0000-00-00' )
+			$page_count ++ ;
+		
+		$scans []	=  '!=' ;
+		$scans []	=  
+		   [
+			'date'		=>  'Total :',
+			'time'		=>  '',
+			'crc'		=>  '',
+			'page-count'	=>  $page_count,
+			'size'		=>  number_format ( $total_size, 0, '.', ' ' ),
+			'max-size'	=>  number_format ( $total_max_size, 0, '.', ' ' )
+		    ] ;
+		
+		echo $report -> Generate ( $scans ) ;
+		echo $report -> Summary ( 'scan' ) ;
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    BlockDomain -
+	        Blocks the specified domain.
+	
+	  ==============================================================================================================*/
+	function  BlockDomain ( &$list, &$domain, $verbose_level )
+	   {
+		global		$SaveBannedDomains ;
+
+		
+		$domain		=  wipe_domain ( $domain )  ;
+
+		if  ( ! in_array ( $domain, $list ) )
+		   {
+			$list []		=  $domain ;
+			$SaveBannedDomains	=  true ;
+		    }
+		else
+			warning ( "Domain $domain was already blocked." ) ;
+		
+		if  ( $verbose_level )
+			output ( "Address $domain has been blocked." ) ;
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    UnblockDomain -
+	        Unblocks the specified domain.
+	
+	  ==============================================================================================================*/
+	function  UnblockDomain ( &$list, &$domain, $verbose_level )
+	   {
+		global		$SaveBannedDomains ;
+		
+		
+		$domain		=  wipe_domain ( $domain ) ;
+
+		if  ( in_array ( $domain, $list ) )
+		   {
+			for  ( $i = 0 ; $i  < count ( $list ) ; $i ++ )
+			   {
+				if  ( $list [$i]  ==  $domain )
+				   {
+					array_splice ( $list, $i, 1 ) ;
+					break ;
+				    }
+			    }
+			
+			$SaveBannedDomains	=  true ;
+		    }
+		else
+			warning ( "Domain $domain was not blocked." ) ;
+		
+		if  ( $verbose_level )
+			output ( "Domain $domain has been unblocked." ) ;
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    IgnoreDomain -
+	        Ignores the specified domain.
+	
+	  ==============================================================================================================*/
+	function  IgnoreDomain ( &$list, $domain, $verbose_level )
+	   {
+		global		$SaveIgnoredDomains ;
+
+		
+		$domain		=  wipe_domain ( $domain ) ;
+			
+		if  ( ! in_array ( $domain, $list ) )
+		   {
+			$list []		=  $domain ;
+			$SaveIgnoredDomains	=  true ;
+		    }
+		else
+			warning ( "Domain $domain was already ignored." ) ;
+		
+		if  ( $verbose_level )
+			output ( "Address $domain has been ignored." ) ;
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    UnignoreDomain -
+	        Unignores the specified domain.
+	
+	  ==============================================================================================================*/
+	function  UnignoreDomain ( &$list, $domain, $verbose_level )
+	   {
+		global		$SaveIgnoredDomains ;
+		
+		$domain		=  wipe_domain ( $domain ) ;
+			
+		if  ( in_array ( $domain, $list ) )
+		   {
+			for  ( $i = 0 ; $i  < count ( $list ) ; $i ++ )
+			   {
+				if  ( $list [$i]  ==  $domain )
+				   {
+					array_splice ( $list, $i, 1 ) ;
+					break ;
+				    }
+			    }
+			
+			$SaveIgnoredDomains	=  true ;
+		    }
+		else
+			warning ( "Domain $domain was not ignored." ) ;
+		
+		if  ( $verbose_level )
+			output ( "Domain $domain has been unignored." ) ;
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    BlockIpAddress -
+	        Blocks the specified IP address.
+	
+	  ==============================================================================================================*/
+	function  BlockIpAddress ( &$list, $address, $verbose_level )
+	   {
+		global		$SaveBannedIps ;
+
+		
+		if  ( ! in_array ( $address, $list ) )
+		   {
+			$list []	=  $address ;
+			$SaveBannedIps	=  true ;
+		    }
+		else
+			warning ( "Address $address was already blocked." ) ;
+		
+		if  ( $verbose_level )
+			output ( "Address $address has been blocked." ) ;
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    UnblockIpAddress -
+	        Unblocks the specified IP address.
+	
+	  ==============================================================================================================*/
+	function  UnblockIpAddress ( &$list, $address, $verbose_level )
+	   {
+		global		$SaveBannedIps ;
+		
+		if  ( in_array ( $address, $list ) )
+		   {
+			for  ( $i = 0 ; $i  < count ( $list ) ; $i ++ )
+			   {
+				if  ( $list [$i]  ==  $address )
+				   {
+					array_splice ( $list, $i, 1 ) ;
+					break ;
+				    }
+			    }
+			
+			$SaveBannedIps		=  true ;
+		    }
+		else
+			warning ( "Address $address was not blocked." ) ;
+		
+		if  ( $verbose_level )
+			output ( "Address $address has been unblocked." ) ;
+	    }
+	
+	
+	/*==================================================================================================
+
+	    BlockIpAddresses -
+		Blocks the whole list of banned ip addresses.
+
+	  ==================================================================================================*/
+	function  BlockIpAddresses ( $list, $route_to, $verbose_level )
+	   {
+		if  ( $verbose_level  >  1 )
+			$exec	=  'passthru' ;
+		else
+			$exec	=  'exec' ;
+		
+		$output		=  null ;
+		$count		=  0 ;
+		
+		foreach  ( $list  as  $item )
+		   {
+			if  ( is_non_empty ( $item ) )
+			   {
+				if  ( String::IsIpV6Address ( $item ) )
+					warning ( "IP V6 addresses are not supported ($item)." ) ;
+				else if  ( String::IsIpV4Address ( $item ) )
+				   {
+					$cmd	=  "ROUTE ADD $item MASK 255.255.255.255 $route_to -p" ;
+					
+					if  ( $verbose_level  >  1 )
+						output ( $cmd, $output ) ;
+					
+					$exec ( "$cmd  2>&1" ) ;
+					$count ++ ;
+				    }
+			    }
+		    }
+		
+		if  ( $verbose_level )
+			passthru ( "ROUTE PRINT" ) ;
+		
+		flush_dns ( ) ;
+		output ( "$count routes blocked." ) ;
+	    }
+	
+		
+	/*==================================================================================================
+
+	    UnblockIpAddresses -
+		Unblocks the whole list of banned ip addresses.
+
+	  ==================================================================================================*/
+	function  UnblockIpAddresses ( $list, $verbose_level )
+	   {
+		if  ( $verbose_level  >  1 )
+			$exec	=  'passthru' ;
+		else
+			$exec	=  'exec' ;
+		
+		$output		=  null ;
+		$count		=  0 ;
+		
+		foreach  ( $list  as  $item )
+		   {
+			if  ( is_non_empty ( $item ) )
+			   {
+				if  ( String::IsIpV6Address ( $item ) )
+					warning ( "IP V6 addresses are not supported ($item)." ) ;
+				else if  ( String::IsIpV4Address ( $item ) )
+				   {
+					$cmd	=  "ROUTE DELETE $item" ;
+					
+					if  ( $verbose_level  >  1 )
+						output ( $cmd, $output ) ;
+					
+					$exec ( "$cmd  2>&1" ) ;
+					$count ++ ;
+				    }
+			    }
+		    }
+		
+		if  ( $verbose_level )
+			passthru ( "ROUTE PRINT" ) ;
+		
+		flush_dns ( ) ;
+		output ( "$count routes unblocked." ) ;
+	    }
+	
+		
+	/*==================================================================================================
+
+	    BlockDomains -
+		Writes the blocked domain list to the hosts file.
+
+	  ==================================================================================================*/
+	function  BlockDomains ( $hostsfile, $list, $verbose_level )
+	   {
+		if  ( ! file_exists ( $hostsfile ) )
+			error ( "Could not access hosts file $hostsfile." ) ;
+		
+		$contents		=  file_get_contents ( $hostsfile ) ;
+		$start_position		=  strpos ( $contents, IECACHE_HOSTS_START ) ;
+		$end_position		=  strpos ( $contents, IECACHE_HOSTS_END ) ;
+		$iecache_contents	=  IECACHE_HOSTS_START . PHP_EOL ;
+		
+		foreach  ( $list  as  $item )
+			$iecache_contents	.=  "127.0.0.1 \t$item" . PHP_EOL ;
+		
+		$iecache_contents	.=  IECACHE_HOSTS_END . PHP_EOL ;
+		
+		if  ( $start_position  ===  false )
+			$result		=  $contents . PHP_EOL . $iecache_contents ;
+		else
+		   {
+			$result		=  substr ( $contents, 0, $start_position ) ;
+			
+			if  ( $end_position  ===  false ) 
+				$result	.=  $iecache_contents ;
+			else
+				$result .=  $iecache_contents .
+					    substr ( $contents, $end_position + strlen ( IECACHE_HOSTS_END . PHP_EOL ) ) ;
+		    }
+		
+		// Backup and save contents 
+		$backup		=  write_hostfile ( $hostsfile, $result, $contents ) ;
+		flush_dns ( ) ;
+		
+		output ( "Host file saved to $backup." ) ;
+	    }
+	
+	
+	/*==================================================================================================
+
+	    UnblockDomains -
+		Removes the blocked domain list from the hosts file.
+
+	  ==================================================================================================*/
+	function  UnblockDomains ( $hostsfile, $verbose_level )
+	   {
+		if  ( ! file_exists ( $hostsfile ) )
+			error ( "Could not access hosts file $hostsfile." ) ;
+		
+		$contents		=  file_get_contents ( $hostsfile ) ;
+		$start_position		=  strpos ( $contents, IECACHE_HOSTS_START ) ;
+		$end_position		=  strpos ( $contents, IECACHE_HOSTS_END ) ;
+		
+		if  ( $start_position  ===  false )
+			return ;
+		else
+		   {
+			// Normally, an end of line precedes the starting comment ; if this is the case (ie, it
+			// has not been removed from the hosts file), then remove it
+			$eol_length	=  strlen ( PHP_EOL ) ;
+			
+			if  ( ! strncmp ( substr ( $contents, $start_position - $eol_length, $eol_length ), PHP_EOL, $eol_length ) )
+				$start_position		-=  2 ;
+			
+			// Include hosts file up to starting comment
+			$result		=  substr ( $contents, 0, $start_position ) ;
+			
+			// ... and remove the part that concerns IeCache, up to the end of the ending comment
+			if  ( $end_position  !==  false ) 
+				$result .=  substr ( $contents, $end_position + strlen ( IECACHE_HOSTS_END . PHP_EOL ) ) ;
+		    }
+		
+		// Backup and save contents 
+		$backup		=  write_hostfile ( $hostsfile, $result, $contents ) ;
+		flush_dns ( ) ;
+		
+		output ( "Host file saved to $backup." ) ;
+	    }
+	
+	
+	/*==================================================================================================
+
+	    ScanFile -
+		Scans a cache file.
+
+	  ==================================================================================================*/
+	function  ScanFile ( $file )
+	   {
+		static		$SeenDomains	=  [] ;
+		
+		global		$VisitedPages, $BannedDomains, $BannedIps, $IgnoredDomains,
+				$IgnoredExtensions, $IgnoreScannedPages, $VerboseLevel ;
+		
+		
+		// Domain or ip address matching regex
+		static	$re	=  '#
+					\s* = \s*
+					["\']
+					(?P<url>
+						(?P<urlprefix> [\w\-]+ ://)?
+						(
+							(?P<ipv4> \d+\.\d+\.\d+\.\d+) |
+							(?P<fullurl>
+								(?P<domain> ( [\w\-%]+ [.] ){2,} [\w\-%]+ )
+								(?P<extra> .*?)
+							 )
+						 )
+					 )
+					["\']
+				    #imsx' ;
+			
+		// Get file contents
+		if  ( ! file_exists ( $file ) )
+		   {
+			warning ( "File $file deleted before first access." ) ;
+			return ( false ) ;
+		    }
+		
+		$contents	= file_get_contents ( $file ) ;
+		$results	=  [] ;
+		$line_index	=  1 ;
+		
+		// Process file contents
+		if  ( preg_match_all ( $re, $contents, $matches ) )
+		   {
+			// Process matches within the line
+			for  ( $i = 0 ; $i  <  count ( $matches [ 'url' ] ) ; $i ++ )
+			   {
+				$text	=  "" ;
+					
+				// Returned result will include an optional url scheme
+				if  ( $matches [ 'urlprefix' ] [$i] )
+					$text	=  $matches [ 'urlprefix' ] [$i] ;
+					
+				// IPV4 address
+				if  ( $matches [ 'ipv4' ] [$i] )
+				   {
+					$ip	=  $matches [ 'ipv4' ] [$i] ;
+						
+					// Check if valid IP address
+					if  ( ! String::IsIpV4Address ( $ip ) )
+						continue ;
+						
+					// Well, may also be a version number...
+					$parts		=  explode ( '.', $ip ) ;
+						
+					if  ( count ( $parts )  !=  4 )
+						continue ;
+						
+					// Check that all ip elements are bytes
+					$all_zeros	=  true ;
+						
+					foreach  ( $parts  as  $part )
+					   {
+						if  ( $part  <  0  ||  $part  >  255  ||  strlen ( $part )  >  3 )
+							continue 2 ;
+						
+						if  ( $part  !=  0 )
+							$all_zeros	=  false ;
+					    }
+						
+					if  ( $all_zeros )
+						continue ;
+
+					// This may be a real ip...
+					$text .= $ip ;
+				    }
+				// Domain name
+				else
+				   {
+					$domain		=  rawurldecode ( $matches [ 'domain' ] [$i] ) ;
+					$lcdomain	=  strtolower ( $domain ) ;
+						
+					// Exclude domains seen so far
+					if  ( isset ( $SeenDomains [ $lcdomain ] ) )
+						continue ;
+						
+					// Exclude invalid domains
+					$domain_length	=  strlen ( $domain ) ;
+		
+					for  ( $j = 0 ; $j < $domain_length ; $j ++ )
+					   {
+						$ch	=  $domain [$j] ;
+						
+						if  ( $ch  <  ' '  ||  $ch  >  '~' )
+							continue 2 ;
+					    }
+						
+					// Process blocked domains
+					if  ( isset ( $BannedDomains [ $lcdomain ] ) )
+						continue ;
+						
+					// Process ignored domains
+					if  ( isset ( $IgnoredDomains [ $lcdomain ] ) )		// Fast and optimistic optimization
+						continue ;
+						
+					foreach  ( $IgnoredDomains  as  $ignored_domain )
+					   {
+						if  ( $ignored_domain [0]  ==  '/' )
+						   {
+							if  ( preg_match ( $ignored_domain, $domain ) )
+								continue 2 ;
+						    }
+						else if  ( strcspn ( $ignored_domain, '*?[]' )  <  strlen ( $ignored_domain )  &&
+								Path::Matches ( $domain, $ignored_domain ) )
+							continue 2 ;
+					    }
+						
+					// Well, may also be a version number... If all domain components are integers
+					$parts		=  explode ( '.', $domain ) ;
+						
+					// Check that all ip elements are bytes
+					$all_integers	=  true ;
+						
+					foreach  ( $parts  as  $part )
+					   {
+						if  ( ! is_numeric ( $part ) )
+						   {
+							$all_integers	=  false ;
+							break ;
+						    }
+					    }
+
+					if  ( $all_integers ) 
+						continue ;
+					else
+						$text .= $domain ;
+				    }
+
+				// Add domain to result list if not already seen before
+				$lctext		=  strtolower ( $text ) ;
+					
+				if  ( ! isset ( $SeenDomains [ $lctext ] ) )
+				   {
+					$results []			=  [ 'line' => $line_index, 'text' => $text ] ;
+					$SeenDomains [ $lctext ]	=  "" ;
+				    }
+					
+				$line_index ++ ;
+			    }
+		    }
+		
+		// All done, return
+		return ( $results ) ;
+	    }
+	
+	
+	/*==================================================================================================
+
+	    ScanCache -
+		Scans Internet Explorer cache for IP addresses and domain names.
+
+	  ==================================================================================================*/
+	function  ScanCache ( )
+	   {
+		global		$VisitedPages, $BannedDomains, $BannedIps, $IgnoredDomains,
+				$IgnoredExtensions, $IgnoreScannedPages, $VerboseLevel, $MaxScannedPages ;
+		global		$SaveVisitedPages, $ScanStartIndex, $SkipExcludedExtensions ;
+
+		
+		$paths				=  get_ie_paths ( ) ;
+		$files				=  [] ;
+		$first_file			=  true ;
+		$scan_index_start		=  $ScanStartIndex ;
+		
+		// Statistics
+		$total_files			=  0 ;
+		$total_scanned_files		=  0 ;
+		$total_ignored_by_extension	=  0 ;
+		$total_ignored_by_scan_start	=  0 ;
+		$total_scanned_with_results	=  0 ;
+
+		// Get directory contents 
+		foreach  ( $paths  as  $path )
+		   {
+			$path_files	=  Path::Find ( $path, null, FIND_OPTIONS_FILES_ONLY ) ;
+
+			foreach  ( $path_files  as  $path_file )
+			   {
+				$extension	=  strtolower ( pathinfo ( $path_file, PATHINFO_EXTENSION ) ) ;
+				$total_files ++ ;
+				
+				if  ( filesize ( $path_file )  ==  0 )
+					continue ;
+				
+				if  ( $SkipExcludedExtensions  ||  ! in_array ( $extension, $IgnoredExtensions ) )
+					$files []	=  Path::ToWindows ( $path_file ) ;
+				else
+					$total_ignored_by_extension ++ ;
+			    }
+		    }
+		
+		// Process cached files
+		$page_count	=  0 ;
+		$file_count	=  count ( $files ) ;
+		
+		for  ( $i = 0 ; $i  <  $file_count ; $i ++ )
+		   {
+			$file		=  $files [$i] ;
+			
+			// Check if the current file has already been scanned
+			$already_scanned	=  false ;
+			$visited_count		=  count ( $VisitedPages ) ;
+			
+			for  ( $j = 0 ; $j  <  $visited_count ; $j ++ )
+			   {
+				if  ( ! isset ( $VisitedPages [$j] ) )
+					continue ;
+				
+				$page	=  $VisitedPages [$j] ;
+				
+				if  ( ! strcasecmp ( $page, $file ) )	// musch faster than : Path::Equals ( $page, $file ) )
+				   {
+					$already_scanned	=  $j ;
+					break ;
+				    }
+			    }
+			
+			// Ignore the page if it has already been scanned and the -ignore_scanned_pages flag has not been specified
+			if  ( $already_scanned  !==  false )
+			   {
+				if  ( ( ! $IgnoreScannedPages  &&  $already_scanned  <  $scan_index_start ) )
+				   {
+					$total_ignored_by_scan_start ++ ;
+					continue ;
+				    }
+			    }
+			// Otherwise add it to the list of scanned pages
+			else 
+			   {
+				// Add a timestamp marking the start of this new scan
+				if  ( $first_file )
+				   {
+					$now			=  date ( 'Y-m-d H:i:s' ) ;
+					$first_file		=  false ;
+					$VisitedPages []	=  "# $now (" . Math::crc16 ( $now ) . ")" ;
+				    }
+				
+				// Save the file as a visited page if it exists
+				if  ( file_exists ( $file ) )
+				   {
+					$VisitedPages []	=  Path::RealPath ( $file, true ) ;
+					$SaveVisitedPages	=  true ;
+				    }
+				else
+					continue ;
+			    }
+			
+			// Scan the file
+			$scan_results	=  ScanFile ( $file ) ;
+			$total_scanned_files ++ ;
+			
+			// Display results for this file, if any
+			if  ( $scan_results )
+			   {
+				output ( "$file:" ) ;
+				$total_scanned_with_results ++ ;
+				
+				foreach  ( $scan_results  as  $scan_result )
+				   {
+					output ( "\t" . sprintf ( "%5d", $scan_result [ 'line' ] ) . ": " . $scan_result [ 'text' ] ) ;
+				    }
+			
+				$page_count ++ ;
+			    }
+			
+			// Exit if we reached the requested number of pages
+			if  ( $MaxScannedPages  &&  $page_count  >=  $MaxScannedPages )
+				break ;
+		    }
+		    
+		// Output statistics 
+		echo "\n" ;
+		$report		=  new  AsciiReport
+		   (
+			[ 'member'	=>  'name'	, 'title' => 'Statistic' ],
+			[ 'member'	=>  'count'	, 'title' => 'Value'	, 'align' => 'right' ]
+		    ) ;
+		
+		echo $report -> Generate 
+		   ([
+			[ 'name' => 'Total files'		, 'count' => $total_files ],
+			[ 'name' => 'Ignored (extension)'	, 'count' => $total_ignored_by_extension ],
+			[ 'name' => 'Ignored (scan start)'	, 'count' => $total_ignored_by_scan_start ],
+			[ 'name' => 'Scanned'			, 'count' => $total_scanned_files ],
+			[ 'name' => 'Scanned with results'	, 'count' => $total_scanned_with_results ]
+		     ]) ;
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    SetCookieValue -
+	        Redefines a cookie value.
+	
+	  ==============================================================================================================*/
+	function  SetCookieValue ( $variable, $value, $cookie )
+	   {
+		$status		=  find_cookie_variable ( $variable, $cookie, $cookie_data ) ;
+		
+		if  ( ! $status )
+			error ( "Cookie variable \"$variable\" not found." ) ;
+		
+		$files		=  has_same_cookie_file ( $cookie_data ) ;
+		
+		if  ( count ( $files )  >  1 )
+			error ( "The \"$variable\" variable is referenced by more than one cookie : " .
+					implode ( ', ', $files ) ) ;
+		
+		$cookie_file	=  $cookie_data [0] [ 'file' ] ;
+		get_cookie_data ( $cookie_file, $cookie_variables ) ;
+		
+		foreach  ( $cookie_variables  as  &$cookie_variable )
+		   {
+			if  ( ! strcasecmp ( $cookie_variable [ 'variable' ], $variable ) )
+			   {
+				$cookie_variable [ 'value' ]	=  $value ;
+				break ;
+			    }
+		    }
+		
+		write_cookie_file ( $cookie_file, $cookie_variables ) ;
+	    }
+	
+	
+	/**************************************************************************************************************
+	 **************************************************************************************************************
+	 **************************************************************************************************************
+	 ******                                                                                                  ******
+	 ******                                                                                                  ******
+	 ******                                            IECACHE					         ******
+	 ******                                                                                                  ******
+	 ******                                                                                                  ******
+	 **************************************************************************************************************
+	 **************************************************************************************************************
+	 **************************************************************************************************************/
+
+	/*==================================================================================================
+
+		Global constants and variables.
+
+	  ==================================================================================================*/
+	$BannedIpsFile		=  false ;				// Banned ips file name + contents
+	$BannedIps		=  false ;
+	$BannedDomainsFile	=  false ;				// Banned domains file name + contents
+	$BannedDomains		=  false ;
+	$IgnoredDomainsFile	=  false ;				// Ignored domains file name + contents
+	$IgnoredDomains		=  false ;
+	$VisitedPagesFile	=  false ;				// Visited pages file name + contents
+	$VisitedPages		=  false ;
+	$CollectedScans		=  false ;				// Scan timestamps collected in the visited pages file
+	$ScanStartIndex		=  false ;				// Start index of scan
+	
+	
+	$SaveBannedDomains	=  false ;				// When true, the corresponding settings will be saved (turned on by some options)
+	$SaveBannedIps		=  false ;
+	$SaveIgnoredDomains	=  false ;
+	$SaveVisitedPages	=  false ;
+	$HadOption		=  false ;				// Helps to process only one option
+	
+	$RouteTo		=  false ;				// Ip address to route banned ips to
+	$VerboseLevel		=  0 ;					// Verbosity level
+	$IgnoredExtensions	=  false ;				// Extensions that will be ignored during cache scan
+	$ScanMessage		=  false ;				// Scan message to display
+	
+	$ResetCacheUpToIndex	=  false ;				// Index for cache reset
+	$ResetCacheUpToMessage	=  false ;				// Cache reset message to be displayed
+	
+	$CookieData		=  false ;				// Cookie information (filled only when a cookie-related option is specified)
+	
+	$CL 			=  new CLParser ( $Definitions ) ;
+	$ConfigurationFile	=  $CL -> configuration_file ;
+	$BlockDomain		=  $CL -> block_domain ;
+	$BlockDomains		=  $CL -> block_domains ;
+	$BlockIp		=  $CL -> block_ip ;
+	$BlockIps		=  $CL -> block_ips ;
+	$DeleteCookies		=  $CL -> delete_cookies ;
+	$ExportRouteBlocking	=  $CL -> export_route_blocking ;
+	$ExportRouteUnblocking	=  $CL -> export_route_unblocking ;
+	$HostsFile		=  $CL -> hosts_file ;
+	$IgnoreDomain		=  $CL -> ignore_domain ;
+	$IgnoreScannedPages	=  $CL -> ignore_scanned_pages ;
+	$ListBlockedDomains	=  $CL -> list_blocked_domains ;
+	$ListBlockedIps		=  $CL -> list_blocked_ips ;
+	$ListCookies		=  $CL -> list_cookies ;
+	$ListCookieVariables	=  $CL -> list_cookie_variables ;
+	$ListIgnoredDomains	=  $CL -> list_ignored_domains ;
+	$MaxScannedPages	=  $CL -> max_scanned_pages ;
+	$ResetCacheUpTo		=  $CL -> reset_cache_upto ;
+	$ResetVisitedPages	=  $CL -> reset_visited_pages ;
+	$ScanCache		=  $CL -> scan_cache ;
+	$SetCookieValue		=  $CL -> set_cookie_value ;
+	$ShowBlockedDomains	=  $CL -> show_blocked_domains ;
+	$ShowBlockedIps		=  $CL -> show_blocked_ips ;
+	$ShowIgnoredDomains	=  $CL -> show_ignored_domains ;
+	$ShowScans		=  $CL -> show_scans ;
+	$Since			=  $CL -> since ;
+	$SkipExcludedExtensions	=  $CL -> skip_excluded_extensions ;
+	$SortCookiesBy		=  $CL -> sort_cookies_by ;
+	$UnblockDomain		=  $CL -> unblock_Domain ;
+	$UnblockDomains		=  $CL -> unblock_Domains ;
+	$UnblockIp		=  $CL -> unblock_ip ;
+	$UnblockIps		=  $CL -> unblock_ips ;
+	$UnignoreDomain		=  $CL -> unignore_domain ;
+	$Verbose		=  $CL -> verbose ;
+	$VeryVerbose		=  $CL -> very_verbose ;
+
+	if  ( $VeryVerbose )
+		$VerboseLevel	=  2 ;
+	else if  ( $Verbose )
+		$VerboseLevel	=  1 ;
+
+	
+	/*==================================================================================================
+
+		Main program.
+
+	  ==================================================================================================*/
+	LoadSettings ( $ConfigurationFile ) ;
+	CollectScans ( $VisitedPages, $CollectedScans ) ;
+	$ScanStartIndex		=  GetScanIndex ( $Since, $ScanMessage ) ;
+	$ResetCacheUpToIndex	=  GetScanIndex ( $ResetCacheUpTo, $ResetCacheUpToMessage, true ) ;
+
+	// -reset_visited_pages :
+	//	Resets the file containing the pages visited and scanned so far.
+	if  ( $ResetVisitedPages )
+	   {
+		file_put_contents ( $VisitedPagesFile, "" ) ;
+		exit ;
+	    }
+	
+	// -reset_cache_upto :
+	//	Resets the cache up to (but not including) the specified cache scan index.
+	if  ( $ResetCacheUpTo )
+	   {
+		ResetCache ( $ResetCacheUpToIndex, $ResetCacheUpToMessage ) ;
+		exit ;
+	    }
+	
+	
+	// -block_ip :
+	//	Blocks the current list of ip addresses.
+	if  ( ! $HadOption  &&  $BlockIp )
+	   {
+		foreach  ( $BlockIp  as  $item )
+			BlockIpAddress ( $BannedIps, $item [ 'ip-address' ], $VerboseLevel ) ;
+	    }
+	
+	// -unblock_ip :
+	//	Unblocks the current list of ip addresses.
+	if  ( ! $HadOption  &&  $UnblockIp )
+	   {
+		foreach  ( $UnblockIp  as  $item ) 
+			UnblockIpAddress ( $BannedIps, $item [ 'ip-address' ], $VerboseLevel ) ;
+	    }
+	
+	// -block_ips :
+	//	Blocks the current list of ip addresses.
+	if  ( ! $HadOption  &&  $BlockIps )
+	   {
+		BlockIpAddresses ( $BannedIps, $RouteTo, $VerboseLevel ) ;
+	    }
+	
+	// -unblock_ips :
+	//	Unblocks the current list of ip addresses.
+	if  ( ! $HadOption  &&  $UnblockIps )
+	   {
+		UnblockIpAddresses ( $BannedIps, $VerboseLevel ) ;
+	    }
+
+	// -block_domain :
+	//	Blocks the specified domain.
+	if  ( ! $HadOption  &&  $BlockDomain )
+	   {
+		output ( "The following domains have been blocked : " ) ;
+		
+		foreach  ( $BlockDomain  as  $item )
+		   {
+			BlockDomain ( $BannedDomains, $item, $VerboseLevel ) ;
+			output ( "\t$item" ) ;
+		    } 
+	    }
+	
+	// -unblock_domain :
+	//	Unblocks the specified domain.
+	if  ( ! $HadOption  &&  $UnblockDomain )
+	   {
+		output ( "The following domains have been unblocked :\n. " ) ;
+		
+		foreach  ( $UnblockDomain  as  $item )
+		   {
+			UnblockDomain ( $BannedDomains, $item, $VerboseLevel ) ;
+			output ( "\t$item" ) ;
+		    }
+	    }
+	
+	// -block_domains :
+	//	Writes the blocked domains list to the hosts file.
+	if  ( ! $HadOption  &&  $BlockDomains )
+	   {
+		BlockDomains ( $HostsFile, $BannedDomains, $VerboseLevel ) ;
+	    }
+	
+	// -unblock_domains :
+	//	Removes the blocked domains from the hosts file.
+	if  ( ! $HadOption  &&  $UnblockDomains )
+	   {
+		UnblockDomains ( $HostsFile, $VerboseLevel ) ;
+	    }
+	
+	// -ignore_domain :
+	//	Ignores the specified domain.
+	if  ( ! $HadOption  &&  $IgnoreDomain )
+	   {
+		foreach  ( $IgnoreDomain  as  $item )
+			IgnoreDomain ( $IgnoredDomains, $item, $VerboseLevel ) ;
+	    }
+	
+	// -unignore_domain :
+	//	Unignores the specified domain.
+	if  ( ! $HadOption  &&  $UnignoreDomain )
+	   {
+		foreach  ( $UnignoreDomain  as  $item )
+			UnignoreDomain ( $IgnoredDomains, $item, $VerboseLevel ) ;
+	    }
+	
+	// -list/show blocked domains/ips or ignored domains
+	if  ( ! $HadOption  &&  ( $ListBlockedDomains  ||  $ShowBlockedDomains ) )
+	   {
+		DisplayList ( 'Blocked domain', $BannedDomains, $ShowBlockedDomains ) ;
+		$HadOption	=  true ;
+	    }
+	
+	if  ( ! $HadOption  &&  ( $ListBlockedIps  ||  $ShowBlockedIps ) )
+	   {
+		DisplayList ( 'Blocked Ip', $BannedIps, $ShowBlockedIps, true, 'compare_ips' ) ;
+		$HadOption	=  true ;
+	    }
+	
+	if  ( ! $HadOption  &&  ( $ListIgnoredDomains  ||  $ShowIgnoredDomains ) )
+	   {
+		DisplayList ( 'Ignored domain', $IgnoredDomains, $ShowIgnoredDomains ) ;
+		$HadOption	=  true ;
+	    }
+
+	// -show_scans :
+	//	Shows the list of scan timestamps.
+	if  ( ! $HadOption  &&  $ShowScans )
+	   {
+		DisplayScans ( $CollectedScans ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// -export_route_blocking :
+	//	Displays the command needed to block ip addresses.
+	if  ( ! $HadOption  &&  $ExportRouteBlocking )
+	   {
+		DisplayRoutes ( $BannedIps, false ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// -export_route_unblocking :
+	//	Displays the command needed to unblock the bocked ip addresses.
+	if  ( ! $HadOption  &&  $ExportRouteUnblocking )
+	   {
+		DisplayRoutes ( $BannedIps, true ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// -scan_cache :
+	//	Scans the cache of Internet Explorer.
+	if  ( ! $HadOption  &&  $ScanCache )
+	   {
+		output ( $ScanMessage ) ;
+		ScanCache ( ) ;
+		$HadOption	=  true ;
+	    }
+
+	// -list_cookies :
+	//	Displays a list of stored cookies.
+	if  ( ! $HadOption  &&  $ListCookies )
+	   {
+		DisplayCookies ( ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// -list_cookie_variables :
+	//	Displays a list of stored cookie variables.
+	if  ( ! $HadOption  &&  $CL -> IsSpecified ( 'list_cookie_variables' ) )
+	   {
+		DisplayCookieVariables ( count ( $ListCookieVariables ) ?  $ListCookieVariables [0] : false ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// -delete_cookies :
+	//	Delete cookies by variable name, domain name or file name.
+	if  ( ! $HadOption  &&  $CL -> IsSpecified ( 'delete_cookies' ) )
+	   {
+		DeleteCookies ( $DeleteCookies ) ;
+		$HadOption	=  true ;
+	    }
+	
+	
+	// -set_cookie_value :
+	//	Sets a cookie variable value.
+	if  ( ! $HadOption  &&  $CL -> IsSpecified ( 'set_cookie_value' ) )
+	   {
+		$variable	=  $SetCookieValue [0] ;
+		$value		=  $SetCookieValue [1] ;
+		$cookie		=  ( count ( $SetCookieValue )  >  2 ) ?  $SetCookieValue [2] : false ;
+		
+		SetCookieValue ( $variable, $value, $cookie ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// Save the settings if needed (ie, list files for blocked ip/domains and visited pages)
+	SaveSettings ( $ConfigurationFile ) ;

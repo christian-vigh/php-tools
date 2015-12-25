@@ -1,0 +1,809 @@
+<?php
+
+	//!phpcmd(Database, 2.0) : Analyzes the MySQL slow log.
+	/***************************************************************************************************
+
+	    NAME
+		mysqlslow.phs
+
+	    DESCRIPTION
+		Analyzes the MySQL slow log and provides a summary.
+
+	    AUTHOR
+	     	Christian Vigh, 07/2013.
+
+	    HISTORY
+	    [Version : 1.0]	[Date : 2013/07/25]	[Author : CV]
+	     	Initial version.
+
+	 ***************************************************************************************************/
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Types\String ;
+	use  Thrak\IO\Path ;
+	use  Thrak\IO\AsciiReport ;
+
+	require ( "tools.phpinclude" ) ;
+
+
+	/*===========================================================================================
+
+		Global variables.
+
+	  ===========================================================================================*/
+	$QuerySummary		=  array			// Array of summarized queries
+	   ( 
+		'*' => array 
+		   ( 
+			'total-count'		=>  0,
+			'count'			=>  0,
+			'rows-sent'		=>  0,
+			'rows-examined'		=>  0,
+			'query-times'		=>  0,
+			'lock-times'		=>  0,
+			'byte-difference'	=>  0,
+			'start-time'		=>  null,
+			'end-time'		=>  null
+		    ) 
+	    ) ;
+	$LoadFrom		=  null ;			// Summarized results are to be loaded from an existing file
+	$SaveTo			=  null ;			// Generate summarized results to an output file
+	$ShowCount		=  false ;			// Show global counts
+	$MinQueryCount		=  0 ;				// Display queries having at least that number of similar queries
+	$MinQueryTime		=  0 ;				// Display queries having at least that query time, in seconds
+	$MinQueryLockTime	=  0 ;				// Same, for lock times 
+	$MinRowsExamined	=  0 ;				// Display queries having at least that number of rows examined
+	$MinRowsSent		=  0 ;				// Display queries having at least that number of rows sent
+	$MinUseAverage		=  false ;			// When true, the $Minxxx values are tested agains the av
+	$SortBy			=  "rows_examined" ;		// Sort order
+	$TopRows		=  PHP_INT_MAX ;		// Don't display more than $TopRows results
+	$TestMinAgainst		=  "total" ;			// The $Minxxx values will be tested against this entry in a summary record.
+
+
+	/*===========================================================================================
+
+		Command-line definitions.
+
+	  ===========================================================================================*/
+	$Definitions = <<<END
+<command name="mysqlslow">
+
+	<usage>
+		Analyzes a MySQL slow log and display summary statistics.
+	</usage>
+
+	<unnamed-parameters>
+		<file name="LogFile" disposition="existing" required="false">
+			MySQL slow log file name.
+		</file>
+	</unnamed-parameters>
+
+	<flag name="count, c">
+		Displays the number of queries examineds and the number of similar queries found.
+	</flag>
+
+	<file name="load, l" disposition="existing">
+		Loads analysis data from a file previously created by the -save option.
+	</file>
+
+	<integer name="min_query_count, mqc" default="0">
+		Shows only the queries that were run more than the specified number of times.
+	</integer>
+
+	<integer name="min_query_lock_time, mqlt" default="0" value-text="seconds">
+		Shows only the lock times that took more than the specified number of seconds for the queries.
+	</integer>
+
+	<integer name="min_query_time, mqt" default="0" value-text="seconds">
+		Shows only the queries that took more than the specified number of seconds.
+	</integer>
+
+	<integer name="min_rows_examined, mre" default="0" value-text="row count">
+		Shows only the queries that examined more than the specified number of rows.
+	</integer>
+
+	<integer name="min_rows_sent, mrs" default="0" value-text="row count">
+		Shows only the queries that retrieved more than the specified number of rows.
+	</integer>
+
+	<file name="save, s" disposition="any">
+		Name of a file where analysis results are to be saved.
+		This is useful when processing the initial log file takes a long time and several
+		mysqlslow queries are to be issued with different parameters.
+		When the analysis results file has been generated, you can later invoke mysqlslow
+		with the -load parameter to avoid re-analyzing the log file again.
+	</file>
+
+	<keyword name="sort_by, sb" default="rows_examined">
+		Specifies the sort order for displaying query results. Sort order is always descending,
+		showing highest values first.
+
+		<constant name="query_count, qc">
+			Sorts by number of similar queries.
+		</constant>
+
+		<constant name="query_times, query_time, qt">
+			Sorts by total query times.
+		</constant>
+
+		<constant name="rows_examined, re">
+			Sorts by number of rows examined.
+		</constant>
+
+		<constant name="rows_sent, rs">
+			Sorts by number of rows sent.
+		</constant>
+	</keyword>
+
+	<keyword name="test_min_against, tma" default="total">
+		Compares the -min_xxx values specified against the specified summary entry.
+
+		<constant name="total, t">
+			The "total" entry is used for testing the value specified by one of
+			the -min_xxx parameters.
+		</constant>
+
+		<constant name="average, avg, a">
+			Test against the "average" summary entry.
+		</constant>
+
+		<constant name="min">
+			Test against the "min" summary entry.
+		</constant>
+
+		<constant name="max">
+			Test against the "max" summary entry.
+		</constant>
+	</keyword>
+
+	<integer name="top, t">
+		Displays only the specified number of queries matching the search criterias.
+	</integer>
+
+	<exclusions name="save" with="load, count, min_query_time, min_rows_examined, min_rows_sent, min_query_count, min_query_time, sort_by, top"/>
+	<exclusions name="count" with="min_query_time, min_rows_examined, min_rows_sent, min_query_count, min_query_time, sort_by, top"/>
+</command>
+END;
+
+
+	/*===========================================================================================
+
+	     ProcessQuery -
+		Adds the specified query information to the query summary.
+
+	  ===========================================================================================*/
+	function  ProcessQuery ( $entry, $query )
+	   {
+		global		$QuerySummary ;
+
+
+		$StringSearch	=  '/ [\'] ( ([\\] [\']) | [^\'] )*? [\'] /imsx' ;
+		$StringSearch2	=  '/ ["] ( ([\\] ["]) | [^"] )*? ["] /imsx' ;
+		$NumericSearch	=  '/([^a-zA-Z0-9_])' . REGEX_FLOAT . '/imsx' ;
+
+
+		// In place replacements to standardize the SQL statement
+		$key	=  preg_replace ( array ( $StringSearch, $StringSearch2 ), '*', $query ) ;
+		$key	=  preg_replace ( $NumericSearch, '\1*', $key ) ;
+		$key2	=  $key ;
+		$key	=  preg_replace ( '/\s+/', ' ', $key ) ;
+
+		// Database key into $QuerySummary
+		$DB		=  $entry [ 'database' ] ;
+
+		// If existing query (normalized $key), add statistics
+		if  ( isset ( $QuerySummary [ $key ] ) )
+		   {
+			$count		=  ++ $QuerySummary [ $key ] [ 'count' ] ;
+			$array		=  &$QuerySummary [ $key ] ;
+			
+			if  ( ! in_array ( $DB, $QuerySummary [ $key ] [ 'database' ] ) )
+				$QUerySummary [ $key ] [ 'database' ] []	=  $DB ;
+
+			$array [ 'lock-times' ] [ 'total' ]		+=  $entry [ 'locktime' ] ;
+			$array [ 'lock-times' ] [ 'average' ]		 =
+				round ( $array [ 'lock-times' ] [ 'total' ] / $count, 0 ) ;
+
+			$array [ 'query-times' ] [ 'total' ]		+=  $entry [ 'querytime' ] ;
+			$array [ 'query-times' ] [ 'average' ]		 =
+				round ( $array [ 'query-times' ] [ 'total' ] / $count, 0 ) ;
+
+			$array [ 'rows-sent' ] [ 'total' ]		+=  $entry [ 'rowssent' ] ;
+			$array [ 'rows-sent' ] [ 'average' ]		 =
+				round ( $array [ 'rows-sent' ] [ 'total' ] / $count, 0 ) ;
+
+			$array [ 'rows-examined' ] [ 'total' ]		+=  $entry [ 'rowsexamined' ] ;
+			$array [ 'rows-examined' ] [ 'average' ]		 =
+				round ( $array [ 'rows-examined' ] [ 'total' ] / $count, 0 ) ;
+
+			// Tells that we met the same query with only differences in spaces
+			if  ( $key2  !=  $key ) 
+				$array [ 'byte-difference' ] ++ ;
+			
+			// Min/max values
+			if  ( $entry [ 'locktime' ]  <  $array [ 'lock-times' ] [ 'min' ] )
+				$array [ 'lock-times' ] [ 'min' ]	=  $entry [ 'locktime' ] ;
+			else if  ( $entry [ 'locktime' ]  >  $array [ 'lock-times' ] [ 'max' ] )
+				$array [ 'lock-times' ] [ 'max' ]	=  $entry [ 'locktime' ] ;
+			
+			if  ( $entry [ 'querytime' ]  <  $array [ 'query-times' ] [ 'min' ] )
+				$array [ 'query-times' ] [ 'min' ]	=  $entry [ 'querytime' ] ;
+			else if  ( $entry [ 'querytime' ]  >  $array [ 'query-times' ] [ 'max' ] )
+				$array [ 'query-times' ] [ 'max' ]	=  $entry [ 'querytime' ] ;
+			
+			if  ( $entry [ 'rowssent' ]  <  $array [ 'rows-sent' ] [ 'min' ] )
+				$array [ 'rows-sent' ] [ 'min' ]	=  $entry [ 'rowssent' ] ;
+			else if  ( $entry [ 'rowssent' ]  >  $array [ 'rows-sent' ] [ 'max' ] )
+				$array [ 'rows-sent' ] [ 'max' ]	=  $entry [ 'rowssent' ] ;
+			
+			if  ( $entry [ 'rowsexamined' ]  <  $array [ 'rows-examined' ] [ 'min' ] )
+				$array [ 'rows-examined' ] [ 'min' ]	=  $entry [ 'rowsexamined' ] ;
+			else if  ( $entry [ 'rowsexamined' ]  >  $array [ 'rows-examined' ] [ 'max' ] )
+				$array [ 'rows-examined' ] [ 'max' ]	=  $entry [ 'rowsexamined' ] ;
+
+			$query_entry	=  $array ;
+		    }
+		// Otherwise create the entry
+		else
+		   {
+			// Initialize query statistics
+			$query_entry  =  array 
+			   (
+				'total-count'		=>  1,
+				'count'			=>  1,
+				'database'		=>  array ( $DB ),
+				'byte-difference'	=>  0,
+
+				'lock-times'		=>  array 
+				   (
+					'total'		=>  $entry [ 'locktime' ],
+					'min'		=>  $entry [ 'locktime' ],
+					'max'		=>  $entry [ 'locktime' ],
+					'average'	=>  $entry [ 'locktime' ]
+				    ),
+				'query-times'		=>  array 
+				   (
+					'total'		=>  $entry [ 'querytime' ],
+					'min'		=>  $entry [ 'querytime' ],
+					'max'		=>  $entry [ 'querytime' ],
+					'average'	=>  $entry [ 'querytime' ]
+				    ),
+				'rows-sent'		=>  array 
+				   (
+					'total'		=>  $entry [ 'rowssent' ],
+					'min'		=>  $entry [ 'rowssent' ],
+					'max'		=>  $entry [ 'rowssent' ],
+					'average'	=>  $entry [ 'rowssent' ]
+				    ),
+				'rows-examined'		=>  array 
+				   (
+					'total'		=>  $entry [ 'rowsexamined' ],
+					'min'		=>  $entry [ 'rowsexamined' ],
+					'max'		=>  $entry [ 'rowsexamined' ],
+					'average'	=>  $entry [ 'rowsexamined' ]
+				    )
+			    ) ;
+
+			// Collect
+			$QuerySummary [ $key ]	=  $query_entry ;
+		    }
+
+		// Global statistics
+		$QuerySummary ['*'] ['query-times']	 +=  $query_entry [ 'query-times'     ] [ 'total' ] ;
+		$QuerySummary ['*'] ['lock-times']	 +=  $query_entry [ 'lock-times'      ] [ 'total' ] ;
+		$QuerySummary ['*'] ['rows-examined']	 +=  $query_entry [ 'rows-examined'   ] [ 'total' ] ;
+		$QuerySummary ['*'] ['rows-sent']	 +=  $query_entry [ 'rows-sent'       ] [ 'total' ] ;
+		$QuerySummary ['*'] ['byte-difference' ] +=  $query_entry [ 'byte-difference' ]  ;
+		$QuerySummary ['*'] [ 'total-count' ]    +=  $query_entry [ 'count' ] ;
+	    }
+
+
+	/*===========================================================================================
+
+	     CollectRawData -
+		Collects raw data from the MySQL slow log file.
+		The log file format is the following :
+
+		Spurious messages :
+			/usr/libexec/mysqld, Version: 5.0.77-log (Source distribution). started with:
+			Tcp port: 0  Unix socket: /var/lib/mysql/mysql.sock
+			Time                 Id Command    Argument
+
+		Query to a database different from the database of the last query :
+			# User@Host: username[username] @ localhost []
+			# Query_time: 0  Lock_time: 0  Rows_sent: 179  Rows_examined: 7784
+			use database;
+			SELECT ... ;
+
+		Query to the same database as the one from the last query :
+			# User@Host: username[username] @ localhost []
+			# Query_time: 1  Lock_time: 0  Rows_sent: 18  Rows_examined: 7462
+			select ... ;
+
+		Time stamp for approximately every second (this is not the timestamp of the query) :
+			# Time: 130725 10:27:58
+
+	  ===========================================================================================*/
+	function  CollectRawData ( $file ) 
+	   {
+		global	$ScannedQueries, $QuerySummary ;
+
+		$unput_line	=  null ;
+
+		// Regex to analyze the user@host comment
+		// TODO: Make it match requests to non-local hosts
+		$UserHostRE		=  '/: \s* (?P<username> [^\[ ]+) .* [@] \s* (?P<hostname> [^\[ ]+)/imsx' ;
+		// Regex to analyze query information
+		$QueryInfoRE		=  '/' .
+					   'query_time: \s* (?P<querytime> [0-9.]+)' .
+					   '.*?' .
+					   'lock_time: \s* (?P<locktime> [0-9.]+)' .
+					   '.*?' .
+					   'rows_sent: \s* (?P<rowssent> [0-9]+)' .
+					   '.*?' .
+					   'rows_examined: \s* (?P<rowsexamined> [0-9]+)' .
+					   '/imsx' ;				
+					
+
+		// Start scanning when we see a line beginning with this...
+		$CollectStart		=  "# User@Host:" ;
+		$CollectStartLength	=  strlen ( $CollectStart ) ;
+		$QueryInfo		=  "# Query_time:" ;
+		$QueryInfoLength	=  strlen ( $QueryInfo ) ;
+
+		// Last selected database seen so far ; accept the fact that we may have to process an incomplete file
+		$LastSeenDatabase	=  "*** unknown ***" ;
+
+		$fp		=  fopen ( $file, "r" ) ;
+		stream_set_read_buffer ( $fp, 64 * 1024 * 1024 ) ;
+		$count		=  0 ;
+		$last_seen_time	=  null ;
+
+		// Scan loop
+		while  ( true )
+		    {
+			if  ( $unput_line )
+			   {
+				$line		=  $unput_line ;
+				$unput_line	=  null ;
+			    }
+			else
+				$line		= fgets ( $fp ) ;
+
+			if  ( $line  ===  false )
+				break ;
+			
+			$line	=  trim ( $line ) ;
+
+			// Check if we met a "Time:" line
+			if  ( ! strncasecmp ( $line, '# Time:', 7 ) )
+			   {
+				$time			=  trim ( substr ( $line, 15 ) ) ;
+				
+				if  ( strlen ( $time )  <  8 )
+					$time	=  "0$time" ;
+				
+				$last_seen_time		=  "20" .
+							   substr ( $line,  8, 2 ) . "-" .
+							   substr ( $line, 10, 2 ) . "-" .
+							   substr ( $line, 12, 2 ) . " " .
+							   $time ;
+
+				if  ( ! $QuerySummary ['*'] [ 'start-time' ] )
+					$QuerySummary ['*'] [ 'start-time' ]	=  $last_seen_time ;
+				
+				continue ;
+			    }
+
+			// Start scanning when we encounter a "# User@Host:" construct
+			if  ( strncasecmp ( $line, $CollectStart, $CollectStartLength ) )
+				continue ;			
+
+			$UserLine	=  $line ;
+
+			// Get the "#Query_time:" entry
+			$line		=  trim ( fgets ( $fp ) ) ;
+
+			if  ( ! $line  ||  strncasecmp ( $line, $QueryInfo, $QueryInfoLength ) )
+				continue ;	// Ignore, we may have met EOF
+
+			$QueryInfoLine	=  $line ;
+
+			// Next line is either a "use databasename" or a "select" statement
+			$UseStatement	=  false ;
+			$line		=  trim ( fgets ( $fp ) ) ;
+
+			if  ( ! strncasecmp ( $line, "use ", 4 ) )
+			   {
+				// Extract the database name. Ignore the entry if corrupted
+				if  ( ! preg_match ( '/use \s+ [`]? (?P<database> [a-z0-9_]+) [`]?/imsx', $line, $match )  )
+					continue ;
+
+				$UseStatement		=  true ;
+				$LastSeenDatabase	=  $match [ 'database' ] ;
+			    }
+
+			// If a use statement was encountered, we need to read the next line for the SELECT statement
+			if  ( $UseStatement )
+				$line	=  trim ( fgets ( $fp ) ) ;
+
+			// If the current line is EOF or does not start with SELECT/INSERT/UPDATE/DELETE, loop until we find 
+			// such a construct
+			while  ( strncasecmp ( $line, "SELECT ", 7 )  &&
+				 strncasecmp ( $line, "INSERT ", 7 )  && 
+				 strncasecmp ( $line, "UPDATE ", 7 )  &&
+				 strncasecmp ( $line, "DELETE ", 7 ) )
+			   {
+				$line	=  fgets ( $fp ) ;
+				
+				// But leave upon EOF
+				if  ( $line  ===  false ) 
+					break ;
+				
+				$line	=  trim ( $line ) ;
+				
+				// And continue if we find a comment (paranoia)
+				if  ( $line [0]  ==  '#' )
+				   {
+					$unput_line	=  $line ;
+					continue ;
+				    }
+			     }
+
+			// Collect the SQL statement which may span several lines
+			$SQLStatement	=  $line ;
+
+			while  ( $line =  trim ( fgets ( $fp ) ) )
+			   {
+				// Stop if we find a line beginning with sharp - this may be the start of a new log entry
+				if  ( $line [0]  ==  '#' )
+					break ;
+
+				// We may also encounter spurious data, such as (without a leading comment) :
+				//
+				// /usr/libexec/mysqld, Version: 5.0.77-log (Source distribution). started with:
+				// Tcp port: 0  Unix socket: /var/lib/mysql/mysql.sock
+				// Time                 Id Command    Argument
+				//
+				// Note that in this case, we continue until we see a comment (#) or reach the end of file
+				if  ( strpos ( $line, 'Version:'      )  !==  false  ||
+				      //strpos ( $line, 'started with:' )  !==  false  ||
+				      strpos ( $line, 'Tcp port:'     )  !==  false  ||
+				      //strpos ( $line, 'Unix socket'   )  !==  false  ||
+				      strpos ( $line, 'Id Command'    )  !==  false ) 
+					continue ;
+				
+				// This is a true continuation line
+				$SQLStatement .= " $line" ;
+			    }
+
+			// At that point, if $line is not null, then this is the start of a new construct,
+			// so we need to put the line back into the input stream
+			if  ( $line )
+				$unput_line = $line ;
+
+			// At that point, we have $UserLine, $QueryInfoLine, $LastSeenDatabase and $SQLStatement defined
+			// Analyze $UserLine and $QueryInfoLine to extract information
+			$query		=  array  ( 'database' => $LastSeenDatabase ) ;
+
+			if  ( preg_match ( $UserHostRE, $UserLine, $matches ) )
+			   {
+				$query [ 'username' ]		=  $matches [ 'username' ] ;
+				$query [ 'hostname' ]		=  $matches [ 'hostname' ] ;
+			    }	
+			else
+				continue ;
+
+			if  ( preg_match ( $QueryInfoRE, $QueryInfoLine, $matches ) )
+			   {
+				$query [ 'locktime' ]		=  $matches [ 'locktime' ] ;
+				$query [ 'querytime' ]		=  $matches [ 'querytime' ] ;
+				$query [ 'rowssent' ]		=  $matches [ 'rowssent' ] ;
+				$query [ 'rowsexamined' ]	=  $matches [ 'rowsexamined' ] ;
+			    }
+			else
+				continue ;
+
+			// Data has been collected ; now process the SELECT statement
+			ProcessQuery ( $query, $SQLStatement ) ;
+
+			// Some visual clue
+			$count ++ ;
+		     }
+
+		fclose ( $fp ) ;
+		echo ( "\n" ) ;
+
+		// Global statistics
+		$QuerySummary ['*'] [ 'count' ]	=  $count ;
+
+		if  ( ! $QuerySummary ['*'] [ 'start-time' ] )
+		   {
+			$QuerySummary ['*'] [ 'start-time' ]	=  
+			$QuerySummary ['*'] [ 'end-time' ]	=  '(unknown)' ;
+		    }
+		else
+			$QuerySummary ['*'] [ 'end-time' ]	=  $last_seen_time ;
+		
+		// Save input file name also
+		$QuerySummary ['*'] [ 'input-file' ]	=  $file ;
+	    }
+
+
+	/*===========================================================================================
+
+	    SortSummary -
+		Sorts the summary table according to the given criterias.
+
+	  ===========================================================================================*/
+	function  SortSummary ( $option )
+	   {
+		$data	=  &$GLOBALS [ 'QuerySummary' ] ;
+
+		switch ( $option )
+		   {
+			case	'query_count' :
+				$compare	=  function ( $a, $b )
+				   {
+					$data	=  $GLOBALS [ 'QuerySummary' ] ;
+
+					$aa	=  $data [$a] ;
+					$bb	=  $data [$b] ;
+
+					return ( $bb [ 'count' ] - $aa [ 'count' ] ) ;
+				    } ;
+				break ;
+
+			case	'query_times' :
+				$compare	=  function ( $a, $b )
+				   {
+					$data	=  $GLOBALS [ 'QuerySummary' ] ;
+
+					$aa	=  $data [$a] ;
+					$bb	=  $data [$b] ;
+
+					return ( $bb [ 'query-times' ] [ 'total' ] - $aa [ 'query-times' ] [ 'total' ] ) ;
+				    } ;
+				break ;
+
+			case	'rows_sent' :
+				$compare	=  function ( $a, $b )
+				   {
+					$data	=  $GLOBALS [ 'QuerySummary' ] ;
+
+					$aa	=  $data [$a] ;
+					$bb	=  $data [$b] ;
+
+					return ( $bb [ 'rows-sent' ] [ 'total' ] - $aa [ 'rows-sent' ] [ 'total' ] ) ;
+				    } ;
+				break ;
+
+			case	'rows_examined' :
+			default :
+				$compare	=  function ( $a, $b )
+				   {
+					$data	=  $GLOBALS [ 'QuerySummary' ] ;
+
+					$aa	=  $data [$a] ;
+					$bb	=  $data [$b] ;
+
+					return ( $bb [ 'rows-examined' ] [ 'total' ] - $aa [ 'rows-examined' ] [ 'total' ] ) ;
+				    } ;
+				break ;
+		    }
+
+		uksort ( $data, $compare ) ;
+	    }
+
+
+	/*===========================================================================================
+
+	    DisplayGlobalSummary -
+		Displays gloabl summary results.
+
+	  ===========================================================================================*/
+	function  DisplayGlobalSummary ( )
+	   {
+		global	$QuerySummary, $InputFile ;
+
+		$global		=  $QuerySummary ['*'] ;
+		$data		=  array ( ) ;
+
+		foreach  ( array ( 'count', 'rows-examined', 'rows-sent', 'query-times', 'lock-times', 'byte-difference', 'total-count' )  as  $entry )
+			$global [ $entry ] = number_format ( $global [ $entry ], 0, '.', ' ' ) ;
+
+		$data []	=  array ( 'title' => 'Total queries analyzed'				, 'total' => $global [ 'total-count'	 ] ) ;
+		$data []	=  array ( 'title' => 'Distinct queries (spaces not significant)'	, 'total' => $global [ 'count'		 ] ) ;
+		$data []	=  array ( 'title' => 'Distinct queries (spaces significant)'		, 'total' => $global [ 'byte-difference' ] ) ;
+		$data []	=  array ( 'title' => 'Rows examined'					, 'total' => $global [ 'rows-examined'	 ] ) ;
+		$data []	=  array ( 'title' => 'Rows sent'					, 'total' => $global [ 'rows-sent'	 ] ) ;
+		$data []	=  array ( 'title' => 'Query time'					, 'total' => $global [ 'query-times'	 ] ) ;
+		$data []	=  array ( 'title' => 'Lock time'					, 'total' => $global [ 'lock-times'	 ] ) ;
+
+		$report		=  new AsciiReport 
+		   (
+			array ( 'member' => 'title', 'title' => 'Counter' ),
+			array ( 'member' => 'total', 'title' => 'Value'  , 'align' => 'right' )
+		    ) ;
+
+		$file	=  basename ( $InputFile ) ;
+		output ( "Statistics from file : $file  (\"$InputFile\")" ) ;
+		output ( "Start time           : " . $QuerySummary ['*'] [ 'start-time' ] ) ;
+		output ( "End time             : " . $QuerySummary ['*'] [ 'end-time' ] ) ;
+
+		echo $report -> Generate ( $data ) ;
+		echo $report -> Summary ( 'counter' ) ;
+	    }
+
+
+	/*===========================================================================================
+
+	    DisplaySummaryResults -
+		Displays summary results.
+
+	  ===========================================================================================*/
+	function  DisplaySummaryResults ( )
+	   {
+		global	$QuerySummary, $TopRows, $TestMinAgainst,
+			$MinQueryCount, $MinQueryTime, $MinQueryLockTime, $MinRowsSent, $MinRowsExamined ;
+
+		$count	=  0 ;
+
+		foreach  ( $QuerySummary  as  $query => $summary )
+		   {
+			// Avoid the pseudo-entry for holding global statistics such as total query count
+			if  ( $query  ==  '*' )
+				continue ;
+
+			// Filters on quantities
+			if  ( $count  >=  $TopRows )
+				break ;
+
+			// Filter on query count
+			if  ( $MinQueryCount  >  $summary [ 'count' ] )
+				continue ;
+
+			// Filter on query time
+			if  ( $MinQueryTime  >  $summary [ 'query-times' ] [ $TestMinAgainst ] )
+				continue ;
+
+			// Filter on query lock time
+			if  ( $MinQueryLockTime  >  $summary [ 'lock-times' ] [ $TestMinAgainst ] )
+				continue ;
+
+			// Filter on rows examined
+			if  ( $MinRowsExamined  >  $summary [ 'rows-examined' ] [ $TestMinAgainst ] )
+				continue ;
+
+			// Filter on rows sent
+			if  ( $MinRowsSent  >  $summary [ 'rows-sent' ] [ $TestMinAgainst ] )
+				continue ;
+
+			// All filters process ; output the header for that kind of query
+			output ( "" ) ;
+			output ( "Query       : $query" ) ;
+			output ( "Database(s) : " . implode ( ', ', $summary [ 'database' ] ) ) ;
+			output ( "Query count : " . $summary [ 'count' ] ) ;		
+
+			// Then a summary table
+			$data	=  array 
+			   ( 
+				// Byte difference between similar queries (queries that differs only with number of spaces inside)
+				array 
+				   ( 
+					'name'		=> 'Almost same',
+					'total'		=> ( integer ) ( $summary [ 'byte-difference' ] + 1 ),
+					'average'	=> 'N/A',
+					'min'		=> '/NA',
+					'max'		=> 'N/A'
+				    ),
+				// Rows examined
+				array
+				   (
+					'name'		=>  'Rows examined',
+					'total'		=>  number_format ( $summary [ 'rows-examined' ] [ 'total'   ], 0, '.', ' ' ),
+					'average'	=>  number_format ( $summary [ 'rows-examined' ] [ 'average' ], 0, '.', ' ' ),
+					'min'		=>  number_format ( $summary [ 'rows-examined' ] [ 'min'     ], 0, '.', ' ' ),
+					'max'		=>  number_format ( $summary [ 'rows-examined' ] [ 'max'     ], 0, '.', ' ' )
+				    ),
+				// Rows sent
+				array
+				   (
+					'name'		=>  'Rows sent',
+					'total'		=>  number_format ( $summary [ 'rows-sent' ] [ 'total'   ], 0, '.', ' ' ),
+					'average'	=>  number_format ( $summary [ 'rows-sent' ] [ 'average' ], 0, '.', ' ' ),
+					'min'		=>  number_format ( $summary [ 'rows-sent' ] [ 'min'     ], 0, '.', ' ' ),
+					'max'		=>  number_format ( $summary [ 'rows-sent' ] [ 'max'     ] , 0, '.', ' ' ),
+				    ),
+				// Query times
+				array
+				   (  
+					'name'		=>  'Query times',
+					'total'		=>  number_format ( $summary [ 'query-times' ] [ 'total'   ], 0, '.', ' ' ),
+					'average'	=>  number_format ( $summary [ 'query-times' ] [ 'average' ], 0, '.', ' ' ),
+					'min'		=>  number_format ( $summary [ 'query-times' ] [ 'min'     ], 0, '.', ' ' ),
+					'max'		=>  number_format ( $summary [ 'query-times' ] [ 'max'     ], 0, '.', ' ' ),
+				    ),
+				// Lock times
+				array
+				   (
+					'name'		=>  'Lock times',
+					'total'		=>  number_format ( $summary [ 'lock-times' ] [ 'total'   ], 0, '.', ' ' ),
+					'average'	=>  number_format ( $summary [ 'lock-times' ] [ 'average' ], 0, '.', ' ' ),
+					'min'		=>  number_format ( $summary [ 'lock-times' ] [ 'min'     ], 0, '.', ' ' ),
+					'max'		=>  number_format ( $summary [ 'lock-times' ] [ 'max'     ], 0, '.', ' ' ),
+				    )   
+			    ) ;
+
+			// Generate a report for the summary of this query
+			$report		=  new AsciiReport
+			   (
+				array ( 'member' => 'name'		, 'title' => 'Measure'				),
+				array ( 'member' => 'total'		, 'title' => 'Total'	, 'align' => 'right'	),
+				array ( 'member' => 'average'		, 'title' => 'Average'	, 'align' => 'right'	),
+				array ( 'member' => 'min'		, 'title' => 'Min'	, 'align' => 'right'	),
+				array ( 'member' => 'max'		, 'title' => 'Max'	, 'align' => 'right'	)
+			    ) ;	
+
+			echo $report -> Generate ( $data ) ;
+			$count ++ ;
+		    }
+	    }
+
+
+	/*===========================================================================================
+
+		Main program.
+
+	  ===========================================================================================*/
+
+	// Get command-line parameters
+	$CL 		=  new CLParser ( $Definitions ) ;
+
+	if  ( $CL -> UnnamedParameters [0] -> Values )
+		$InputFile	=  $CL -> UnnamedParameters [0] -> Values [0] ;
+	else
+		$InputFile	=  null ;
+
+	$LoadFrom		=  $CL -> load ;
+	$SaveTo			=  $CL -> save ;
+	$ShowCount		=  $CL -> count ;
+	$MinQueryCount		=  $CL -> min_query_count ;
+	$MinQueryTime		=  $CL -> min_query_time ;
+	$MinQueryLockTime	=  $CL -> min_query_lock_time ;
+	$MinRowsExamined	=  $CL -> min_rows_examined ;
+	$MinRowsSent		=  $CL -> min_rows_sent ;
+	$SortBy			=  $CL -> sort_by ;
+	$TopRows		=  $CL -> top ;
+	$TestMinAgainst		=  $CL -> test_min_against ;
+	
+	
+	// If data is to be loaded, load it
+	if  ( $LoadFrom )
+	   {
+		$QuerySummary	=  unserialize ( file_get_contents ( $LoadFrom ) ) ;
+		$InputFile	=  $QuerySummary ['*'] [ 'input-file' ] ;
+	    }
+	// Otherwise, generates the data
+	else if  ( $SaveTo  &&  $InputFile )
+	   {
+		CollectRawData ( $InputFile ) ;
+		file_put_contents ( $SaveTo, serialize ( $QuerySummary ) ) ;
+	    }
+	else if  ( ! $InputFile )
+	   {
+		$CL -> DisplayHelp ( ) ;
+		exit ( ) ;
+	    }
+
+	// -count option
+	if  ( $ShowCount )
+	    {
+		DisplayGlobalSummary ( ) ;
+		exit ( ) ;
+	    }
+
+	// Sort the $QuerySummary array using the sort option specified
+	SortSummary ( $SortBy ) ;
+
+	// Display summary results
+	DisplaySummaryResults ( ) ;

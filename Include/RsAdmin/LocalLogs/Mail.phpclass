@@ -1,0 +1,1582 @@
+<?php
+/**************************************************************************************************************
+
+    NAME
+        Mail.php
+
+    DESCRIPTION
+        Analyzes mail log entries.
+
+    AUTHOR
+        Christian Vigh, 07/2015.
+
+    HISTORY
+    [Version : 1.0]    [Date : 2015/07/21]     [Author : CV]
+        Initial version.
+
+ **************************************************************************************************************/
+
+
+/*==============================================================================================================
+
+    LocalMailLog class -
+        Handles mail logfile entries.
+
+  ==============================================================================================================*/
+class  LocalMailLog	extends  LocalLog
+   {
+	public		$Title					=  'mail' ;
+
+	// Mail message codes
+	const	MAIL_NONE					=   0 ;
+	const   MAIL_SMTP_LOST_CONNECTION			=   1 ;
+	const   MAIL_SMTP_DISCONNECTED				=   2 ;
+	const   MAIL_STAT_MAX_CONNECTION_RATE			=   3 ;
+	const   MAIL_STAT_MAX_CONNECTION_COUNT			=   4 ;
+	const   MAIL_STAT_MAX_CACHE_SIZE			=   5 ;
+	const   MAIL_SMTP_CONNECTED				=   6 ;
+	const   MAIL_SMTP_PICKUP				=   7 ;
+	const   MAIL_SMTP_CLEANUP				=   8 ;
+	const   MAIL_SMTP_REPLACE_FROM_HEADER			=   9 ;
+	const   MAIL_SMTP_ACCEPTED_FOR_DELIVERY			=  10 ;
+	const   MAIL_SMTP_SENT_RELAYED				=  11 ;
+	const	MAIL_SMTP_REMOVED				=  12 ;
+	const   MAIL_NON_SMTP_COMMAND				=  13 ;
+	const   MAIL_POP3_CONNECTION				=  14 ;
+	const   MAIL_POP3_DISCONNECTION				=  15 ;
+	const   MAIL_SMTP_NOT_RESOLVED				=  16 ;
+	const   MAIL_POP3_UNEXPECTED_SSL_CONNECTION_SHUTDOWN	=  17 ;
+	const   MAIL_SMTP_LOGIN_AUTHENTICATION_FAILED		=  18 ;
+	const   MAIL_SMTP_PLAIN_AUTHENTICATION_FAILED		=  19 ;
+	const   MAIL_SMTP_LOST_SSL_CONNECTION			=  20 ;
+	const	MAIL_SMTP_CONNECTION_RATE_EXCEEDED		=  21 ;
+	const   MAIL_TERMINATING				=  22 ;
+	const   MAIL_STARTED					=  23 ;
+	const   MAIL_SMTP_TOO_MANY_ERRORS			=  24 ;
+	const   MAIL_SMTP_LOOP_BACK				=  25 ;
+	const   MAIL_SMTP_FROM					=  26 ;	
+	const   MAIL_SMTP_BOUNCED				=  27 ;
+	const   MAIL_POP3_LOGIN_FAILED				=  28 ;
+	const   MAIL_POP3_LOGOUT				=  29 ;
+	const	MAIL_POP3_MAX_CONNECTIONS_REACHED		=  30 ;
+	const   MAIL_IMAP_SSL_NO_SHARED_CIPHER			=  31 ;
+	const   MAIL_IMAP_SSL_UNSUPPORTED_PROTOCOL		=  32 ;
+	const   MAIL_AUTHDAEMON_STOPPING_CHILDREN		=  33 ;
+	const   MAIL_AUTHDAEMON_STARTING_MODULE			=  34 ;
+	const   MAIL_AUTHDAEMON_INSTALLING_MODULE		=  35 ;
+	const   MAIL_AUTHDAEMON_MODULE_INSTALLED		=  36 ;
+	const   MAIL_SMTP_RELAY_ACCESS_DENIED			=  37 ;
+	const   MAIL_PROCESS_LIMIT_REACHED			=  38 ;
+	const   MAIL_INFORMATIONAL_WARNING			=  39 ;
+	const   MAIL_IMAP_SSL_CONNECTION_RESET_BY_PEER		=  40 ;
+	const   MAIL_POP3_SSL_CONNECTION_TIMED_OUT		=  41 ;
+	const   MAIL_AUTHDAEMON_MYSQL_LOGIN_FAILED		=  42 ;
+	const	MAIL_POP3_AUTHENTICATION_IO_ERROR		=  43 ;
+	const   MAIL_SMTP_TIMEOUT				=  44 ;
+	const   MAIL_IMAP_SSL_RECEIVED_HTTP_REQUEST		=  45 ;
+	const   MAIL_POP3_SSL_UNKNOWN_HELLO			=  46 ;
+	const   MAIL_POP3_SSL_NO_SHARED_CIPHER			=  47 ;
+	const   MAIL_SMTP_AUTH_NO_PASSWORD			=  48 ;
+	const   MAIL_SMTP_AUTH_BLANK_USER			=  49 ; 
+	const   MAIL_TLSMGR_READ_TIMEOUT			=  50 ;
+	const	MAIL_SMTP_IMPROPER_COMMAND_PIPELINING		=  51 ;
+	const   MAIL_SMTP_TO					=  52 ;
+	const	MAIL_PERMISSION_DENIED				=  53 ;
+	const   MAIL_PROCESS_EXITED				=  54 ;
+	const	MAIL_SSL_ACCEPT_ERROR				=  55 ;
+	const	MAIL_TLS_LIBRARY_PROBLEM			=  56 ; 
+	const	MAIL_UNKNOWN_COMMAND				=  57 ;
+	const	MAIL_USAGE					=  58 ;
+	const	MAIL_MYSQL_CONNECTION_REFUSED			=  59 ;
+	const	MAIL_MYSQL_LOOKUP_ERROR				=  60 ;
+	const	MAIL_MYSQL_QUERY_ERROR				=  61 ;
+	const	MAIL_SMTP_ILLEGAL_ADDRESS_SYNTAX		=  62 ;
+
+
+	// Constructor -
+	//	Builds the log object
+	public function  __construct ( $string_store, $rsadmin ) 
+	   {
+		parent::__construct ( RsAdmin::LOGTYPE_MAIL, $string_store, $rsadmin ) ;
+	    }
+ 
+
+	/*--------------------------------------------------------------------------------------------------------------
+
+	    Parse -
+		Parses mail messages.
+
+	 *-------------------------------------------------------------------------------------------------------------*/
+
+	// Message of the form :
+	//	vps108493 postfix/smtpd[17630]: lost connection after CONNECT from unknown[unknown]
+	// or :
+	//	vps108493 postfix/smtp[9457]: 1B66D4080B: lost connection with smtp-in.orange.fr[80.12.242.9] while
+	//	receiving the initial server greeting
+	// Constant : MAIL_SMTP_LOST_CONNECTION
+	private static	$regex_smtp_lost_connection		=  '#
+									(?P<message>
+										lost \s+ connection \s+ 
+										( 
+											(
+												after \s+
+												(?P<step> [^\s]+)
+												\s+ from 
+											 ) |
+											(
+												with
+											 )
+										 )
+										\s+
+										(?P<domain> [^\[]+)
+										\[
+										(?P<ip> [^\]]+)
+										\]
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps108493 postfix/smtpd[17630]: disconnect from unknown[unknown]
+	// Constant : MAIL_SMTP_DISCONNECTED.
+	private static	$regex_smtp_disconnected		=  '#
+									(?P<message>
+										disconnect \s+ from \s+
+										(?P<domain> [^\[]+)
+										\[
+										(?P<ip> [^\]]+)
+										\]
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps108493 postfix/anvil[17632]: statistics: max connection rate 1/60s for (smtp:unknown) at Jun 24 23:01:17
+	//	Constant : MAIL_STAT_MAX_CONNECTION_RATE
+	private static	$regex_stat_max_connection_rate		=  '#
+									(?P<message>
+										statistics: \s
+										max \s+ connection \s+ rate
+										.*?
+										for \s+ \( [^:]+
+										:
+										(?P<ip> [^)]+)
+										\)
+									 )
+									\s+ at \s+
+									(?P<date> .*)
+								    #imsx' ;
+	// Message of the form :
+	//	vps108493 postfix/anvil[17632]: statistics: max connection count 1 for (smtp:unknown) at Jun 24 23:01:17
+	//	Constant : MAIL_STAT_MAX_CONNECTION_COUNT
+	private static	$regex_stat_max_connection_count	=  '#
+									(?P<message>
+										statistics: \s
+										max \s+ connection \s+ count
+										.*?
+										for \s+ \( [^:]+ :
+										(?P<ip> [^)]+)
+										\)
+									 )
+									\s+ at \s+
+									(?P<date> .*)
+								    #imsx' ;
+	// Message of the form :
+	//	vps108493 postfix/anvil[17632]: statistics: max cache size 1 at Jun 24 23:01:17
+	//	Constant : MAIL_STAT_MAX_CACHE_SIZE
+	private static	$regex_stat_max_cache_size		=  '#
+									(?P<message>
+										statistics: \s
+										max \s+ cache \s+ size
+										.*?
+									 )
+									\s+ at \s+
+									(?P<date> .*)
+								    #imsx' ;
+	// Message of the form :
+	//	vps108493 postfix/smtpd[17664]: connect from unknown[unknown]
+	//	Constant : MAIL_SMTP_CONNECTED
+	private static	$regex_smtp_connected			=  '#
+									(?P<message>
+										connect \s+ from \s+
+										(?P<domain> [^\[]+)
+										\[
+										(?P<ip> [^\]]+)
+										\]
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps108493 postfix/pickup[17880]: AE02F4214D: uid=0 from=<root>
+	//	Constant : MAIL_SMTP_PICKUP
+	private static  $regex_smtp_pickup			=  '#
+									(?P<message>
+										[A-Z0-9]+ : \s+ uid=
+										.*?
+										from=<
+											(?P<sender> [^>]+)
+										>
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps108493 postfix/cleanup[18028]: AE02F4214D: message-id=<20150625011724.AE02F4214D@ks351268.kimsufi.com>
+	//	Constant : MAIL_SMTP_CLEANUP
+	private static  $regex_smtp_cleanup			=  '#
+									(?P<message>
+										[A-Z0-9]+ : \s+
+										.*
+										message-id=<?
+											(?P<sender> [^>]+)
+										>?
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps108493 postfix/smtp[18031]: AE02F4214D: replace: header From: root@vps108493.ovh.net (root): From:
+        //	"Unattended Services [vps108493]" <unattended-services@vps108493.ovh.net>
+	//	Constant : MAIL_SMTP_REPLACE_HEADER
+	private static  $regex_smtp_replace_header		=  '#
+									(?P<message>
+										[A-Z0-9]+ : \s+
+										replace: \s+ header \s+ \w+: \s+
+										(?P<original_sender> [^\s]+)
+										.*? : \s+ \w+:
+										.*? <
+										(?P<sender> [^>]+)
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps108493 postfix/smtp[18031]: AE02F4214D: to=<unattended-services@orange.fr>,
+	//	relay=smtp-in.orange.fr[80.12.242.9]:25, delay=0.98, delays=0.37/0.04/0.13/0.45, dsn=2.0.0, status=sent
+	//	(250 2.0.0 kRHR1q0094rPUeV01RHR1t mail accepted for delivery)
+	//	Constant : MAIL_SMTP_ACCEPTED_FOR_DELIVERY
+	private static  $regex_smtp_accepted_for_delivery	=  '#
+									(?P<message>
+										[A-Z0-9]+ : \s+
+										to=<
+										(?P<recipient> [^>]+)
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps108493 postfix/qmgr[2455]: AE02F4214D: removed
+	//	Constant : MAIL_SMTP_REMOVED
+	private static  $regex_smtp_removed			=  '#
+									(?P<message>
+										[A-Z0-9]+ : \s+
+										removed
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps108493 postfix/smtpd[18369]: warning: non-SMTP command from unknown[42.156.250.119]: GET http://www.taobao.com/ HTTP/1.1
+	//	Constant : MAIL_NON_smtp_command_id
+	private static   $regex_non_smtp_command_id		=  '#
+									(?P<message>
+										warning: \s+
+										non-SMTP \s+ command \s+ from \s+
+										(?P<domain> [^\[]+)
+										\[
+										(?P<ip> [^\]]+)
+										\] : \s+
+										(?P<command> .*)
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	vps108493 pop3d: Connection, ip=[::ffff:182.118.53.50]
+	//	Constant : MAIL_POP3D_CONNECTION
+	private static	$regex_pop3_connection			=  '#
+									(?P<message>
+										Connection, \s+ ip=
+										\[
+										(?P<ip> [^\]]+)
+										\]
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	vps108493 pop3d: Disconnected, ip=[::ffff:182.118.53.50]
+	//	Constant : MAIL_POP3_DISCONNECTION
+	private static	$regex_pop3_disconnection		=  '#
+									(?P<message>
+										Disconnected, \s+ ip=
+										\[
+										(?P<ip> [^\]]+)
+										\]
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	vps108493 postfix/smtpd[20780]: warning: hostname hosted-by.shineservers.com does not resolve to address
+	//      188.122.72.102: Name or service not known
+	//	Constant : MAIL_SMTP_NOT_RESOLVED
+	private static  $regex_smtp_not_resolved		=  '#
+									(?P<message>
+										warning: \s+ hostname \s+
+										(?P<domain> [^\s]+)
+										\s+
+										does \s+ not \s+ resolve \s+ to \s+ address \s+
+										(?P<ip> [^\s:]+)
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	vps108493 pop3d: Unexpected SSL connection shutdown.
+	//	Constant : MAIL_POP3_UNEXPECTED_SSL_CONNECTION_SHUTDOWN
+	private static	$regex_pop3_unexpected_connection_shutdown 
+								=  '#
+									(?P<message>
+										Unexpected \s+ SSL \s+ connection \s+ shutdown
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	vps108493 postfix/smtpd[22116]: warning: unknown[65.210.36.70]: SASL LOGIN authentication failed: no mechanism available
+	//	Constant : MAIL_SMTP_LOGIN_AUTHENTICATION_FAILED
+	private static  $regex_smtp_login_authentication_failed	=  '#
+									(?P<message>
+										warning: \s+ 
+										(?P<domain> [^\[]+)
+										\[
+										(?P<ip> [^\]]+)
+										\] : \s+
+										SASL \s+ LOGIN \s+ authentication \s+ failed
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	vps108494 postfix/smtpd[26044]: warning: unknown[89.121.207.234]: SASL PLAIN authentication failed: no mechanism available
+	//	Constant : MAIL_SMTP_PLAIN_AUTHENTICATION_FAILED
+	private static  $regex_smtp_plain_authentication_failed	=  '#
+									(?P<message>
+										warning: \s+ 
+										(?P<domain> [^\[]+)
+										\[
+										(?P<ip> [^\]]+)
+										\] : \s+
+										SASL \s+ PLAIN \s+ authentication \s+ failed
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	vps108494 postfix/smtpd[32597]: SSL_accept error from li1.monitor.binaryedge.io[97.107.141.70]: lost connection
+	//	Constant : MIL_SMTP_LOST_SSL_CONNECTION
+	private static  $regex_smtp_lost_ssl_connection		=  '#
+									(?P<message>
+										SSL_accept \s+ error \s+ from \s+
+										(?P<domain> [^\[]+)
+										\[
+										(?P<ip> [^\]]+)
+										\] : \s+
+										lost \s+ connection
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	vps108494 postfix/smtpd[14947]: warning: Connection rate limit exceeded: 4 from unknown[103.253.2.50] for service smtp
+	//	Constant : MAIL_SMTP_CONNECTION_RATE_EXCEEDED
+	private static  $regex_smtp_connection_rate_exceeded	=  '#
+									(?P<message>
+										warning: \s+ Connection \s+ rate \s+ limit \s+ exceeded: \s+
+										\d+ \s+ from \s+
+										(?P<domain> [^\[]+)
+										\[
+										(?P<ip> [^\]]+)
+										\] \s+
+										for \s+ service \s+ smtp
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	vps108494 postfix/master[2329]: terminating on signal 15
+	//	Constant : MAIL_TERMINATING
+	private static	$regex_mail_terminating			=  '#
+									(?P<message>
+										terminating \s+ on \s+ signal
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	vps108494 postfix/master[2416]: daemon started -- version 2.9.6, configuration /etc/postfix
+	//	Constant : MAIL_STARTED
+	private static	$regex_mail_started			=  '#
+									(?P<message>
+										daemon \s+ started \s+ --
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	vps108495 postfix/smtpd[26596]: too many errors after UNKNOWN from unknown[14.215.136.116]
+	//	vps108493 postfix/smtpd[4459]: too many errors after AUTH from unknown[59.38.97.157]
+	//	Constant : MAIL_SMTP_TOO_MANY_ERRORS
+	private static	$regex_smtp_too_many_errors		=  '#
+									(?P<message>
+										too \s+ many \s+ errors \s+ after \s+
+										(?P<command> [^\s]+)
+										\s+ from \s+
+										(?P<domain> [^\[]+)
+										\[
+										(?P<ip> [^\]]+)
+										\] 
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	vps169910 postfix/smtp[674]: 494AC41536: to=<root@vps169910.ovh.net>, orig_to=<root>, relay=none,
+	//                        delay=0.19, delays=0.07/0.01/0.11/0, dsn=5.4.6, status=bounced (mail for vps169910.ovh.net loops
+	//                        back to myself)
+	// or :
+	//	vps169910 postfix/smtp[674]: 737A84154D: to=<root@vps169910.ovh.net>, relay=none, delay=0.01,
+	//      delays=0.01/0/0/0, dsn=5.4.6, status=bounced (mail for vps169910.ovh.net loops back to myself)
+	//	Constant : MAIL_SMTP_LOOP_BACK
+	// or :
+	//	vps169910 postfix/local[23618]: 33ADC4154F: to=<gouv.fr@localhost>, relay=local, delay=0.24,
+	//	delays=0.15/0.05/0/0.04, dsn=5.1.1, status=bounced (unknown user: "gouv.fr")
+	//
+	//	Constant : MAIL_SMTP_BOUNCED
+	private static	$regex_smtp_loop_back			=  '#
+									(?P<message>
+										[A-Z0-9]+ : \s+
+										to=<
+										(?P<sender> [^>]+)
+										> .*
+										(
+											orig_to=<
+											(?P<original_sender> [^>]+)
+											>
+										 )?
+										.+?
+										(
+											(loops \s+ back \s+ to \s+ myself)
+											|
+											(unknown \s+ user:)
+										 )
+										.*
+									)
+								    #imsx' ;
+	
+	// Message of the form :
+	//	vps169910 postfix/qmgr[2519]: 737A84154D: from=<>, size=2784, nrcpt=1 (queue active)
+	//	Constant : MAIL_SMTP_FROM
+	private static	$regex_smtp_from			=  '#
+									(?P<message>
+										[A-Z0-9]+ : \s+
+										from=<
+										(?P<sender> [^>]*)
+										> .*?
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	vps169910 postfix/bounce[675]: 494AC41536: sender non-delivery notification: 737A84154D
+	//	Constant : MAIL_SMTP_BOUNCED
+	private static	$regex_smtp_bounced			=  '#
+									(?P<message>
+										[A-Z0-9]+ : \s+
+										sender \s+ non-delivery \s+ notification
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	vps169910 pop3d: LOGIN FAILED, user=bezhan@92, ip=[::ffff:192.227.191.66]
+	// or :
+	//	vps179002 pop3d: LOGIN FAILED, method=LOGIN, ip=[::ffff:203.86.8.235]
+	//	Constant : MAIL_POP3_LOGIN_FAILED
+	private static	$regex_pop3_login_failed		=  '#
+									(?P<message>
+										LOGIN \s+ FAILED, \s+
+										(
+											(
+												user=
+												(?P<user> [^,]+)
+											 )
+											|
+											(
+												method=
+												(?P<method> [^,]+)
+											 )
+										)
+										, \s+ ip=
+										\[
+										(?P<ip> [^\]]+)
+										\]
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	vps169910 pop3d: LOGOUT, ip=[::ffff:182.73.152.18]
+	//	Constant : MAIL_POP3_LOGOUT
+	private static	$regex_pop3_logout			=  '#
+									(?P<message>
+										LOGOUT, \s+
+										ip=
+										\[
+										(?P<ip> [^\]]+)
+										\]
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	vps169910 pop3d: Maximum connection limit reached for ::ffff:182.73.152.1
+	//	Constant : MAIL_POP3_MAX_CONNECTIONS_REACHED
+	private static	$regex_pop3_max_connections_reached	=  '#
+									(?P<message>
+										Maximum \s+ connection \s+ limit \s+ reached \s+ for \s+
+										(?P<ip> [^\s]+)
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	vps179002 pop3d-ssl: couriertls: accept: error:1408A0C1:SSL routines:SSL3_GET_CLIENT_HELLO:no shared cipher
+	//	Constant : MAIL_POP3_SSL_NO_SHARED_CIPHER
+	private static	$regex_pop3_ssl_no_shared_cipher	=  '#
+									(?P<message>
+										couriertls: \s+ accept:
+										.*
+										no \s+ shared \s+ cipher
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	vps169912 imapd-ssl: couriertls: connect: error:1408A0C1:SSL routines:SSL3_GET_CLIENT_HELLO:no shared cipher
+	//	Constant : MAIL_IMAP_SSL_NO_SHARED_CIPHER
+	private static	$regex_imap_ssl_no_shared_cipher	=  '#
+									(?P<message>
+										couriertls: \s+ connect:
+										.*
+										no \s+ shared \s+ cipher
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	vps179003 imapd-ssl: couriertls: connect: error:14076102:SSL routines:SSL23_GET_CLIENT_HELLO:unsupported protocol
+	//	Constant : MAIL_IMAP_SSL_UNSUPPORTED_PROTOCOL
+	private static	$regex_imap_ssl_unsupported_protocol	=  '#
+									(?P<message>
+										couriertls: \s+ connect:
+										.*
+										unsupported \s+ protocol
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	vps169910 authdaemond: stopping authdaemond children
+	//	Constant : MAIL_AUTHDAEMON_STOPPING_CHILDREN
+	private static	$regex_authdaemon_stopping_children	=  '#
+									(?P<message>
+										stopping \s+ authdaemond \s+ children
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	vps108493 authdaemond: modules="authpam", daemons=5
+	//	Constant : MAIL_AUTHDAEMON_STARTING_MODULE
+	private static	$regex_authdaemon_starting_module	=  '#
+									(?P<message>
+										modules=
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	vps108493 authdaemond: Installing libauthpam
+	//	Constant : MAIL_AUTHDAEMON_INSTALLING_MODULE
+	private static	$regex_authdaemon_installing_module	=  '#
+									(?P<message>
+										installing \s+
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	vps108493 authdaemond: Installation complete: authpam
+	//	Constant : MAIL_AUTHDAEMON_MODULE_INSTALLED
+	private static	$regex_authdaemon_module_installed	=  '#
+									(?P<message>
+										Installation \s+ complete: \s+
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	vps169910 postfix/smtpd[31837]: NOQUEUE: reject: RCPT from unknown[94.102.51.125]: 554 5.7.1
+        //	<ottfried@fastmail.com>: Relay access denied; from=<> to=<ottfried@fastmail.com> proto=ESMTP
+        //	helo=<smtp-brute.io>
+	//	Constant : MAIL_SMTP_RELAY_ACCESS_DENIED
+	private static	$regex_smtp_relay_access_denied		=  '#
+									(?P<message>
+										NOQUEUE: \s+ reject: \s+ RCPT \s+ from \s+
+										(?P<domain> [^\[]+)
+										\[
+										(?P<ip> [^\]]+)
+										\]
+										.+?
+										from=<
+										(?P<sender> [^>]*)
+										> \s+ 
+										to=< 
+										(?P<recipient> [^>]*)
+										>
+										.+?
+										( ( helo ) | ( ehlo ) ) =<
+										(?P<server> [^>]*)
+										>
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	vps169910 postfix/master[2488]: warning: service "smtp" (25) has reached its process limit "3": new
+        //	clients may experience noticeable delays
+	//	Constant : MAIL_PROCESS_LIMIT_REACHED
+	private static	$regex_process_limit_reached		=  '#
+									(?P<message>
+										warning: \s+ service
+										.*?
+										has \s+ reached \s+ its \s+ process \s+ limit
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	vps169910 postfix/master[2488]: warning: to avoid this condition, increase the process count in
+	//	master.cf or reduce the service time per client
+	// or :
+	//	vps169910 postfix/master[2488]: warning: see http://www.postfix.org/STRESS_README.html for examples of
+	//	stress-adapting configuration settings
+	//
+	//	Constant : MAIL_INFORMATIONAL_WARNING
+	private static  $regex_informational_warning		=  '#
+									(?P<message> 
+										(
+											(
+												warning: \s+
+												to \s+ avoid \s+ this \s+ condition, \s+
+												increase \s+ the \s+ process \s+ count
+											 )
+											|
+											(
+												warning: \s+
+												.*?
+												for \s+ examples \s+ of \s+ stress-adapting \s+
+												configuration \s+ settings
+											 )
+										 )
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	vps169912 imapd-ssl: couriertls: read: Connection reset by peer
+	//	Constant : MAIL_IMAP_SSL_CONNECTION_RESET_BY_PEER
+	private static	$regex_imap_ssl_connection_reset_by_peer=  '#
+									(?P<message>
+										couriertls: \s+ [^\s:]+ : \s+
+										connection \s+ reset \s+ by \s+ peer
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :	
+	//	vps169912 pop3d-ssl: couriertls: accept: Connection timed out
+	//	Constant : MAIL_POP3_SSL_CONNECTION_TIMED_OUT
+	private static	$regex_pop3_ssl_connection_timed_out	=  '#
+									(?P<message>
+										couriertls: \s+ accept: \s+
+										connection \s+ timed \s+ out
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	vps179002 authdaemond: failed to connect to mysql server (server=localhost, userid=mail_admin): Access
+	//	denied for user 'mail_admin'@'localhost' (using password: YES)
+	//	Constant : MAIL_AUTHDAEMON_MYSQL_LOGIN_FAILED
+	private static	$regex_authdaemon_mysql_login_failed	=  '#
+									(?P<message>
+										failed \s+ to \s+ connect \s+ to \s+ mysql \s+ server
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	vps179002 pop3d: authentication error: Input/output error
+	//	Constant : MAIL_POP3_AUTHENTICATION_IO_ERROR
+	private static	$regex_pop3_authentication_io_error	=  '#
+									(?P<message>
+										authentication \s+ error : \s+
+										Input/output \s+ error
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	vps179002 postfix/smtpd[20254]: timeout after EHLO from unknown[219.144.200.102]
+	//	Constant : MAIL_SMTP_TIMEOUT
+	private static  $regex_smtp_timeout			=  '#
+									(?P<message>
+										timeout \s+ after \s+
+										(?P<command> [^\s]+)
+										\s+ from \s+
+										(?P<domain> [^\[]+)
+										\[
+										(?P<ip> [^\]]+)
+										\] 
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	vps179002 imapd-ssl: couriertls: accept: error:1407609C:SSL routines:SSL23_GET_CLIENT_HELLO:http request
+	//	Constant : MAIL_IMAP_SSL_RECEIVED_HTTP_REQUEST
+	private static	$regex_imap_ssl_received_http_request	=  '#
+									(?P<message>
+										couriertls: \s+ [^\s:]+ : \s+
+										.*?
+										: http \s+ request
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	vps179002 pop3d-ssl: couriertls: connect: error:140760FC:SSL routines:SSL23_GET_CLIENT_HELLO:unknown
+	//	Constant : MAIL_POP3_SSL_UNKNOWN_HELLO
+	private static	$regex_pop3_ssl_unknown_hello	=  '#
+									(?P<message>
+										couriertls: \s+ [^\s:]+ : \s+
+										.*?
+										: unknown
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	vps179003 postfix/smtpd[30172]: warning: SASL authentication failure: Can only find author (no password)
+	//	Constant : MAIL_SMTP_AUTH_NO_PASSWORD
+	private static	$regex_smtp_auth_no_password		=  '#
+									(?P<message>
+										warning: \s+ SASL \s+ authentication \s+ failure: \s+
+										Can \s+ only \s+ find \s+ author
+										.*
+									)
+								    #imsx' ;
+
+	// Message of the form :
+	//	vps179003 postfix/smtpd[14485]: warning: SASL authentication failure: All-whitespace username
+	//	Constant : MAIL_SMTP_AUTH_BLANK_USER
+	private static	$regex_smtp_auth_blank_user		=  '#
+									(?P<message>
+										warning: \s+ SASL \s+ authentication \s+ failure: \s+
+										All-whitespace \s+ username
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	vps108496 postfix/master[2327]: warning: unix_trigger_event: read timeout for service private/tlsmgr
+	//	Constant : MAIL_TLSMGR_READ_TIMEOUT
+	private static	$regex_tlsmgr_read_timeout		=  '#
+									(?P<message>
+										warning: \s+ unix_trigger_event: \s+ read \s+ timeout \s+
+										for \s+ service \s+
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	vps169910 postfix/smtpd[12541]: improper command pipelining after MAIL from
+        //	unknown[211.230.221.216]: RCPT TO: <qwertyq848@yahoo.com>\r\n
+	//	Constant : MAIL_SMTP_IMPROPER_COMMAND_PIPELINING
+	private static	$regex_smtp_improper_command_pipelining	=  '#
+									(?P<message>
+										improper \s+ command \s+ pipelining \s+ after \s+ MAIL \s+ from \s+ 
+										(?P<sender> [^\[]+ )
+										\[
+										(?P<ip> [^\]]+)
+										\]
+										: \s+ RCPT \s+ TO: \s+ 
+										\<
+											(?P<recipient> [^>]+)
+										\>
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	vps108493 postfix/smtp[25410]: A95D440A7C: to=<christian.vigh@wuthering-bytes.com>,
+        //	relay=redirect.ovh.net[213.186.33.5]:25, delay=0.85, delays=0.08/0.02/0.49/0.26, dsn=2.0.0,
+        //	status=sent (250 ok 1443991628 qp 21901)
+	// Constant : MAIL_SMTP_TO
+	private static  $regex_smtp_to				=  '#
+									(?P<message>
+										[A-Z0-9]+ : \s+
+										to=<
+										(?P<recipient> [^>]+)
+										.*
+										(?P<domain> [^\[]+)
+										\[
+											(?P<ip> [^\]]+)
+										\]
+										( 
+											:
+											(?P<port> \d+)
+										 )
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps108493 postfix/master[2453]: warning: master_wakeup_timer_event: service pickup(public/pickup): Permission denied
+	// Constant : MAIL_PERMISSION_DENIED
+	private static	$regex_permission_denied		=  '#
+									(?P<message>
+										.* 
+										(
+											(service \s+ \w+) |
+											(scan_dir_push)
+										 )
+										.*
+										(
+											\(
+												(?P<path> [^)]+)
+											\) : \s+ Permission \s+ denied
+										 )?
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	vps108493 postfix/master[2453]: warning: process /usr/lib/postfix/qmgr pid 2479 exit status 1
+	// Constant : MAIL_PROCESS_EXITED
+	private static	$regex_process_exited			=  '#
+									(?P<message>
+										.* 
+										process \s+ .* \s+ pid .* exit \s+ status
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	vps169912 postfix/smtpd[19622]: SSL_accept error from unknown[104.131.49.61]: -1
+	// Constant : MAIL_SSL_ACCEPT_ERROR
+	private static	$regex_mail_ssl_accept_error		=  '#
+									(?P<message>
+										SSL_accept \s+ error
+										\s+ from \s+
+										(?P<domain> [^\[]+)
+										\[
+										(?P<ip> [^\]]+)
+										\] 
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	vps169912 postfix/smtpd[19622]: warning: TLS library problem: 19622:error:1408F10B:SSL
+        //	routines:SSL3_GET_RECORD:wrong version number:s3_pkt.c:340:
+	// Constant : MAIL_TLS_LIBRARY_PROBLEM
+	private static	$regex_tls_library_problem		=  '#
+									(?P<message>
+										warning: \s+ 
+										TLS \s+ library \s+ problem
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	vps108493 postfix/postfix-script[23407]: error: unknown command: 'restart'
+	//	Constant : MAIL_UNKNOWN_COMMAND
+	private static	$regex_unknown_command			=  '#
+									(?P<message>
+										error : \s+
+										unknown \s+ command:
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	vps108493 postfix/postfix-script[23408]: fatal: usage: postfix start (or stop, reload, abort, flush, check, 
+	//		status, set-permissions, upgrade-configuration)
+	// Constant : MAIL_USAGE
+	private static	$regex_usage				=  '#
+									(?P<message>
+										fatal : \s+
+										usage:
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	postfix/proxymap[31090]: warning: connect to mysql server 127.0.0.1: Can't connect to
+        //	MySQL server on '127.0.0.1' (111)
+	// Constant : MAIL_MYSQL_CONNECTION_REFUSED
+	private static	$regex_mysql_connection_refused		=  '#
+									(?P<message>
+										warning : \s+
+										connect \s+ to \s+ mysql \s+ server \s+
+										(?P<domain> [^:]+)
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	vps108493 postfix/trivial-rewrite[31091]: warning:
+        //      proxy:mysql:/etc/postfix/mysql-virtual_transports.cf lookup error for "*"
+	// Constant : MAIL_MYSQL_LOOKUP_ERROR
+	private static	$regex_mysql_lookup_error		=  '#
+									(?P<message>
+										warning : .*
+										lookup \s+ (error|problem) \s+ for
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	vps108493 postfix/proxymap[715]: warning: mysql query failed: Aborted connection 64 to db: 'mail'
+        //	user: 'mail_admin' host: 'localhost' (init_connect command failed)
+	// Constant : MAIL_MYSQL_QUERY_ERROR
+	private static	$regex_mysql_query_error		=  '#
+									(?P<message>
+										warning : .*
+										mysql \s+ query \s+ failed
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	warning: Illegal address syntax from unknown[117.5.196.151] in MAIL command: <tfmoi@5.196.151>
+	// Constant : MAIL_SMTP_ILLEGAL_ADDRESS_SYNTAX
+	private static	$regex_mail_illegal_address_syntax	=  '#
+									(?P<message>
+										warning: \s+ Illegal \s+ address \s+ syntax \s+ from \s+ 
+										(?P<sender> [^\[]+ )
+										\[
+										(?P<ip> [^\]]+)
+										\]
+										 \s+ in \s+ MAIL \s+ command: \s+ 
+										\<
+											(?P<recipient> [^>]+)
+										\>
+										.*
+									)
+								    #imsx' ;
+
+
+	protected function  Parse ( $line, &$parsed_data, $string_store )
+	   {
+		static	$re	=  "#
+					(?P<host> [^\s]+)
+					\s+
+					(?P<module> [^\[:]+)
+					(
+						\[
+						(?P<pid> [^\]]+)
+						\] 
+					 )?
+					: \s+
+					(?P<message> .*)
+				    #imsx" ;
+
+		// First, check that the supplied message has three parts : a severity, an optional client ip and a message
+		if  ( preg_match ( $re, $line, $match ) )
+		   {
+			$log_code		=  self::MAIL_NONE ;
+			$message		=  $match [ 'message' ] ;
+			$pid			=  ( isset ( $match [ 'pid' ] ) ) ?  $match [ 'pid' ] : 0 ;
+			$ip_id			=  0 ;
+			$server_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_SERVER_NAME, $match [ 'host' ] ) ;
+			$module_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MODULE_NAME, $match [ 'module' ] ) ;
+			$message_id		=  0 ;
+			$message_timestamp	=  0 ;
+			$domain_id		=  0 ;
+			$sender_id		=  0 ;
+			$recipient_id		=  0 ;
+			$original_sender_id	=  0 ;
+			$original_recipient_id	=  0 ;
+			$step_id		=  0 ;
+			$smtp_command_id	=  0 ;
+			$method_id		=  0 ;
+			$path_id		=  0 ;
+
+			// The big IF that tries to recognize all possible log messages :
+
+			// Message of the form :
+			//	vps108493 postfix/smtpd[17630]: lost connection after CONNECT from unknown[unknown]
+			if  ( preg_match ( self::$regex_smtp_lost_connection, $message, $regex_match ) ) 
+			   {
+				$ip			=  $this -> PreprocessIp ( $regex_match [ 'ip' ] ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE		, $match [ 'message' ] ) ;
+				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP		, $ip ) ;
+				$domain_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_DOMAIN_NAME	, $regex_match [ 'domain' ] ) ;
+				$step_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_SMTP_STEP_NAME	, $regex_match [ 'step' ] ) ;
+
+				$log_code		=  self::MAIL_SMTP_LOST_CONNECTION ;
+			    }
+			// Message of the form :
+			//	vps108493 postfix/smtpd[17630]: disconnect from unknown[unknown]
+			else if  ( preg_match ( self::$regex_smtp_disconnected, $message, $regex_match ) ) 
+			   {
+				$ip			=  $this -> PreprocessIp ( $regex_match [ 'ip' ] ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE		, $match [ 'message' ] ) ;
+				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP		, $ip ) ;
+				$domain_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_DOMAIN_NAME	, $regex_match [ 'domain' ] ) ;
+
+				$log_code		=  self::MAIL_SMTP_DISCONNECTED ;
+			    }
+			// Message of the form :
+			//	vps108493 postfix/anvil[17632]: statistics: max connection rate 1/60s for (smtp:unknown) at Jun 24 23:01:17
+			else if  ( preg_match ( self::$regex_stat_max_connection_rate, $message, $regex_match ) ) 
+			   {
+				$ip			=  $this -> PreprocessIp ( $regex_match [ 'ip' ] ) ;
+				$message_timestamp	=  strtotime ( $regex_match [ 'date' ] ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE		, $regex_match [ 'message' ] ) ;
+				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP		, $ip ) ;
+
+				$log_code		=  self::MAIL_STAT_MAX_CONNECTION_RATE ;
+			    }
+			// Message of the form :
+			//	vps108493 postfix/anvil[17632]: statistics: max connection count 1 for (smtp:unknown) at Jun 24 23:01:17
+			else if  ( preg_match ( self::$regex_stat_max_connection_count, $message, $regex_match ) ) 
+			   {
+				$ip			=  $this -> PreprocessIp ( $regex_match [ 'ip' ] ) ;
+				$message_timestamp	=  strtotime ( $regex_match [ 'date' ] ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE		, $regex_match [ 'message' ] ) ;
+				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP		, $ip ) ;
+
+				$log_code		=  self::MAIL_STAT_MAX_CONNECTION_COUNT ;
+			    }
+			// Message of the form :
+			//	vps108493 postfix/anvil[17632]: statistics: max cache size 1 at Jun 24 23:01:17
+			else if  ( preg_match ( self::$regex_stat_max_cache_size, $message, $regex_match ) ) 
+			   {
+				$message_timestamp	=  strtotime ( $regex_match [ 'date' ] ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE		, $regex_match [ 'message' ] ) ;
+
+				$log_code		=  self::MAIL_STAT_MAX_CACHE_SIZE ;
+			    }
+			// Message of the form :
+			//	vps169910 postfix/smtpd[31837]: NOQUEUE: reject: RCPT from unknown[94.102.51.125]: 554 5.7.1
+			//	<ottfried@fastmail.com>: Relay access denied; from=<> to=<ottfried@fastmail.com> proto=ESMTP
+			//	helo=<smtp-brute.io>
+			else if  ( preg_match ( self::$regex_smtp_relay_access_denied, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$original_sender_id	=
+				$sender_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_SMTP_SENDER		, $regex_match [ 'sender' ] ) ;
+				$original_recipient_id	=
+				$recipient_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_SMTP_RECIPIENT		, $regex_match [ 'recipient' ] ) ;
+				$domain_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_DOMAIN_NAME		, $regex_match [ 'domain' ] ) ;
+				$server_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_SMTP_HELO_NAME		, $regex_match [ 'server' ] ) ;
+
+				$log_code		=  self::MAIL_SMTP_RELAY_ACCESS_DENIED ;
+			    }
+			// Message of the form :
+			//	vps108493 postfix/smtpd[17630]: connect from unknown[unknown]
+			else if  ( preg_match ( self::$regex_smtp_connected, $message, $regex_match ) ) 
+			   {
+				$ip			=  $this -> PreprocessIp ( $regex_match [ 'ip' ] ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE		, $match [ 'message' ] ) ;
+				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP		, $ip ) ;
+				$domain_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_DOMAIN_NAME	, $regex_match [ 'domain' ] ) ;
+
+				$log_code		=  self::MAIL_SMTP_CONNECTED ;
+			    }
+			// Message of the form :
+			//	vps108493 postfix/pickup[17880]: AE02F4214D: uid=0 from=<root>
+			else if  ( preg_match ( self::$regex_smtp_pickup, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE		, $match [ 'message' ] ) ;
+				$sender_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_SMTP_SENDER	, $regex_match [ 'sender' ] ) ;
+
+				$log_code		=  self::MAIL_SMTP_PICKUP ;
+			    }
+			// Message of the form :
+			//	vps108493 postfix/cleanup[18028]: AE02F4214D: message-id=<20150625011724.AE02F4214D@ks351268.kimsufi.com>
+			else if  ( preg_match ( self::$regex_smtp_cleanup, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE		, $match [ 'message' ] ) ;
+
+				$log_code		=  self::MAIL_SMTP_CLEANUP ;
+			    }
+			// Message of the form :
+			//	vps108493 postfix/smtp[18031]: AE02F4214D: replace: header From: root@vps108493.ovh.net (root): From:
+			//	"Unattended Services [vps108493]" <unattended-services@vps108493.ovh.net>
+			else if  ( preg_match ( self::$regex_smtp_replace_header, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE		, $match [ 'message' ] ) ;
+				$original_sender_id	=  $string_store -> Insert ( LogStringStore::LOGSTORE_SMTP_SENDER	, $regex_match [ 'original_sender' ] ) ;
+				$sender_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_SMTP_SENDER	, $regex_match [ 'sender' ] ) ;
+				$log_code		=  self::MAIL_SMTP_REPLACE_FROM_HEADER ;
+			    }
+			// Message of the form :
+			//	vps108493 postfix/smtp[18031]: AE02F4214D: to=<unattended-services@orange.fr>,
+			//	relay=smtp-in.orange.fr[80.12.242.9]:25, delay=0.98, delays=0.37/0.04/0.13/0.45, dsn=2.0.0, status=sent
+			//	(250 2.0.0 kRHR1q0094rPUeV01RHR1t mail accepted for delivery)
+			else if  ( preg_match ( self::$regex_smtp_accepted_for_delivery, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE		, $match [ 'message' ] ) ;
+				$original_recipient_id	=  $string_store -> Insert ( LogStringStore::LOGSTORE_SMTP_RECIPIENT	, $regex_match [ 'recipient' ] ) ;
+				$recipient_id		=  $original_recipient_id ;
+				$log_code		=  self::MAIL_SMTP_SENT_RELAYED ;
+			    }
+			// Message of the form :
+			//	vps108493 postfix/qmgr[2455]: AE02F4214D: removed
+			// No match : bail out for the developer, because no message should be unhandled
+			else if  ( preg_match ( self::$regex_smtp_removed, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE		, $match [ 'message' ] ) ;
+				$log_code		=  self::MAIL_SMTP_REMOVED ;
+			    }
+			// Message of the form :
+			//	vps108493 postfix/smtpd[18369]: warning: non-SMTP command from unknown[42.156.250.119]: GET http://www.taobao.com/ HTTP/1.1
+			else if  ( preg_match ( self::$regex_non_smtp_command_id, $message, $regex_match ) ) 
+			   {
+				$ip			=  $this -> PreprocessIp ( $regex_match [ 'ip' ] ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP			, $ip ) ;
+				$domain_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_DOMAIN_NAME		, $regex_match [ 'domain' ] ) ;
+				$smtp_command_id	=  $string_store -> Insert ( LogStringStore::LOGSTORE_SMTP_COMMAND		, $regex_match [ 'command' ] ) ;
+				$log_code		=  self::MAIL_NON_SMTP_COMMAND ;
+			    }
+			// Message of the form :
+			//	vps108493 pop3d: Connection, ip=[::ffff:182.118.53.50]
+			else if  ( preg_match ( self::$regex_pop3_connection, $message, $regex_match ) ) 
+			   {
+				$ip			=  $this -> PreprocessIp ( $regex_match [ 'ip' ] ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP			, $ip ) ;
+				$log_code		=  self::MAIL_POP3_CONNECTION ;
+			    }
+			// Message of the form :
+			//	vps108493 pop3d: Disconnected, ip=[::ffff:182.118.53.50]
+			else if  ( preg_match ( self::$regex_pop3_disconnection, $message, $regex_match ) ) 
+			   {
+				$ip			=  $this -> PreprocessIp ( $regex_match [ 'ip' ] ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP			, $ip ) ;
+				$log_code		=  self::MAIL_POP3_DISCONNECTION ;
+			    }
+			// Message of the form :
+			//	vps108493 postfix/smtpd[20780]: warning: hostname hosted-by.shineservers.com does not resolve to address
+			//      188.122.72.102: Name or service not known
+			else if  ( preg_match ( self::$regex_smtp_not_resolved, $message, $regex_match ) ) 
+			   {
+				$ip			=  $this -> PreprocessIp ( $regex_match [ 'ip' ] ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP			, $ip ) ;
+				$domain_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_DOMAIN_NAME		, $regex_match [ 'domain' ] ) ;
+				$log_code		=  self::MAIL_SMTP_NOT_RESOLVED ;
+			    }
+			// Message of the form :
+			//	vps108493 pop3d: Unexpected SSL connection shutdown.
+			else if  ( preg_match ( self::$regex_pop3_unexpected_connection_shutdown, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::MAIL_POP3_UNEXPECTED_SSL_CONNECTION_SHUTDOWN ;
+			    }
+			// Message of the form :
+			//	vps108493 postfix/smtpd[22116]: warning: unknown[65.210.36.70]: SASL LOGIN authentication failed: no mechanism available
+			else if  ( preg_match ( self::$regex_smtp_login_authentication_failed, $message, $regex_match ) ) 
+			   {
+				$ip			=  $this -> PreprocessIp ( $regex_match [ 'ip' ] ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP			, $ip ) ;
+				$domain_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_DOMAIN_NAME		, $regex_match [ 'domain' ] ) ;
+				$log_code		=  self::MAIL_SMTP_LOGIN_AUTHENTICATION_FAILED ;
+			    }
+			// Message of the form :
+			//	vps108493 postfix/smtpd[22116]: warning: unknown[65.210.36.70]: SASL PLAIN authentication failed: no mechanism available
+			else if  ( preg_match ( self::$regex_smtp_plain_authentication_failed, $message, $regex_match ) ) 
+			   {
+				$ip			=  $this -> PreprocessIp ( $regex_match [ 'ip' ] ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP			, $ip ) ;
+				$domain_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_DOMAIN_NAME		, $regex_match [ 'domain' ] ) ;
+				$log_code		=  self::MAIL_SMTP_PLAIN_AUTHENTICATION_FAILED ;
+			    }
+			// Message of the form :
+			//	vps108494 postfix/smtpd[32597]: SSL_accept error from li1.monitor.binaryedge.io[97.107.141.70]: lost connection
+			else if  ( preg_match ( self::$regex_smtp_lost_ssl_connection, $message, $regex_match ) ) 
+			   {
+				$ip			=  $this -> PreprocessIp ( $regex_match [ 'ip' ] ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP			, $ip ) ;
+				$domain_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_DOMAIN_NAME		, $regex_match [ 'domain' ] ) ;
+				$log_code		=  self::MAIL_SMTP_LOST_SSL_CONNECTION ;
+			    }
+			// Message of the form :
+			//	vps108494 postfix/smtpd[14947]: warning: Connection rate limit exceeded: 4 from unknown[103.253.2.50] for service smtp
+			else if  ( preg_match ( self::$regex_smtp_connection_rate_exceeded, $message, $regex_match ) ) 
+			   {
+				$ip			=  $this -> PreprocessIp ( $regex_match [ 'ip' ] ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP			, $ip ) ;
+				$domain_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_DOMAIN_NAME		, $regex_match [ 'domain' ] ) ;
+				$log_code		=  self::MAIL_SMTP_CONNECTION_RATE_EXCEEDED ;
+			    }
+			// Message of the form :
+			//	vps108494 postfix/master[2329]: terminating on signal 15
+			else if  ( preg_match ( self::$regex_mail_terminating, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::MAIL_TERMINATING ;
+			    }
+			// Message of the form :
+			//	vps108494 postfix/master[2416]: daemon started -- version 2.9.6, configuration /etc/postfix
+			else if  ( preg_match ( self::$regex_mail_started, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::MAIL_STARTED ;
+			    }
+			// Message of the form :
+			//	vps108495 postfix/smtpd[26596]: too many errors after UNKNOWN from unknown[14.215.136.116]
+			else if  ( preg_match ( self::$regex_smtp_too_many_errors, $message, $regex_match ) ) 
+			   {
+				$ip			=  $this -> PreprocessIp ( $regex_match [ 'ip' ] ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP			, $ip ) ;
+				$domain_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_DOMAIN_NAME		, $regex_match [ 'domain' ] ) ;
+				$smtp_command_id	=  $string_store -> Insert ( LogStringStore::LOGSTORE_SMTP_COMMAND		, $regex_match [ 'command' ] ) ;
+				$log_code		=  self::MAIL_SMTP_TOO_MANY_ERRORS ;
+			    }
+			// Message of the form :
+			//	vps169910 postfix/smtp[674]: 494AC41536: to=<root@vps169910.ovh.net>, orig_to=<root>, relay=none,
+			//      delay=0.19, delays=0.07/0.01/0.11/0, dsn=5.4.6, status=bounced (mail for vps169910.ovh.net loops
+			//      back to myself)
+			// or :
+			//	vps169910 postfix/smtp[674]: 737A84154D: to=<root@vps169910.ovh.net>, relay=none, delay=0.01,
+			//      delays=0.01/0/0/0, dsn=5.4.6, status=bounced (mail for vps169910.ovh.net loops back to myself)
+			else if  ( preg_match ( self::$regex_smtp_loop_back, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE		, $match [ 'message' ] ) ;
+				$sender_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_SMTP_SENDER	, $regex_match [ 'sender' ] ) ;
+
+				if  ( isset ( $regex_match [ 'original_sender' ] ) )
+					$original_sender_id	=  $string_store -> Insert ( LogStringStore::LOGSTORE_SMTP_SENDER, $regex_match [ 'original_sender' ] ) ;
+				else
+					$original_sender_id	=  $sender_id ;
+
+				$log_code		=  self::MAIL_SMTP_LOOP_BACK ;
+			    }
+			// Message of the form :
+			//	vps169910 postfix/qmgr[2519]: 737A84154D: from=<>, size=2784, nrcpt=1 (queue active)
+			else if  ( preg_match ( self::$regex_smtp_from, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE		, $match [ 'message' ] ) ;
+
+				if  ( $regex_match [ 'sender' ] )
+				   {
+					$sender_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_SMTP_SENDER, $regex_match [ 'sender' ] ) ;
+					$original_sender_id	=  $sender_id ;
+				    }
+
+				$log_code		=  self::MAIL_SMTP_FROM ;
+			    }
+			// Message of the form :
+			//	vps169910 postfix/bounce[675]: 494AC41536: sender non-delivery notification: 737A84154D
+			else if  ( preg_match ( self::$regex_smtp_bounced, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::MAIL_SMTP_BOUNCED ;
+			    }
+			// Message of the form :
+			//	vps169910 pop3d: LOGIN FAILED, user=bezhan@92, ip=[::ffff:192.227.191.66]
+			else if  ( preg_match ( self::$regex_pop3_login_failed, $message, $regex_match ) ) 
+			   {
+				$ip			=  $this -> PreprocessIp ( $regex_match [ 'ip' ] ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP			, $ip ) ;
+
+				if  ( isset ( $regex_match [ 'user' ] ) )
+				   {
+					$sender_id		=
+					$original_sender_id	= $string_store -> Insert ( LogStringStore::LOGSTORE_USER_NAME		, $regex_match [ 'user' ] ) ;
+				    }
+
+				if  ( isset ( $regex_match [ 'method' ] ) )
+				   {
+					$method_id	= $string_store -> Insert ( LogStringStore::LOGSTORE_SMTP_METHOD	, $regex_match [ 'method' ] ) ;
+				    }
+
+				$log_code		=  self::MAIL_POP3_LOGIN_FAILED ;
+			    }
+			// Message of the form :
+			//	vps169910 pop3d: LOGOUT, ip=[::ffff:182.73.152.18]
+			else if  ( preg_match ( self::$regex_pop3_logout, $message, $regex_match ) ) 
+			   {
+				$ip			=  $this -> PreprocessIp ( $regex_match [ 'ip' ] ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP			, $ip ) ;
+				$log_code		=  self::MAIL_POP3_LOGOUT ;
+			    }
+			// Message of the form :
+			//	vps169910 pop3d: Maximum connection limit reached for ::ffff:182.73.152.1
+			else if  ( preg_match ( self::$regex_pop3_max_connections_reached, $message, $regex_match ) ) 
+			   {
+				$ip			=  $this -> PreprocessIp ( $regex_match [ 'ip' ] ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP			, $ip ) ;
+				$log_code		=  self::MAIL_POP3_MAX_CONNECTIONS_REACHED ;
+			    }
+			// Message of the form :
+			//	vps169912 imapd-ssl: couriertls: connect: error:1408A0C1:SSL routines:SSL3_GET_CLIENT_HELLO:no shared cipher
+			else if  ( preg_match ( self::$regex_imap_ssl_no_shared_cipher, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::MAIL_IMAP_SSL_NO_SHARED_CIPHER ;
+			    }
+			// Message of the form :
+			//	vps179002 pop3d-ssl: couriertls: accept: error:1408A0C1:SSL routines:SSL3_GET_CLIENT_HELLO:no shared cipher
+			else if  ( preg_match ( self::$regex_pop3_ssl_no_shared_cipher, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::MAIL_POP3_SSL_NO_SHARED_CIPHER ;
+			    }
+			// Message of the form :
+			//	vps179003 imapd-ssl: couriertls: connect: error:14076102:SSL routines:SSL23_GET_CLIENT_HELLO:unsupported protocol
+			else if  ( preg_match ( self::$regex_imap_ssl_unsupported_protocol, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::MAIL_IMAP_SSL_UNSUPPORTED_PROTOCOL ;
+			    }
+			// Message of the form :
+			//	vps169910 authdaemond: stopping authdaemond children
+			else if  ( preg_match ( self::$regex_authdaemon_stopping_children, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::MAIL_AUTHDAEMON_STOPPING_CHILDREN ;
+			    }
+			// Message of the form :
+			//	vps108493 authdaemond: modules="authpam", daemons=5
+			else if  ( preg_match ( self::$regex_authdaemon_starting_module, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::MAIL_AUTHDAEMON_STARTING_MODULE ;
+			    }
+			// Message of the form :
+			//	vps108493 authdaemond: Installing libauthpam
+			else if  ( preg_match ( self::$regex_authdaemon_installing_module, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::MAIL_AUTHDAEMON_INSTALLING_MODULE ;
+			    }
+			// Message of the form :
+			//	vps108493 authdaemond: Installation complete: authpam
+			else if  ( preg_match ( self::$regex_authdaemon_module_installed, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::MAIL_AUTHDAEMON_MODULE_INSTALLED ;
+			    }
+			// Message of the form :
+			//	vps169910 postfix/master[2488]: warning: service "smtp" (25) has reached its process limit "3": new
+			//	clients may experience noticeable delays
+			else if  ( preg_match ( self::$regex_process_limit_reached, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::MAIL_PROCESS_LIMIT_REACHED ;
+			    }
+			// Message of the form :
+			//	vps169912 imapd-ssl: couriertls: read: Connection reset by peer
+			else if  ( preg_match ( self::$regex_imap_ssl_connection_reset_by_peer, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::MAIL_IMAP_SSL_CONNECTION_RESET_BY_PEER ;
+			    }
+			// Message of the form :
+			//	vps169912 pop3d-ssl: couriertls: accept: Connection timed out
+			else if  ( preg_match ( self::$regex_pop3_ssl_connection_timed_out, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::MAIL_POP3_SSL_CONNECTION_TIMED_OUT ;
+			    }
+			// Message of the form :
+			//	vps179002 authdaemond: failed to connect to mysql server (server=localhost, userid=mail_admin): Access
+			//	denied for user 'mail_admin'@'localhost' (using password: YES)
+			else if  ( preg_match ( self::$regex_authdaemon_mysql_login_failed, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::MAIL_AUTHDAEMON_MYSQL_LOGIN_FAILED ;
+			    }
+			// Message of the form :
+			//	vps179002 pop3d: authentication error: Input/output error
+			else if  ( preg_match ( self::$regex_pop3_authentication_io_error, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::MAIL_POP3_AUTHENTICATION_IO_ERROR ;
+			    }
+			// Message of the form :
+			//	vps179002 postfix/smtpd[20254]: timeout after EHLO from unknown[219.144.200.102]
+			else if  ( preg_match ( self::$regex_smtp_timeout, $message, $regex_match ) ) 
+			   {
+				$ip			=  $this -> PreprocessIp ( $regex_match [ 'ip' ] ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP			, $ip ) ;
+				$domain_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_DOMAIN_NAME		, $regex_match [ 'domain' ] ) ;
+				$smtp_command_id	=  $string_store -> Insert ( LogStringStore::LOGSTORE_SMTP_COMMAND		, $regex_match [ 'command' ] ) ;
+				$log_code		=  self::MAIL_SMTP_TIMEOUT ;
+			    }
+			// Message of the form :
+			//	vps179002 imapd-ssl: couriertls: accept: error:1407609C:SSL routines:SSL23_GET_CLIENT_HELLO:http request
+			else if  ( preg_match ( self::$regex_imap_ssl_received_http_request, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::MAIL_IMAP_SSL_RECEIVED_HTTP_REQUEST ;
+			    }
+			// Message of the form :
+			//	vps179002 pop3d-ssl: couriertls: connect: error:140760FC:SSL routines:SSL23_GET_CLIENT_HELLO:unknown
+			else if  ( preg_match ( self::$regex_pop3_ssl_unknown_hello, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::MAIL_POP3_SSL_UNKNOWN_HELLO ;
+			    }
+			// Message of the form :
+			//	vps179003 postfix/smtpd[30172]: warning: SASL authentication failure: Can only find author (no password)
+			else if  ( preg_match ( self::$regex_smtp_auth_no_password, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::MAIL_SMTP_AUTH_NO_PASSWORD ;
+			    }
+			// Message of the form :
+			//	vps179003 postfix/smtpd[14485]: warning: SASL authentication failure: All-whitespace username.
+			else if  ( preg_match ( self::$regex_smtp_auth_blank_user, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::MAIL_SMTP_AUTH_BLANK_USER ;
+			    }
+			// Message of the form :
+			//	vps108496 postfix/master[2327]: warning: unix_trigger_event: read timeout for service private/tlsmgr
+			else if  ( preg_match ( self::$regex_tlsmgr_read_timeout, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::MAIL_TLSMGR_READ_TIMEOUT ;
+			    }
+			// Message of the form :
+			//	vps169910 postfix/smtpd[12541]: improper command pipelining after MAIL from
+			//	unknown[211.230.221.216]: RCPT TO: <qwertyq848@yahoo.com>\r\n
+			else if  ( preg_match ( self::$regex_smtp_improper_command_pipelining, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE		, $match [ 'message' ] ) ;
+				$sender_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_SMTP_SENDER	, $regex_match [ 'sender' ] ) ;
+				$recipient_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_SMTP_RECIPIENT	, $regex_match [ 'recipient' ] ) ;
+				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP		, $regex_match [ 'ip' ] ) ;
+				$log_code		=  self::MAIL_SMTP_IMPROPER_COMMAND_PIPELINING ;
+			    }
+			// Message of the form :
+			//	vps108493 postfix/smtp[25410]: A95D440A7C: to=<christian.vigh@wuthering-bytes.com>,
+                        //	relay=redirect.ovh.net[213.186.33.5]:25, delay=0.85, delays=0.08/0.02/0.49/0.26, dsn=2.0.0,
+                        //	status=sent (250 ok 1443991628 qp 21901)			
+			else if  ( preg_match ( self::$regex_smtp_to, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE		, $match [ 'message' ] ) ;
+				$domain_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_SMTP_SENDER	, $regex_match [ 'domain' ] ) ;
+				$recipient_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_SMTP_RECIPIENT	, $regex_match [ 'recipient' ] ) ;
+				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP		, $regex_match [ 'ip' ] ) ;
+				$log_code		=  self::MAIL_SMTP_TO ;
+			    }
+			// Message of the form :
+			//	ps108493 postfix/master[2453]: warning: master_wakeup_timer_event: service pickup(public/pickup): Permission denied
+			//	Constant : MAIL_PERMISSION_DENIED
+			else if  ( preg_match ( self::$regex_permission_denied, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE		, $match [ 'message' ] ) ;
+				$log_code		=  self::MAIL_PERMISSION_DENIED ;
+
+				if  ( isset ( $regex_match [ 'path' ] ) )
+					$path_id	=  $string_store -> Insert ( LogStringStore::LOGSTORE_PATH, $regex_match [ 'path' ] ) ;
+			    }
+			// Message of the form :
+			//	vps108493 postfix/master[2453]: warning: process /usr/lib/postfix/qmgr pid 2479 exit status 1
+			else if  ( preg_match ( self::$regex_process_exited, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::MAIL_PROCESS_EXITED ;
+			    }
+			// Message of the form :
+			//	vps169912 postfix/smtpd[19622]: SSL_accept error from unknown[104.131.49.61]: -1
+			// Constant : MAIL_SSL_ACCEPT_ERROR
+			else if  ( preg_match ( self::$regex_mail_ssl_accept_error, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE		, $match [ 'message' ] ) ;
+				$domain_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_SMTP_SENDER	, $regex_match [ 'domain' ] ) ;
+				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP		, $regex_match [ 'ip' ] ) ;
+				$log_code		=  self::MAIL_SSL_ACCEPT_ERROR ;
+			    }
+			// Message of the form :
+			//	vps169912 postfix/smtpd[19622]: warning: TLS library problem: 19622:error:1408F10B:SSL
+			//	routines:SSL3_GET_RECORD:wrong version number:s3_pkt.c:340:
+			else if  ( preg_match ( self::$regex_tls_library_problem, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::MAIL_TLS_LIBRARY_PROBLEM ;
+			    }
+			// Message of the form :
+			//	vps108493 postfix/postfix-script[23407]: error: unknown command: 'restart'
+			else if  ( preg_match ( self::$regex_unknown_command, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::MAIL_UNKNOWN_COMMAND ;
+			    }
+			// Message of the form :
+			//	vps108493 postfix/postfix-script[23408]: fatal: usage: postfix start (or stop, reload, abort, flush, check, 
+			//		status, set-permissions, upgrade-configuration)
+			else if  ( preg_match ( self::$regex_usage, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::MAIL_USAGE ;
+			    }
+			// Message of the form :
+			//	postfix/proxymap[31090]: warning: connect to mysql server 127.0.0.1: Can't connect to
+			//	MySQL server on '127.0.0.1' (111)
+			else if  ( preg_match ( self::$regex_mysql_connection_refused, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$domain_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_DOMAIN_NAME		, $regex_match [ 'domain' ] ) ;
+				$log_code		=  self::MAIL_MYSQL_CONNECTION_REFUSED ;
+			    }
+			// Message of the form :
+			//	vps108493 postfix/trivial-rewrite[31091]: warning:
+			//      proxy:mysql:/etc/postfix/mysql-virtual_transports.cf lookup error for "*"
+			else if  ( preg_match ( self::$regex_mysql_lookup_error, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::MAIL_MYSQL_LOOKUP_ERROR ;
+			    }
+			// Message of the form :
+			//	vps108493 postfix/proxymap[715]: warning: mysql query failed: Aborted connection 64 to db: 'mail'
+			//	user: 'mail_admin' host: 'localhost' (init_connect command failed)
+			else if  ( preg_match ( self::$regex_mysql_query_error, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::MAIL_MYSQL_QUERY_ERROR ;
+			    }
+			// Message of the form :
+			//	warning: Illegal address syntax from unknown[117.5.196.151] in MAIL command: <tfmoi@5.196.151>
+			else if  ( preg_match ( self::$regex_mail_illegal_address_syntax, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$sender_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_SMTP_SENDER		, $regex_match [ 'sender' ] ) ;
+				$recipient_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_SMTP_RECIPIENT		, $regex_match [ 'recipient' ] ) ;
+				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP			, $regex_match [ 'ip' ] ) ;
+
+				$log_code		=  self::MAIL_SMTP_RELAY_ACCESS_DENIED ;
+			    }
+			// Informational messages
+			else if  ( preg_match ( self::$regex_informational_warning, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $regex_match [ 'message' ] ) ;
+				$log_code		=  self::MAIL_INFORMATIONAL_WARNING ;
+			    }
+			// Other unhandled messages : warn the developer
+			else
+			   {
+				warning ( new \Thrak\System\ParseException ( "The following {$this -> Title} log entry message part could not be interpreted :\n\t$line" ) ) ;
+
+				return ( false ) ;
+			    }
+
+			// Message has been processed ; assign individual column values
+			$parsed_data	=
+			   [
+				'type'		=>  $log_code,
+				'pid'		=>  $pid,
+				'data'		=>
+				   [
+					LogStringStore::LOGSTORE_IP				=>  $ip_id,
+					LogStringStore::LOGSTORE_SERVER_NAME			=>  $server_id,
+					LogStringStore::LOGSTORE_MODULE_NAME			=>  $module_id,
+					LogStringStore::LOGSTORE_MESSAGE			=>  $message_id,
+					LogStringStore::LOGSTORE_DOMAIN_NAME			=>  $domain_id,
+					LogStringStore::LOGSTORE_SMTP_SENDER			=>  $sender_id,
+					LogStringStore::LOGSTORE_SMTP_RECIPIENT			=>  $recipient_id,
+					LogStringStore::LOGSTORE_SMTP_ORIGINAL_SENDER		=>  $original_sender_id,
+					LogStringStore::LOGSTORE_SMTP_ORIGINAL_RECIPIENT	=>  $original_recipient_id,
+					LogStringStore::LOGSTORE_SMTP_STEP_NAME			=>  $step_id,
+					LogStringStore::LOGSTORE_SMTP_COMMAND			=>  $smtp_command_id,
+					LogStringStore::LOGSTORE_SMTP_METHOD			=>  $method_id,
+					LogStringStore::LOGSTORE_PATH				=>  $path_id
+				    ]
+			    ] ;
+
+			return ( true ) ;
+		    }
+		else 
+			error ( new \Thrak\System\ParseException ( "The following {$this -> Title} log entry could not be interpreted :\n\t$line" ) ) ;
+	    }
+   }
+
+
+

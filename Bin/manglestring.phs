@@ -1,0 +1,398 @@
+<?php
+	//!phpcmd(Development, 2.0) : Mangles C source strings.
+	/***************************************************************************************************
+
+	    NAME
+		manglestringw.phs
+
+	    DESCRIPTION
+		Mangles constant strings in C-source files.
+
+	    AUTHOR
+	     	Christian Vigh, 07/2013.
+
+	    HISTORY
+	    [Version : 1.0]	[Date : 2013/07/25]	[Author : CV]
+	     	Initial version.
+
+	 ***************************************************************************************************/
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Types\String ;
+	use  Thrak\IO\Path ;
+	use  Thrak\IO\AsciiReport ;
+
+	require ( "tools.phpinclude" ) ;
+
+
+	/*===========================================================================================
+
+		Command-line definitions.
+
+	  ===========================================================================================*/
+	$Definitions = <<<END
+<command name="manglestring">
+
+	<usage>
+		Mangles string constants in a source program. manglestring creates a new file
+		based on the specified input source files with a ".m" extension in front of the
+		original source file extension.
+	</usage>
+	
+	<unnamed-parameters>
+		<file name="input, i" required="true" min-arguments="1" max-arguments="*" value-text="source file(s)" disposition="existing">
+			Input source files to be mangled.
+		</file>
+	</unnamed-parameters>
+	
+	<flag name="check_encoding, ce">
+		Checks the encoded strings by decoding them and comparing to the original value.
+		Outputs an error report if encoding/decoding algorithms mismatch.
+	</flag>
+	
+	<keyword name="language, l" default="C">
+		Language used by input files. Currently, only the C language is supported.
+		
+		<constant name="C">
+			C language.
+		</constant>
+	</keyword>
+</command>
+END;
+	
+
+	/*===========================================================================================
+
+	    NextCString  -
+		Finds the next string within a source file, given by the memory string $input and
+		starting at $position. Unprocessed characters are appended to $output.
+		On output, $position is set to point to the first character after the end of the string,
+		which is removed from the output flow. It is then the responsibility of the caller 
+		to append in place of the input string whatever code necessary to retrieve the unmangled
+		version of the original string.
+		The return value is the string that was found, not including the surrounding double
+		quotes, with every escaped character replaced by its real value (ie, "\n" is replaced
+		with character 0x0a). 
+		When no more string is found, the function returns false.
+
+	  ===========================================================================================*/
+	function  NextCString ( $input_file, $input, &$output, &$position, &$line ) 
+	   {
+		$length		=  strlen ( $input ) ;
+			
+		while  ( $position  <  $length )
+		   {
+			$ch	=  $input [$position] ;
+			
+			if  ( $ch  ==  "\n" )
+			   {
+				$line ++ ;
+				$output .= $ch ;
+			    }
+			else if  ( $ch  ==  '/' )	// Maybe a comment
+			   {
+				if  ( $position + 1  <  $length )
+				   {
+					$ch2		=  $input [ ++$position ] ;
+					$start_line	=  $line ;
+					
+					if  ( $ch2  ==  '*' )
+					   {
+						$index	= strpos ( substr ( $input, $position + 1 ), "*/" ) ;
+						
+						if  ( $index  ===  false )
+						   {
+							error ( "File \"$input_file\", line $start_line : EOF found inside a comment." ) ;
+						    }
+						else 
+						   {
+							$output .= "$ch$ch2" . substr ( $input, $position + 1, $index + 1 ) ;
+							$position += $index + 1 ;
+						    }
+					    }
+					else if  ( $ch2  ==  '/' )
+					   {
+						$index		=  strpos ( substr ( $input, $position + 1 ), "\n" ) ;
+						
+						if  ( $index  ===  false )
+						   {
+							$output		=  "$ch$ch2" . substr ( $input, $position + 1 ) ;
+							return ( false ) ;
+						    }
+						else
+						   {
+							$output .= "$ch$ch2" . substr ( $input, $position + 1, $index ) ;
+							$position += $index ;
+						    }
+					    }
+					else
+						$output .= "$ch$ch2" ;
+				    }
+				else
+				   {
+					$output .=  $ch ;
+				    }
+			    }
+			else if  ( $ch  ==  '"' )
+			   {
+				if  ( $position + 1  >=  $length )
+					error ( "File \"$input_file\", line $line : EOF found inside a string." ) ;
+				
+				$string		=  "" ;
+				$position ++ ;
+				
+				while  ( $position  <  $length )
+				   {
+					$ch	=  $input [ $position ] ;
+					
+					if  ( $ch  ==  "\\" )
+					   {
+						if  ( $position + 1  >=  $length )
+							error ( "File \"$input_file\", line $line : EOF found inside a string." ) ;
+						else
+							$string .= $ch . $input [ ++ $position ] ;
+					    }
+					else if  ( $ch  ==  '"' )
+					   {
+						$position ++ ;
+						$string		=  String::Unescape ( $string ) ;
+						return ( $string ) ;
+					    }
+					else
+						$string .= $ch ;
+					
+					$position ++ ;
+				    }
+			    }
+			else
+				$output .= $ch ;
+			
+			$position ++ ;
+		    }
+	    }
+	
+
+	/*===========================================================================================
+
+	    GetCAccessFunction -
+		Generates a C function to access the unmangled version of the specified string.
+
+	  ===========================================================================================*/
+	function  GetCAccessFunction ( $string, &$foreoutput )
+	   {
+		global        $CheckEncoding, $EncodingErrors ;
+		
+		
+		// Generate a crazy function name that will decode the initial string in the processed C source file
+		$function_name		=  "__" . md5 ( rand ( time ( ), time ( ) + 900000 ) ) ;
+		$string_size		=  strlen ( $string ) ;
+		
+		// $result_string is the static buffer that will hold the decoding result in the processed C source file.
+		// Initialize it with some random data.
+		$result_string		=  "" ;
+		
+		for  ( $i = 0 ; $i  <  $string_size + 1 ; $i ++ )
+			$result_string	.=  "\\0x" . ( ( integer ) sprintf ( "%02X", rand ( $i * 17, $i * 187 ) % 256 ) ) ;
+		
+		// Individual bits of each input string characters will be spread over the mangled string, starting at byte $start_byte 
+		// $spreading is the number of bits between two individual input bytes into the output string ($mangled_string)
+		$start_byte		=  rand ( 13, 41 ) ;
+		$spreading		=  rand ( 9, 81 ) ;
+		
+		// Compute the mangle string size and initialize mangled bytes with some pseudo-random data
+		$mangled_size		=  ( integer ) ( ( ( ( $string_size * $spreading * 8 ) + ( $start_byte * 8 ) + 7 ) ) / 8 ) ;
+		$mangled_bytes		=  array_fill ( 0, $mangled_size, 0 ) ;
+		$mangled_string		=  "" ;
+	
+		for  ( $i = 0  ; $i < $mangled_size ; $i ++ )
+			$mangled_bytes [$i] = rand ( $i * 19, $i * 37 ) % 256 ;
+
+		// Now, encode the input string over $mangled_bytes, starting at byte offset $start_byte, bit 0
+		$current_bit	=  $start_byte * 8 ;
+		
+		for  ( $i = 0 ; $i  <  $string_size ; $i ++ )
+		   {
+			// Get next input string byte
+			$byte	=  ord ( $string [$i] ) ;
+			
+			// For each bit in that byte...
+			for  ( $j = 0 ; $j < 8 ; $j ++ )
+			   {
+				// well, extract the next least significant bit
+				$bit		=  $byte & 0x01 ;
+				// Compute current byte offset
+				$current_byte	=  ( integer ) ( ( $current_bit + 7 ) / 8 ) ;
+				// and bit offset within that byte
+				$shift		=  $current_bit % 8 ;
+			
+				// Set or zero out the corresponding bit into the output mangled string
+				if  ( $bit )
+					$mangled_bytes [ $current_byte ]  |=  ( 1  <<  $shift ) ;
+				else
+					$mangled_bytes [ $current_byte ]  &=  ~( 1  <<  $shift ) ;
+				
+				// Goto next output bit
+				$current_bit	 +=  $spreading ;
+				
+				// ... that will receive next input bit
+				$byte		>>=  1 ;
+			    }
+		    }
+
+		// Encode bytes to string
+		for  ( $i = 0 ; $i  <  $mangled_size ; $i ++ )
+			$mangled_string  .=  ", " . ( integer ) $mangled_bytes [$i] ; // "\\0x" . sprintf ( "%02X", $mangled_bytes [$i] )  ;
+		
+		// Check encoding if needed
+		if  ( $CheckEncoding )
+		   {
+			$encoding_errors	=  0 ;
+			$current_bit		=  $start_byte * 8 ;
+			$output			=  "" ;
+			$value			=  0 ;
+			$count			=  0 ;
+
+			
+			for  ( $i = 0 ; $i < $string_size * 8 ; $i ++ )
+			   {
+				$current_byte	=  ( integer ) ( ( $current_bit + 7 ) / 8 ) ;
+				$shift		=  $current_bit % 8 ;
+				$mask		=  ( 1 << $shift ) ;
+			
+				if  ( $mangled_bytes [ $current_byte ]  &  $mask )
+					$value |= ( 1 << $count ) ;
+			
+				$count ++ ;
+			
+				if  ( $count  ==  8 )
+				   {
+					$output		.=  chr ( $value ) ;
+					$value		 =  0 ;
+					$count		 =  0 ;
+				    }
+			
+				$current_bit	+=  $spreading ;
+			   }
+		
+			$input_length	=  strlen ( $string ) ;
+			$output_length	=  strlen ( $output ) ;
+			
+			if  ( $input_length  !=  $output_length  ||  $string  !=  $output )
+			   {
+				$EncodingErrors ++ ;
+				
+				if  ( $EncodingErrors  ==  1 )
+				   {
+					output ( "Encoding errors found :" ) ;
+					output ( "~~~~~~~~~~~~~~~~~~~~~" ) ;
+				     }
+				
+				output ( "[$EncodingErrors]\tInitial length : $input_length" ) ;
+				output ( "\tEncoded length : $output_length" ) ;
+				output ( "\tInput string   : " . String::Escape ( $string ) ) ;
+				output ( "\tEncoded string : " . String::Escape ( $output ) ) ;
+			    }
+		    }
+
+		$foreoutput	.=  <<<END
+		
+static char *  $function_name ( ) 
+   {
+	static char		result  []	=  "$result_string\\0" ;
+	char			mangled []	=  { 'M', 'Z', 0 $mangled_string, 0 } ;
+	register char *		p		=  mangled + 3 ;
+	register char *		q		=  result ;
+	register unsigned	current_bit	=  $start_byte * 8 ;
+	register unsigned	value		=  0 ;
+	register unsigned	count		=  0 ;
+	register unsigned	i ;
+	
+	
+	for  ( i = 0 ; i < $string_size * 8 ; i ++ )
+	    {
+		unsigned	current_byte	=  ( unsigned ) ( ( current_bit + 7 ) / 8 ) ;
+		unsigned	shift		=  current_bit % 8 ;
+		unsigned	mask		=  ( 1  <<  shift ) ;
+
+		if  ( p [ current_byte ]  &  mask )
+			value  |=  ( 1  <<  count ) ;
+			
+		count ++ ;
+		
+		if  ( count  ==  8 )
+		   {
+			* q ++	=  value ;
+			value	=  0 ;
+			count	=  0 ;
+		    }
+		    
+		current_bit += $spreading ;
+	     }
+
+	* q = 0 ;
+	
+	return ( result ) ;
+    }
+    
+END;
+		
+		return ( "$function_name ( )" ) ;
+	    }
+	
+	
+	/*===========================================================================================
+
+	    ProcessCSourceFile -
+		Mangle strings in a C source file.
+
+	  ===========================================================================================*/
+	function  ProcessCSourceFile ( $input_file, $output_file )
+	   {
+		global		$EncodingErrors ;
+		
+		$input		=  file_get_contents ( $input_file ) ;
+		$output		=  "" ;
+		$foreoutput	=  "" ;
+		$position	=  0 ;
+		$line		=  1 ;
+		
+		while  ( $string = NextCString ( $input_file, $input, $output, $position, $line ) )
+ 		   {		
+			$output .= GetCAccessFunction ( $string, $foreoutput ) ;
+		    }
+		
+		if  ( $EncodingErrors )
+			error ( "Encoding errors found ; no output file generated." ) ;
+		
+		$foreoutput = "#include <stdio.h>\n" . $foreoutput ;
+		file_put_contents ( $output_file, $foreoutput . "\n" . $output ) ;
+	    }
+	
+	
+	/*===========================================================================================
+
+		Main program.
+
+	  ===========================================================================================*/
+	// Get command-line parameters
+	$CL 		=  new CLParser ( $Definitions ) ;
+	$Files		=  $CL -> UnnamedParameters [0] -> Values ;
+	$Language	=  $CL -> language ;
+	$CheckEncoding	=  $CL -> check_encoding ;
+	$EncodingErrors	=  0 ;
+	
+	
+	foreach  ( $Files  as  $InputFile )
+	   {
+		$Extension	=  Path::Extension ( $InputFile ) ;
+		$OutputFile	=  str_replace ( $Extension, ".mc", $InputFile ) ;
+		
+		switch  ( strtolower ( $Language ) )
+		   {
+			case	"c" :
+				ProcessCSourceFile ( $InputFile, $OutputFile ) ;
+				break ;
+				
+			default :
+				error ( "Unsupported language : \"$Language\"." ) ;
+		    }
+	    }

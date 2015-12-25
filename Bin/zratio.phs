@@ -1,0 +1,950 @@
+<?php
+	//!phpcmd(Utilities, 2.0) : Analyzes compression ratio of PHP source files using different compression techniques.
+	/***************************************************************************************************
+
+	    NAME
+		zratio.phs
+
+	    DESCRIPTION
+		Analyzes compression ratio of PHP source files using different compression techniques, such
+		as bzip, gzip, etc.
+
+	    AUTHOR
+	     	Christian Vigh, 11/2014.
+
+	    HISTORY
+	    [Version : 1.0]	[Date : 2014/11/02]	[Author : CV]
+	     	Initial version.
+
+	 ***************************************************************************************************/
+	require ( "tools.phpinclude" ) ;
+
+	use  Thrak\System\Object ;
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Types\AssociativeArray ;
+	use  Thrak\Types\String ;
+	use  Thrak\IO\Path ;
+	use  Thrak\IO\AsciiReport ;
+	use  Thrak\Processors\IniFile ;
+	use  Thrak\System\Timer ;
+
+	/*==================================================================================================
+
+		Command line parameters.
+
+	  ==================================================================================================*/
+	$Definitions = <<<END
+<command name="zratio" allow-files="true" min-files="1" max-files="*" value-text="file" value-help="A list of files or directories to be processed">
+
+	<usage>
+		Analyzes compression ratio of PHP source files using different compression techniques, such
+		as bzip, gzip or php_strip_whitespace.
+		
+		A distinction is made between these two operations :
+		- build : consists in generating the compressed file.
+		- load  : consists in loading compressed file contents into memory.
+		
+		Each input file is copied into a temporary directory before processing build/load operations.
+		Note that there will be a "build" operation for sample input files, which simply consists in copying
+		them to the temporary directory, without further processing.
+	</usage>
+	
+	<set name="compression_type, ct" define-constants="true" check-constants="true">
+		Specifies the compression type.
+		
+		<constant name="strip_whitespace, strip, sw"			constant="COMPRESS_STRIP"		value="0x0001">
+			File contents are processed through the php_strip_whitespace() function.
+		</constant>
+		
+		<constant name="bzip, bz"					constant="COMPRESS_BZIP"		value="0x0002">
+			File contents are processed with the bzip algorithm.
+		</constant>
+		
+		<constant name="gzip, gz"					constant="COMPRESS_GZIP"		value="0x0004">
+			File contents are processed with the gzip algorithm.
+		</constant>
+		
+		<constant name="bzip_strip, bzs, bs"				constant="COMPRESS_BZIP_STRIP"		value="0x0008">
+			File contents are processed with the bzip algorithm, after using the php_strip_whitespace() function.
+		</constant>
+		
+		<constant name="gzip_strip, gzs, gs"				constant="COMPRESS_GZIP_STRIP"		value="0x0010">
+			File contents are processed with the bzip algorithm, after using the php_strip_whitespace() function.
+		</constant>
+		
+		<constant name="bzipcompress, bzcompress, bzc"			constant="COMPRESS_BZCOMPRESS"		value="0x0020">
+			Same as bzip, but uses the bzcompress/bzuncompress functions instead.
+		</constant>
+		
+		<constant name="gzipcompress, gzcompress, gzc"			constant="COMPRESS_GZCOMPRESS"		value="0x0040">
+			Same as gzip, but uses the gzcompress/gzuncompress functions instead.
+		</constant>
+		
+		<constant name="bzipcompress_strip, bzcompress_strip, bzcs"	constant="COMPRESS_BZCOMPRESS_STRIP"	value="0x0080">
+			Save as bzip_strip, but uses the bzcompress/bzuncompress functions instead.
+		</constant>
+		
+		<constant name="gzipcompress_strip, gzcompress_strip, gzcs"	constant="COMPRESS_GZCOMPRESS_STRIP"	value="0x0100">
+			Save as gzip_strip, but uses the gzcompress/gzuncompress functions instead.
+		</constant>
+		
+		<constant name="all, a"				constant="COMPRESS_ALL"		value="0xFFFF">
+			All compression techniques are tried.
+		</constant>
+	</set>
+	
+	<flag name="recursive, r">
+		Recursively process subdirectories.
+	</flag>
+	
+	<integer name="repeat_count, rc" default="1">
+		Build/load operations will be repeated that number of times on the set of files found.
+	</integer>
+	
+	<keyword name="type, t" default="php">
+		Defines the type of source files to be processed. The only available type for now is php.
+		
+		<case name="php">
+			Process PHP source files.
+		</case>
+	</keyword>
+</command>
+END;
+
+
+	/**************************************************************************************************************
+	 **************************************************************************************************************
+	 **************************************************************************************************************
+	 ******                                                                                                  ******
+	 ******                                                                                                  ******
+	 ******                                           CLASSES                                                ******
+	 ******                                                                                                  ******
+	 ******                                                                                                  ******
+	 **************************************************************************************************************
+	 **************************************************************************************************************
+	 **************************************************************************************************************/
+	
+	
+	/*==============================================================================================================
+	
+	    CompressionBenchmarkData -
+	        Holds statistical data about a benchmark.
+	
+	  ==============================================================================================================*/
+	class  CompressionBenchmarkData 
+	   {
+		public		$InputFileSize		=  0 ;		// Size of input data
+		public		$OutputFileSize		=  0 ;		// Size of output data after a Build()
+		public		$ElapsedBuild		=  0.0 ;	// Build elapsed time
+		public		$ElapsedLoad		=  0.0 ;	// Load elapsed time
+	    }
+	
+
+	/*==============================================================================================================
+	
+	    CompressionBenchmarks -
+	        Holds a set of compression benchmarks.
+		Implements ArrayAccess, Countable and IteratorAggregate so it can be used as an array.
+	  
+	 	Benchmarks are to be added individually, such as in the following example :
+	  
+	 	$benchmarks []	=  new CompressionBenchmark ( $files, 'CompressionBenchmarkClassname' ) ;
+	
+	  ==============================================================================================================*/
+	class  CompressionBenchmarks	implements  ArrayAccess, Countable, IteratorAggregate
+	   {
+		// Benchmarks to run
+		public		$Benchmarks ; 
+		
+		
+		// Constructor -
+		//	Creates an associative (key-case-independent) array
+		public function  __construct ( )
+		   {
+			$this -> Benchmarks	=  new  AssociativeArray ( ) ;
+		    }
+		
+		
+		// Run -
+		//	Runs the available benchmarks.
+		public function  Run ( )
+		   {
+			if  ( ! count ( $this -> Benchmarks ) )
+				error ( "No benchmark to run" ) ;
+			
+			foreach  ( $this -> Benchmarks  as  $benchmark )
+			   {
+				$benchmark -> Build ( ) ;
+				$benchmark -> Load ( ) ;
+			    }
+		    }
+		
+		
+		// Countable interface implementation
+		public function  Count ( )
+		   { return ( count ( $this -> Benchmarks ) ) ; }
+		
+		// IteratorAggregate interface implementation
+		public function  getIterator ( )
+		   { return ( $this -> Benchmarks -> getIterator ( ) ) ; }
+		
+		// ArrayAccess interface implementation
+		public function  offsetExists ( $offset )
+		   { return ( $offset > 0  &&  $offset  <  count ( $this -> Benchmarks ) ) ; }
+		
+		public function  offsetGet ( $offset )
+		   { return ( $this -> Benchmarks [ $offset ] ) ; }
+		
+		public function  offsetSet ( $offset, $value )
+		   {
+			if  ( $offset  ===  null )
+				$this -> Benchmarks []			=  $value ;
+			else
+				$this -> Benchmarks [ $offset ]		=  $value ;
+		    }
+		
+		public function  offsetUnset ( $offset )
+		   { error ( "Unsupported operation." ) ; }
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    CompressionBenchmark -
+	        A compression benchmark takes as input a set of files and instanciates objects of the specified class
+	 	(inheriting from CompressionBenchmarkFile) for each of those files.
+	
+	  ==============================================================================================================*/
+	class  CompressionBenchmark
+	   {
+		// Suffix to be appended to the temporary files that will be created
+		private		$Suffix ;
+		// Benchmark name
+		public		$Name ;
+		// Files to be benchmarked using the specified compression method/object
+		private		$Files ;
+		// Instances of the class passed to the constructor. One instance per file
+		private		$Instances	=  [] ;
+		// Instance class name.
+		private		$Class ;
+		// Global statistics related to running the benchmark on the whole file set.
+		public		$Statistics ;
+		
+		
+		// Constructor -
+		//	Instanciates a Benchmark object, using the specified files and class to create the individual file
+		//	benchmark instances.
+		public function  __construct ( $files, $class, $suffix )
+		   {
+			$this -> Files		=  $files ;
+			$this -> Class		=  $class ;
+			$this -> Suffix		=  $suffix ;
+			$this -> Name		=  ucfirst ( $suffix ) ;
+			$this -> Statistics	=  new CompressionBenchmarkData ( ) ;
+		    }
+		
+		
+		// Build -
+		//	Runs the Build() operation for all the benchmarked files.
+		//	Creates the instances of $Class for each of the files, run their Build() method and
+		//	saves the created instances in the $Instances array.
+		//	Global statistics are not the sum of individual file statistics but rather the total
+		//	time taken to run all the benchmarks.
+		public function  Build ( ) 
+		   {
+			$timer				=  new  Timer ( ) ;
+			$timer -> Start ( ) ;
+			
+			foreach  ( $this -> Files  as  $file )
+			   {
+				// Instanciate the specified CompressionBenchmarkFile instance
+				$class				=  $this -> Class ;
+				$instance			=  new  $class ( $file, $this -> Suffix ) ;
+				
+				// Run the build operation
+				$instance -> Build ( ) ;
+			
+				// Update total input/output file size
+				$this -> Statistics -> InputFileSize		+=  $instance -> Statistics -> InputFileSize ;
+				$this -> Statistics -> OutputFileSize		+=  $instance -> Statistics -> OutputFileSize ;
+				
+				$this -> Instances []	=  $instance ;
+			    }
+			
+			// Remember the elapsed time for all those build operations
+			$this -> Statistics -> ElapsedBuild		+=  $timer -> Elapsed ( ) ;
+		    }
+		
+		
+		// Load -
+		//	Runs the Load operation on all the benchmarked files, reusing the benchmark file instances created
+		//	during the Build operation.
+		//	File size statistics have already been update by Build().
+		public function  Load ( ) 
+		   {
+			$timer				=  new  Timer ( ) ;
+			$timer -> Start ( ) ;
+			
+			// Loop through each instance and run the Load() operation
+			foreach  ( $this -> Instances  as  $instance )
+			   {
+				$class				=  $this -> Class ;
+				$instance -> Load ( ) ;
+			    }
+			
+			// Remember the elapsed time for all those Load operations
+			$this -> Statistics -> ElapsedLoad		+=  $timer -> Elapsed ( ) ;
+		    }
+	    }
+	
+	
+	/*==============================================================================================================
+	
+	    CompressionBenchmarkFile -
+	        Abstract class for a specific type of benchmark.
+		Derived classes can implement their own compression technique. They just have to implement the DoBuild()
+		and DoLoad() methods for that.
+	
+	  ==============================================================================================================*/
+	abstract class	CompressionBenchmarkFile
+	   {
+		// Suffix to be appended to temporary files
+		public		$Suffix ;
+		// Input and output file
+		public		$InputFile ;
+		public		$OutputFile ;
+		// Benchmark statistics
+		public		$Statistics ;
+		
+		
+		// Constructor -
+		//	Builds the file benchmark object.
+		public function  __construct ( $file, $suffix )
+		   {
+			$this -> Statistics			=  new CompressionBenchmarkData ( ) ;
+			$this -> InputFile			=  $file ;
+			$this -> Statistics -> InputFileSize	=  filesize ( $file ) ;
+			$this -> Suffix				=  $suffix ;
+			$this -> OutputFile			=  $this -> TempFilename ( $file ) ;
+		    }
+		
+		
+		// Build -
+		//	Runs and times the generation of the "compressed" file.
+		public function  Build ( )
+		   {
+			$timer				=  new  Timer ( ) ;
+			$timer -> Start ( ) ;
+			
+			$this -> DoBuild ( ) ;
+			
+			$this -> Statistics -> ElapsedBuild		=  $timer -> Elapsed ( ) ;
+			$this -> Statistics -> OutputFileSize		=  filesize ( $this -> OutputFile ) ;
+		    }
+		
+		
+		// Load -
+		//	Times the loading and uncompression of a compressed file.
+		public function  Load ( )
+		   {
+			$timer				=  new  Timer ( ) ;
+			$timer -> Start ( ) ;
+			
+			$this -> DoLoad ( ) ;
+			
+			$this -> Statistics -> ElapsedLoad		=  $timer -> Elapsed ( ) ;
+		    }
+		
+		
+		// TempFilename -
+		//	Generates a volatile file name.
+		public function  TempFilename ( $file )
+		   {
+			$result		=  "volatile://" .
+					   basename ( $file ) .
+					   "." .
+					   rand ( 0, PHP_INT_MAX ) .
+					   "." .
+					   $this -> Suffix ;
+			
+			return ( $result ) ;
+		    }
+			
+		
+		// Abstract functions to be implemented by derived classes
+		protected abstract function  DoBuild ( ) ;
+		protected abstract function  DoLoad  ( ) ;
+	    }
+
+	
+	// NoCompressionBenchmarkFile -
+	//	Benchmark on source files without compression. 
+	//	The build phase consists only in copying the supplied files to a temp location and is not useful.
+	//	The load phase will determine how much time it takes to load the source files as is.
+	class	NoCompressionBenchmarkFile	extends  CompressionBenchmarkFile
+	   {
+		public function  __construct ( $file ) 
+		   {
+			$this -> Name	=  "Original" ;
+			Parent::__construct ( $file, 'original' ) ; 
+		    } 
+		
+		
+		protected function  DoBuild ( )
+		   {
+			file_put_contents ( $this -> OutputFile, file_get_contents ( $this -> InputFile ) ) ;
+		    }
+		
+		
+		protected function  DoLoad ( )
+		   {
+			$junk	=  file_get_contents ( $this -> OutputFile ) ;
+		    }
+	    }
+
+	
+	// StrippedCompressionBenchmarkFile -
+	//	Files are compressed with the php_strip_whitespace() function.
+	//	The build phase creates the temp stripped files.
+	//	The load phase measures the time needed to load the stripped files.
+	class	StrippedCompressionBenchmarkFile	extends  CompressionBenchmarkFile
+	   {
+		public function  __construct ( $file ) 
+		   { Parent::__construct ( $file, 'stripped' ) ; } 
+		
+		
+		protected function  DoBuild ( )
+		   {
+			file_put_contents ( $this -> OutputFile, php_strip_whitespace ( $this -> InputFile ) ) ;
+		    }
+		
+		
+		protected function  DoLoad ( )
+		   {
+			$junk	=  file_get_contents ( $this -> OutputFile ) ;
+		    }
+	    }
+	
+	
+	// BzippedCompressionBenchmarkFile -
+	//	Files are compressed with the bzip utility functions.
+	//	The build phase creates the temp bzipped files.
+	//	The load phase measures the time needed to uncompress the files.
+	class	BzippedCompressionBenchmarkFile	extends  CompressionBenchmarkFile
+	   {
+		public function  __construct ( $file ) 
+		   { Parent::__construct ( $file, 'stripped' ) ; } 
+		
+		
+		protected function  DoBuild ( )
+		   {
+			$fp	=  bzopen ( $this -> OutputFile, "w" ) ;
+			bzwrite ( $fp, file_get_contents ( $this -> InputFile ) ) ;
+			bzclose ( $fp ) ;
+		    }
+		
+		
+		protected function  DoLoad ( )
+		   {
+			$fp		=  bzopen ( $this -> OutputFile, "r" ) ;
+			$content	=  "" ;
+			
+			while  ( ! feof ( $fp ) )
+				$content	.=  bzread ( $fp, 8192 ) ;
+			
+			bzclose ( $fp ) ;
+		    }
+	    }
+	
+	
+	// StrippedBzippedCompressionBenchmarkFile -
+	//	Files are compressed with the bzip utility functions, after using php_strip_whitespace() on the source file.
+	//	The build phase creates the temp stripped/bzipped files.
+	//	The load phase measures the time needed to uncompress the files.
+	class	StrippedBzippedCompressionBenchmarkFile	extends  CompressionBenchmarkFile
+	   {
+		public function  __construct ( $file ) 
+		   { Parent::__construct ( $file, 'stripped' ) ; } 
+		
+		
+		protected function  DoBuild ( )
+		   {
+			$fp	=  bzopen ( $this -> OutputFile, "w" ) ;
+			bzwrite ( $fp, php_strip_whitespace ( $this -> InputFile ) ) ;
+			bzclose ( $fp ) ;
+		    }
+		
+		
+		protected function  DoLoad ( )
+		   {
+			$fp		=  bzopen ( $this -> OutputFile, "r" ) ;
+			$content	=  "" ;
+			
+			while  ( ! feof ( $fp ) )
+				$content	.=  bzread ( $fp, 8192 ) ;
+			
+			bzclose ( $fp ) ;
+		    }
+	    }
+	
+	
+	// GzippedCompressionBenchmarkFile -
+	//	Files are compressed with the gzip utility functions.
+	//	The build phase creates the temp gzipped files.
+	//	The load phase measures the time needed to uncompress the files.
+	class	GzippedCompressionBenchmarkFile	extends  CompressionBenchmarkFile
+	   {
+		public function  __construct ( $file ) 
+		   { Parent::__construct ( $file, 'stripped' ) ; } 
+		
+		
+		protected function  DoBuild ( )
+		   {
+			$fp	=  gzopen ( $this -> OutputFile, "w" ) ;
+			gzwrite ( $fp, file_get_contents ( $this -> InputFile ) ) ;
+			gzclose ( $fp ) ;
+		    }
+		
+		
+		protected function  DoLoad ( )
+		   {
+			$fp		=  gzopen ( $this -> OutputFile, "r" ) ;
+			$content	=  "" ;
+			
+			while  ( ! feof ( $fp ) )
+				$content	.=  gzread ( $fp, 16384 ) ;
+			
+			gzclose ( $fp ) ;
+		    }
+	    }
+	
+	
+	// StrippedGzippedCompressionBenchmarkFile -
+	//	Files are compressed with the gzip utility functions, after using php_strip_whitespace() on the source file.
+	//	The build phase creates the temp stripped/gzipped files.
+	//	The load phase measures the time needed to uncompress the files.
+	class	StrippedGzippedCompressionBenchmarkFile	extends  CompressionBenchmarkFile
+	   {
+		public function  __construct ( $file ) 
+		   { Parent::__construct ( $file, 'stripped' ) ; } 
+		
+		
+		protected function  DoBuild ( )
+		   {
+			$fp	=  gzopen ( $this -> OutputFile, "w" ) ;
+			gzwrite ( $fp, php_strip_whitespace ( $this -> InputFile ) ) ;
+			gzclose ( $fp ) ;
+		    }
+		
+		
+		protected function  DoLoad ( )
+		   {
+			$fp		=  gzopen ( $this -> OutputFile, "r" ) ;
+			$content	=  "" ;
+			
+			while  ( ! feof ( $fp ) )
+				$content	.=  gzread ( $fp, 16384 ) ;
+			
+			gzclose ( $fp ) ;
+		    }
+	    }
+	
+	
+	// BzcompressCompressionBenchmarkFile -
+	//	Files are compressed with the bzip utility functions.
+	//	The build phase creates the temp bzipped files.
+	//	The load phase measures the time needed to uncompress the files.
+	class	BzcompressCompressionBenchmarkFile	extends  CompressionBenchmarkFile
+	   {
+		public function  __construct ( $file ) 
+		   { Parent::__construct ( $file, 'stripped' ) ; } 
+		
+		
+		protected function  DoBuild ( )
+		   {
+			$data	=  bzcompress ( file_get_contents ( $this -> InputFile ) ) ;
+			file_put_contents ( $this -> OutputFile, $data ) ;
+		    }
+		
+		
+		protected function  DoLoad ( )
+		   {
+			$content	=  bzdecompress ( file_get_contents ( $this -> OutputFile ) ) ;
+		    }
+	    }
+	
+	
+	// GzcompressCompressionBenchmarkFile -
+	//	Files are compressed with the gzip utility functions.
+	//	The build phase creates the temp gzipped files.
+	//	The load phase measures the time needed to uncompress the files.
+	class	GzcompressCompressionBenchmarkFile	extends  CompressionBenchmarkFile
+	   {
+		public function  __construct ( $file ) 
+		   { Parent::__construct ( $file, 'stripped' ) ; } 
+		
+		
+		protected function  DoBuild ( )
+		   {
+			$data	=  gzcompress ( file_get_contents ( $this -> InputFile ) ) ;
+			file_put_contents ( $this -> OutputFile, $data ) ;
+		    }
+		
+		
+		protected function  DoLoad ( )
+		   {
+			$content	=  gzuncompress ( file_get_contents ( $this -> OutputFile ) ) ;
+		    }
+	    }
+	
+	
+	// BzcompressStripCompressionBenchmarkFile -
+	//	Files are compressed with the bzip utility functions.
+	//	The build phase creates the temp bzipped files.
+	//	The load phase measures the time needed to uncompress the files.
+	class	BzcompressStripCompressionBenchmarkFile	extends  CompressionBenchmarkFile
+	   {
+		public function  __construct ( $file ) 
+		   { Parent::__construct ( $file, 'stripped' ) ; } 
+		
+		
+		protected function  DoBuild ( )
+		   {
+			$data	=  bzcompress ( php_strip_whitespace ( $this -> InputFile ) ) ;
+			file_put_contents ( $this -> OutputFile, $data ) ;
+		    }
+		
+		
+		protected function  DoLoad ( )
+		   {
+			$content	=  bzdecompress ( file_get_contents ( $this -> OutputFile ) ) ;
+		    }
+	    }
+	
+	
+	// GzcompressStripCompressionBenchmarkFile -
+	//	Files are compressed with the gzip utility functions.
+	//	The build phase creates the temp gzipped files.
+	//	The load phase measures the time needed to uncompress the files.
+	class	GzcompressStripCompressionBenchmarkFile	extends  CompressionBenchmarkFile
+	   {
+		public function  __construct ( $file ) 
+		   { Parent::__construct ( $file, 'stripped' ) ; } 
+		
+		
+		protected function  DoBuild ( )
+		   {
+			$data	=  gzcompress ( php_strip_whitespace ( $this -> InputFile ) ) ;
+			file_put_contents ( $this -> OutputFile, $data ) ;
+		    }
+		
+		
+		protected function  DoLoad ( )
+		   {
+			$content	=  gzuncompress ( file_get_contents ( $this -> OutputFile ) ) ;
+		    }
+	    }
+	
+	
+	/**************************************************************************************************************
+	 **************************************************************************************************************
+	 **************************************************************************************************************
+	 ******                                                                                                  ******
+	 ******                                                                                                  ******
+	 ******                                    UTILITY FUNCTIONS                                             ******
+	 ******                                                                                                  ******
+	 ******                                                                                                  ******
+	 **************************************************************************************************************
+	 **************************************************************************************************************
+	 **************************************************************************************************************/
+	
+	/*==================================================================================================
+
+	    GetFiles -
+		Gets the list of files to be scanned.
+
+	  ==================================================================================================*/
+	function  __scan ( &$array, $files, $recursive, $extensions )
+	   {
+		global		$GlobalStatistics ;
+		
+		
+		foreach  ( $files  as  $file )
+		   {
+			$items	=  glob ( $file ) ;
+			
+			foreach  ( $items  as  $item )
+			   {
+				if  ( is_file ( $item ) )
+				   {
+					$extension	= "." . strtolower ( pathinfo ( $item, PATHINFO_EXTENSION ) ) ;
+					
+					$GlobalStatistics [ 'files-processed' ]	++ ;
+					
+					if  ( in_array ( $extension, $extensions ) )
+					   {
+						$array []	=  Path::RealPath ( $item ) ;
+						$size		=  filesize ( $item ) ;
+						$GlobalStatistics [ 'files-retained' ] ++ ;
+					    }
+					else
+						$GlobalStatistics [ 'files-ignored' ] ++ ;
+				    }
+				else if  ( $recursive  &&  is_dir ( $item ) )
+					__scan ( $array, [ "$item/*" ], $recursive, $extensions ) ;
+			    }
+		    }
+	    }
+	
+	function  GetFiles ( $files, $recursive, $extensions )
+	   {
+		global		$GlobalStatistics ;
+
+		
+		$result		=  [] ;
+		
+		$timer	=  new Timer ( ) ;
+		$timer -> Start ( ) ;
+		
+		__scan ( $result, $files, $recursive, $extensions ) ;
+		
+		$GlobalStatistics [ 'elapsed' ]		=  $timer -> Elapsed ( ) ;
+		
+		return ( $result ) ;
+	    }
+	
+	
+	/*==================================================================================================
+
+	    OutputSummary -
+		Outputs a summary of the benchmark run.
+
+	  ==================================================================================================*/
+	function  OutputSummary ( $benchmarks, $files, $type ) 
+	   {
+		// Create the report
+		$report_columns		=
+		   [
+			[ 'member' => 'method'		, 'title' => 'Method'		, 'align' => 'left'  ],
+			[ 'member' => 'size'		, 'title' => 'Size (bytes)'	, 'align' => 'right' ],
+			[ 'member' => 'pcgain'		, 'title' => '% gained'		, 'align' => 'right' ],
+			[ 'member' => 'bgain'		, 'title' => 'Bytes gained'	, 'align' => 'right' ],
+			[ 'member' => 'buildtime'	, 'title' => 'Build time (ms)'	, 'align' => 'right' ],
+			[ 'member' => 'pcbuildtime'	, 'title' => '% Build delta'	, 'align' => 'right' ],
+			[ 'member' => 'loadtime'	, 'title' => 'Load time (ms)'	, 'align' => 'right' ],
+			[ 'member' => 'pcloadtime'	, 'title' => '% Load delta'	, 'align' => 'right' ]
+		    ] ;
+		$report		=  new AsciiReport ( $report_columns ) ;
+		
+		// And the report of the best methods
+		$best_report_columns	=  array_merge 
+		   (
+			[ [ 'member' => 'topic'		, 'title' => 'Best method for'	, 'align' => 'left'  ] ],
+			$report_columns			
+		    ) ;
+		$best_report_columns [1] [ 'title' ]	=  'Name' ;
+		
+		$best_report	=  new  AsciiReport ( $best_report_columns ) ;
+		
+		// Don't forget the worsts
+		$worst_report_columns	=  array_merge 
+		   (
+			[ [ 'member' => 'topic'		, 'title' => 'Worst method for'	, 'align' => 'left'  ] ],
+			$report_columns			
+		    ) ;
+		$worst_report_columns [1] [ 'title' ]	=  'Name' ;
+		
+		$worst_report	=  new  AsciiReport ( $worst_report_columns ) ;
+		
+		// Put first the statistics about the original files
+		$data		=
+		   [
+			[
+				'method'	=>  'No compression',
+				'size'		=>  number_format ( $benchmarks [0] -> Statistics -> InputFileSize, 0, '.', ' ' ),
+				'pcgain'	=>  'N/A',
+				'bgain'		=>  'N/A',
+				'buildtime'	=>  number_format ( $benchmarks [0] -> Statistics -> ElapsedBuild, 3, '.', ' ' ),
+				'pcbuildtime'	=>  'N/A',
+				'loadtime'	=>  number_format ( $benchmarks [0] -> Statistics -> ElapsedLoad, 3, '.', ' ' ),
+				'pcloadtime'	=>  'N/A'
+			 ],
+			'!=' 
+		    ] ;
+		
+		// Process other benchmarks
+		$best_io_size		= [ 'row' => null, 'value' => PHP_INT_MAX ] ;
+		$best_build_time	= [ 'row' => null, 'value' => - PHP_INT_MAX ] ;
+		$best_load_time		= [ 'row' => null, 'value' => - PHP_INT_MAX ] ;
+
+		$worst_io_size		= [ 'row' => null, 'value' => - PHP_INT_MAX ] ;
+		$worst_build_time	= [ 'row' => null, 'value' => PHP_INT_MAX ] ;
+		$worst_load_time	= [ 'row' => null, 'value' => PHP_INT_MAX ] ;
+		
+		for  ( $i  =  1 ; $i  <  count ( $benchmarks ) ; $i ++ )
+		   {
+			$benchmark	=  $benchmarks [$i] ;
+			
+			// Compute bytes and %bytes gained over the classic method without compression
+			$bytes_gained	=  $benchmarks [0] -> Statistics -> OutputFileSize - $benchmark -> Statistics -> OutputFileSize ;
+			$pc_gained	=  100 - ( ( 100 / $benchmarks [0] -> Statistics -> OutputFileSize ) * $benchmark -> Statistics -> OutputFileSize ) ;
+				
+			// Then the total build time delta
+			$build_gained	=  100 - ( ( 100 / $benchmarks [0] -> Statistics -> ElapsedBuild ) * $benchmark -> Statistics -> ElapsedBuild ) ;
+			
+			// And the total load time delta
+			$load_gained	=  100 - ( ( 100 / $benchmarks [0] -> Statistics -> ElapsedLoad ) * $benchmark -> Statistics -> ElapsedLoad ) ;
+			
+			// Buid a new row for this bechmark
+			$row		=  
+			   [
+				'method'	=>  $benchmark -> Name,
+				'size'		=>  number_format ( $benchmark -> Statistics -> OutputFileSize, 0, '.', ' ' ),
+				'pcgain'	=>  number_format ( $pc_gained, 2, '.', ' ' ) . "%",
+				'bgain'		=>  number_format ( $bytes_gained, 0, '.', ' ' ),
+				'buildtime'	=>  number_format ( $benchmark -> Statistics -> ElapsedBuild, 3, '.', ' ' ),
+				'pcbuildtime'	=>  number_format ( $build_gained, 2, '.', ' ' ) . "%",
+				'loadtime'	=>  number_format ( $benchmark -> Statistics -> ElapsedLoad, 3, '.', ' ' ),
+				'pcloadtime'	=>  number_format ( $load_gained, 2, '.', ' ' ) . "%"
+			     ] ;
+
+			// Add the data row
+			$data []	=  $row ;
+			
+			// Get the best IO size/build time/load time methods
+			if  ( $best_io_size  [ 'value' ]  >  $benchmark -> Statistics -> OutputFileSize )
+			   {
+				$best_io_size [ 'row'   ]	=  array_merge ( [ 'topic' => 'IO size' ], $row ) ;
+				$best_io_size [ 'value' ]	=  $benchmark -> Statistics -> OutputFileSize ;
+			    }
+			
+			if  ( $best_build_time  [ 'value' ]  <  $build_gained )
+			   {
+				$best_build_time [ 'row'   ]	=  array_merge ( [ 'topic' => 'Build time' ], $row ) ;
+				$best_build_time [ 'value' ]	=  $build_gained ;
+			    }
+			
+			if  ( $best_load_time  [ 'value' ]  <  $load_gained )
+			   {
+				$best_load_time [ 'row'   ]	=  array_merge ( [ 'topic' => 'Load time' ], $row ) ;
+				$best_load_time [ 'value' ]	=  $load_gained ;
+			    }
+			
+			// Get the worst IO size/build time/load time methods
+			if  ( $worst_io_size  [ 'value' ]  <  $benchmark -> Statistics -> OutputFileSize )
+			   {
+				$worst_io_size [ 'row'   ]	=  array_merge ( [ 'topic' => 'IO size' ], $row ) ;
+				$worst_io_size [ 'value' ]	=  $benchmark -> Statistics -> OutputFileSize ;
+			    }
+			
+			if  ( $worst_build_time  [ 'value' ]  >  $build_gained )
+			   {
+				$worst_build_time [ 'row'   ]	=  array_merge ( [ 'topic' => 'Build time' ], $row ) ;
+				$worst_build_time [ 'value' ]	=  $build_gained ;
+			    }
+			
+			if  ( $worst_load_time  [ 'value' ]  >  $load_gained )
+			   {
+				$worst_load_time [ 'row'   ]	=  array_merge ( [ 'topic' => 'Load time' ], $row ) ;
+				$worst_load_time [ 'value' ]	=  $load_gained ;
+			    }
+			
+		    }
+		
+		// Output the result 
+		$count	=  count ( $files ) ;
+		
+		output ( "Compression statistics for $count $type files :" ) ;
+		echo  $report -> Generate ( $data ) ;
+		
+		// Output the bests of the bests 
+		output ( "" ) ;
+		output ( "Best compression methods :" ) ;
+		
+		$data	=   [ $best_io_size [ 'row' ], $best_build_time [ 'row' ], $best_load_time [ 'row' ] ] ;
+		echo $best_report -> Generate ( $data ) ;
+		
+		// And the worsts of the worsts
+		output ( "" ) ;
+		output ( "Worst compression methods :" ) ;
+		
+		$data	=   [ $worst_io_size [ 'row' ], $worst_build_time [ 'row' ], $worst_load_time [ 'row' ] ] ;
+		echo $worst_report -> Generate ( $data ) ;
+	    }
+	
+	
+	/**************************************************************************************************************
+	 **************************************************************************************************************
+	 **************************************************************************************************************
+	 ******                                                                                                  ******
+	 ******                                                                                                  ******
+	 ******                                        MAIN PROGRAM                                              ******
+	 ******                                                                                                  ******
+	 ******                                                                                                  ******
+	 **************************************************************************************************************
+	 **************************************************************************************************************
+	 **************************************************************************************************************/
+	$CL 			=  new CLParser ( $Definitions ) ;
+	$CompressionType	=  $CL -> compression_type [ '~' ] ;
+	$Recursive		=  $CL -> recursive ;
+	$SourceType		=  $CL -> type ;
+	$Files			=  $CL -> Files ;
+	$RepeatCount		=  $CL -> repeat_count ;
+	$Extensions		=  
+	   [
+		'php'	=> 
+		   [
+			'.php', '.php3', '.php4', '.php5', '.phpclass', '.phpinclude', '.phpinc', '.phpscript', '.phs'
+		    ]
+	    ] ;
+	$GlobalStatistics	=  
+	   [
+		'files-processed'	=>  0,
+		'files-retained'	=>  0,
+		'files-ignored'		=>  0,
+		'elapsed'		=>  0
+	    ] ;
+
+	
+	if  ( $SourceType  !=  'php' )
+		error ( "Only PHP files can be processed in this current version." ) ;
+	
+	// Get files to be tested
+	$FilesToScan	=  GetFiles ( $Files, $Recursive, $Extensions [ $SourceType ] ) ;
+	
+	// Create the benchmark set ; the 'NoCompression' entry is always present
+	$benchmarks	=  new CompressionBenchmarks ;
+	$benchmarks []	=  new CompressionBenchmark ( $FilesToScan, 'NoCompressionBenchmarkFile', 'original' ) ;
+
+	// Add other possible benchmarks
+	if  ( $CompressionType  &  COMPRESS_STRIP )
+		$benchmarks []	=  new CompressionBenchmark ( $FilesToScan, 'StrippedCompressionBenchmarkFile', 'strip' ) ;
+	
+	if  ( $CompressionType  &  COMPRESS_BZIP )
+		$benchmarks []	=  new CompressionBenchmark ( $FilesToScan, 'BzippedCompressionBenchmarkFile', 'bzip' ) ;
+	
+	if  ( $CompressionType  &  COMPRESS_GZIP )
+		$benchmarks []	=  new CompressionBenchmark ( $FilesToScan, 'GzippedCompressionBenchmarkFile', 'gzip' ) ;
+	
+	if  ( $CompressionType  &  COMPRESS_BZIP_STRIP )
+		$benchmarks []	=  new CompressionBenchmark ( $FilesToScan, 'StrippedBzippedCompressionBenchmarkFile', 'bzip/strip' ) ;
+	
+	if  ( $CompressionType  &  COMPRESS_GZIP_STRIP )
+		$benchmarks []	=  new CompressionBenchmark ( $FilesToScan, 'StrippedGzippedCompressionBenchmarkFile', 'gzip/strip' ) ;
+	
+	if  ( $CompressionType  &  COMPRESS_BZCOMPRESS )
+		$benchmarks []	=  new CompressionBenchmark ( $FilesToScan, 'BzcompressCompressionBenchmarkFile', 'bzcompress' ) ;
+	
+	if  ( $CompressionType  &  COMPRESS_GZCOMPRESS )
+		$benchmarks []	=  new CompressionBenchmark ( $FilesToScan, 'GzcompressCompressionBenchmarkFile', 'gzcompress' ) ;
+	
+	if  ( $CompressionType  &  COMPRESS_BZCOMPRESS_STRIP )
+		$benchmarks []	=  new CompressionBenchmark ( $FilesToScan, 'BzcompressStripCompressionBenchmarkFile', 'bzcompress/strip' ) ;
+	
+	if  ( $CompressionType  &  COMPRESS_GZCOMPRESS_STRIP )
+		$benchmarks []	=  new CompressionBenchmark ( $FilesToScan, 'GzcompressStripCompressionBenchmarkFile', 'gzcompress/strip' ) ;
+	
+	$benchmarks -> Run ( ) ;
+	
+	// Output summary
+	OutputSummary ( $benchmarks, $FilesToScan, $SourceType ) ;

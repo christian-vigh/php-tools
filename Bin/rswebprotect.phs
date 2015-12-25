@@ -1,0 +1,453 @@
+<?php
+	//!phpcmd(Administration, 2.0, production) : Updates files used by remote Apache websites.
+	/**************************************************************************************************************
+
+	    NAME
+		rswebprotect.phs
+
+	    DESCRIPTION
+		Utility to automatically update files used by remote http servers (error-redirect*, .htaccess, etc.).
+
+	    AUTHOR
+		Christian Vigh, 06/2015.
+
+	    HISTORY
+	    [Version : 1.0]    [Date : 2015/06/12]     [Author : CV]
+		Initial version.
+
+	    [Version : 1.0.1]	[Date : 2015/11/29]     [Author : CV]
+		. Added the -list_configured_servers option.
+
+	 **************************************************************************************************************/
+	require ( "tools.phpinclude" ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Types\String ;
+	use  Thrak\IO\Path ;
+	use  Thrak\IO\AsciiReport ;
+	use  Thrak\Processors\IniFile ;
+	use  Thrak\Processors\Csv ;
+	use  Thrak\Processors\CsvOptions ;
+	use  Thrak\Database\Tables\StringStore ;
+	use  Thrak\Database\Tables\ResolvedIps ;
+	use  Thrak\Database\BufferedInsert ;
+
+	
+	require ( "RsAdmin.phpclass" ) ;
+
+	/*==================================================================================================
+
+		Command line parameters.
+
+	  ==================================================================================================*/
+	$Definitions = <<<END
+<command name="rswebprotect" allow-files="false">
+
+	<usage>
+		Updates files used by remote Apache websites, such as error-redirect* and .htaccess.
+	</usage>
+	
+	<file name="configuration_file, cf" disposition="existing" default="thraktools://Data/rsadmin.ini">
+		Hosted servers parameters file.
+	</file>
+	
+	<flag name="force, f">
+		If specified, files are systematically updated, when the -update option is specified.
+	</flag>
+	
+	<flag name="list, l, ls">
+		Lists remote files with their attributes.
+	</flag>
+	
+	<flag name="list_configured_servers, lcs">
+		Lists the servers configured for this command.
+	</flag>
+	
+	<flag name="update, u">
+		Updates remote files with the local version.
+	</flag>
+
+	<file name="webprotect_configuration_file, wcf" disposition="existing" default="thraktools://Data/rswebprotect.ini">
+		Parameter files for this utility
+	</file>
+	
+	<string name="servers, server, s" default="*" arguments="0..*">
+		Server name(s) on which collected random data is to be retrieved.
+		Wildcard characters are authorized, and search is performed on every server alias.
+	</string>
+	
+</command>
+END;
+
+
+	/*==================================================================================================
+
+	    LoadSettings - 
+		Global constants and variables.
+
+	  ==================================================================================================*/
+	function  LoadSettings ( )
+	   {
+		global		$WebprotectConfigurationFile ;
+		global		$LocalRoot, $ApacheRootFiles, $DomainRootFiles, $IgnoredServers ;
+		
+		$configuration	=  IniFile::LoadFromFile ( $WebprotectConfigurationFile ) ;
+		
+		// [Settings] section, LocalRoot key :
+		//	Specifies the local root for all relative paths in the [RootFiles] and [DomainFiles] sections.
+		$value	=  $configuration -> GetKey ( 'Settings', 'LocalRoot' ) ;
+		
+		if  ( $value )
+		   {
+			if  ( is_dir ( $value ) )
+				$LocalRoot	=  $value ;
+			else
+				warning ( "The value \"$value\" specified for the  \"LocalRoot\" key in the [Settings] section of configuration file " .
+					"\"$WebprotectConfigurationFile\" does not specify a valid directory" ) ;
+		    }
+		else
+			warning ( "Missing or empty key \"LocalRoot\" in the [Settings] section of configuration file " .
+				"\"$WebprotectConfigurationFile\"" ) ;
+		
+		// [Settings] section, IgnoreServers key :
+		//	Specifies a list of servers to be automatically discarded from the update list.
+		$value	=  $configuration -> GetKey ( 'Settings', 'IgnoreServers' ) ;
+		
+		if  ( $value )
+			$IgnoredServers	=  string::ExplodeAndTrim ( ' ', $value ) ;
+		
+		// [RootFiles] section :
+		//	All keys listed in this section are filenames to be copied to the remote Apache root.
+		//	If a value is specified, it is taken as the name of the file on the remote server
+		$keys		=  $configuration -> GetKeys ( 'RootFiles' ) ;
+
+		foreach  ( $keys  as  $key => $value )
+		   {
+			if  ( ! $value )
+				$value	=  $key ;
+			
+			$real_path	=  $LocalRoot . '\\' . $value ;
+			
+			if  ( ! file_exists ( $real_path ) )
+				error ( "Unable to find root file \"$value\"." ) ;
+			
+			$ApacheRootFiles [ $real_path ]		=  $key ;
+		    }
+				
+		// [DomainFiles] section :
+		//	All keys listed in this section are filenames to be copied to the remote domain roots.
+		//	If a value is specified, it is taken as the name of the file on the remote server
+		$keys		=  $configuration -> GetKeys ( 'DomainFiles' ) ;
+
+		foreach  ( $keys  as  $key => $value )
+		   {
+			if  ( ! $value )
+				$value	=  $key ;
+			
+			$real_path	=  $LocalRoot . '\\' . $value ;
+			
+			if  ( ! file_exists ( $real_path ) )
+				error ( "Unable to find root file \"$value\"." ) ;
+			
+			$DomainRootFiles [ $real_path ]		=  $key ;
+		    }
+	    }
+	
+	
+	/*==================================================================================================
+
+	    ListFiles - 
+		List remote files per server.
+
+	  ==================================================================================================*/
+	function  ListFiles ( )
+	   {
+		global		$RsAdmin, $ServerList ;
+		global		$LocalRoot, $ApacheRootFiles, $DomainRootFiles, $IgnoredServers ;
+
+		
+		// List of local and remote files
+		$files		=  [] ;
+		
+		// Loop through each server
+		foreach  ( $ServerList  as  $host )
+		   {
+			$server		=  $RsAdmin -> FindServer ( $host ) ;
+			
+			// Check if this server instance is not to be excluded from the upgrade list
+			foreach  ( $IgnoredServers  as  $ignored_server )
+			   {
+				if  ( $server -> IsNamedAs ( $ignored_server ) )
+					continue 2 ;
+			    }
+			
+			// Server not excluded ; connect to it
+			$server -> Connect ( false, true, true ) ;
+			$fs		=  $server -> GetFileSystem ( ) ;
+			
+			// Loop through the files to be put into the Apache root directory
+			foreach  ( $ApacheRootFiles  as  $local_file => $remote_file )
+			   {
+				$local_stat	=  stat ( $local_file ) ;
+				$local_mtime	=  $local_stat [ 'mtime' ] ;
+				$local_size	=  $local_stat [ 'size' ] ;
+				
+				if  ( $remote_file [0]  !=  '/' )
+					$remote_file	=  $server -> HttpRoot . '/' . $remote_file ;
+				
+				$remote_stat	=  $fs -> stat ( $remote_file ) ;
+				$remote_mtime	=  $remote_stat [ 'mtime' ] ;
+				$remote_size	=  $remote_stat [ 'size' ] ;
+				
+				$row	=  
+				   [ 
+					'server'		=>  $host,
+					'local-file'		=>  $local_file,
+					'local-name'		=>  basename ( $local_file ),
+					'local-mtime'		=>  date ( 'Y-m-d H:i:s', $local_mtime ),
+					'local-size'		=>  number_format ( $local_size, 0, '.', ' ' ),
+					'remote-file'		=>  $remote_file,
+					'remote-mtime'		=>  date ( 'Y-m-d H:i:s', $remote_mtime ),
+					'remote-size'		=>  number_format ( $remote_size, 0, '.', ' ' )
+				    ] ;
+				
+				$files []	=  $row ;
+			    }
+
+			// Then loop through the files to be put into each hosted domain directory
+			$index	=  0 ;
+			
+			foreach  ( $DomainRootFiles  as  $local_file => $remote_file )
+			   {
+				$local_stat	=  stat ( $local_file ) ;
+				$local_mtime	=  $local_stat [ 'mtime' ] ;
+				$local_size	=  $local_stat [ 'size' ] ;
+				
+				if  ( $remote_file [0]  !=  '/' )
+					$remote_file	=  $server -> HttpSites [ $index ] . '/' . $remote_file ;
+				
+				$remote_stat	=  $fs -> stat ( $remote_file ) ;
+				$remote_mtime	=  $remote_stat [ 'mtime' ] ;
+				$remote_size	=  $remote_stat [ 'size' ] ;
+				
+				$row	=  
+				   [ 
+					'server'		=>  $host,
+					'local-file'		=>  $local_file,
+					'local-name'		=>  basename ( $local_file ),
+					'local-mtime'		=>  date ( 'Y-m-d H:i:s', $local_mtime ),
+					'local-size'		=>  number_format ( $local_size, 0, '.', ' ' ),
+					'remote-file'		=>  $remote_file,
+					'remote-mtime'		=>  date ( 'Y-m-d H:i:s', $remote_mtime ),
+					'remote-size'		=>  number_format ( $remote_size, 0, '.', ' ' )
+				    ] ;
+				
+				$row [ 'needs-update' ]		=  ( $remote_mtime  <  $local_mtime ) ?  '*' : '' ;
+				$files []	=  $row ;
+				$index ++ ;
+			    }
+		    }
+		
+		// Generate the report
+		$report		=  new AsciiReport
+		   (
+			[ 'member' => 'server'		, 'title' => 'Server'					],
+			[ 'member' => 'local-name'	, 'title' => 'Local'					],
+			[ 'member' => 'remote-file'	, 'title' => 'Remote'					],
+			[ 'member' => 'needs-update'	, 'title' => 'Update needed ?'	, 'align' => 'center'	]
+		    ) ;
+		
+		echo $report -> Generate ( $files ) ;
+	    }
+	
+	
+	/*==================================================================================================
+
+	    UpdateFiles - 
+		Updates remote files per server.
+
+	  ==================================================================================================*/
+	function  UpdateFiles ( )
+	   {
+		global		$RsAdmin, $ServerList ;
+		global		$LocalRoot, $ApacheRootFiles, $DomainRootFiles, $IgnoredServers, $Force ;
+
+		
+		// List of local and remote files
+		$files		=  [] ;
+		$updated_files	=  0 ;
+		
+		// Loop through each server
+		foreach  ( $ServerList  as  $host )
+		   {
+			$server		=  $RsAdmin -> FindServer ( $host ) ;
+			
+			// Check if this server instance is not to be excluded from the upgrade list
+			foreach  ( $IgnoredServers  as  $ignored_server )
+			   {
+				if  ( $server -> IsNamedAs ( $ignored_server ) )
+					continue 2 ;
+			    }
+			
+			// Server not excluded ; connect to it
+			$server -> Connect ( false, true, true ) ;
+			$fs		=  $server -> GetFileSystem ( ) ;
+			
+			// Loop through the files to be put into the Apache root directory
+			foreach  ( $ApacheRootFiles  as  $local_file => $remote_file )
+			   {
+				if  ( $remote_file [0]  !=  '/' )
+					$remote_file	=  $server -> HttpRoot . '/' . $remote_file ;
+
+				$send	=  false ;
+					
+				if  ( $Force )
+					$send	=  true ;
+				else
+				   {
+					$local_stat	=  stat ( $local_file ) ;
+					$remote_stat	=  $fs -> stat ( $remote_file ) ;
+					
+					if  ( $local_stat [ 'mtime' ]  >  $remote_stat [ 'mtime' ] ) 
+						$send	=  true ;
+				    }
+				
+				if  ( $send )
+				   {
+					$status		=  $fs -> send ( $local_file, $remote_file ) ;
+				
+					if  ( $status ) 
+						$copy_status	=  'Ok' ;
+					else
+						$copy_status	=  'Failed' ;
+										
+					$updated_files ++ ;
+				    }
+				else 
+					$copy_status	=  'Up to date' ;
+				
+				$row		=
+				   [
+					'server'	=>  $host,
+					'local-name'	=>  basename ( $local_file ),
+					'remote-file'	=>  $remote_file,
+					'status'	=>  $copy_status
+				    ] ;
+				$files []	=  $row ;
+			    }
+
+			// Then loop through the files to be put into each hosted domain directory
+			$index	=  0 ;
+			
+			foreach  ( $DomainRootFiles  as  $local_file => $remote_file )
+			   {
+				if  ( $remote_file [0]  !=  '/' )
+					$remote_file	=  $server -> HttpSites [ $index ] . '/' . $remote_file ;
+				
+				if  ( $Force )
+					$send	=  true ;
+				else
+				   {
+					$local_stat	=  stat ( $local_file ) ;
+					$remote_stat	=  $fs -> stat ( $remote_file ) ;
+					
+					if  ( $local_stat [ 'mtime' ]  >  $remote_stat [ 'mtime' ] ) 
+						$send	=  true ;
+				    }
+				
+				if  ( $send )
+				   {
+					$status		=  $fs -> send ( $local_file, $remote_file ) ;
+				
+					if  ( $status ) 
+						$copy_status	=  'Ok' ;
+					else
+						$copy_status	=  'Failed' ;
+					
+					$updated_files ++ ;
+				    }
+				else 
+					$copy_status	=  'Up to date' ;
+				
+				$row		=
+				   [
+					'server'	=>  $host,
+					'local-name'	=>  basename ( $local_file ),
+					'remote-file'	=>  $remote_file,
+					'status'	=>  $copy_status 
+				    ] ;
+				$files []	=  $row ;
+				
+				$index ++ ;
+			    }
+		    }
+		
+		// Generate a report
+		$report		=  new AsciiReport 
+		   (
+			[ 'member' => 'server'		, 'title' => 'Server'					],
+			[ 'member' => 'local-name'	, 'title' => 'Local file'				],
+			[ 'member' => 'remote-file'	, 'title' => 'Remote file'				],
+			[ 'member' => 'status'		, 'title' => 'Status'		, 'align' => 'center'	]
+		    ) ;
+		
+		echo $report -> Generate ( $files ) ;
+		echo $report -> Summary ( 'file' ) ;
+	    }
+	
+	
+	/*==================================================================================================
+
+		Global constants and variables.
+
+	  ==================================================================================================*/
+	$CL 				=  new  CLParser ( $Definitions ) ;
+	$ConfigurationFile		=  $CL -> configuration_file ;
+	$WebprotectConfigurationFile	=  $CL -> webprotect_configuration_file ;
+	$Force				=  $CL -> force ;
+	$List				=  $CL -> list ;
+	$ListConfiguredServers		=  $CL -> list_configured_servers ;
+	$Servers			=  $CL -> servers ;
+	$Update				=  $CL -> update ;
+	
+	$RsAdmin			=  new RsAdmin ( $ConfigurationFile ) ;
+	$ServerList			=  $RsAdmin -> FindServers ( $Servers ) ;
+	$HadOption			=  false ;
+	
+	// Webprotect settings
+	$LocalRoot			=  false ;
+	$ApacheRootFiles		=  [] ;
+	$DomainRootFiles		=  [] ;
+	$IgnoredServers			=  [] ;
+
+	
+	/*==================================================================================================
+
+		Main program.
+
+	  ==================================================================================================*/
+	LoadSettings ( ) ;
+	
+	// -update option :
+	//	Updates the files referenced in the rswebprotect.ini file.
+	if  ( ! $HadOption  &&  $Update )
+	   {
+		UpdateFiles ( ) ;
+		$HadOption	=  true ;
+	    }
+	
+	// -list :
+	//	Lists the files referenced in the rswebprotect.ini file.
+	if  ( $List )
+	   {
+		ListFiles ( ) ;
+	    }
+
+	// -list_configured_servers :
+	//	Lists the servers configured for this command.
+	if  ( ! $HadOption  &&  $ListConfiguredServers ) 
+	   {
+		$RsAdmin -> ListServers ( ) ;
+		$HadOption	=  true ;
+	    }
+	

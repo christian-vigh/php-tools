@@ -1,0 +1,124 @@
+#!/usr/bin/php
+<?php
+	//!phpcmd(Text Utilities, 2.0) : Generates lists of sentences.
+	/***************************************************************************************************
+
+	    NAME
+		gensentences.phs
+
+	    DESCRIPTION
+		Generates lists of sentences.
+
+	    AUTHOR
+	     	Christian Vigh, 10/2012.
+
+	    HISTORY
+	    [Version : 1.0]	[Date : 2014/09/13]	[Author : CV]
+	     	Initial version.
+
+	 ***************************************************************************************************/
+	require ( "tools.phpinclude" ) ;
+
+	require_once ( 'Processors/CL/CLParser.phpclass' ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Types\String ;
+	use  Thrak\IO\Path ;
+
+	define ( 'DICTIONARY_ENV'	,  'GENSENTENCES_DICTIONARY' ) ;
+	
+
+	/*===========================================================================================
+
+		Command-line definitions.
+
+	  ===========================================================================================*/
+	$Definitions = <<<END
+<command name="gensentences" allow-files="true" min-files="1" max-files="1" value-text="file" value-help="Output file">
+	<usage>
+		Generates a list of sentences, one per line.
+	</usage>
+	
+	<integer name="count, c" min-value="1" default="24">
+		Number of sentences to generate.
+	</integer>
+	
+	<integer name="min_words, minw, min" min-value="1" default="8">
+		Minimum number of words per sentence.
+	</integer>
+	
+	<integer name="max_words, maxw, max" min-value="1" default="20">
+		Maximum number of words per sentence.
+	</integer>
+	
+	<file name="dictionary, dict, dic, d" disposition="existing">
+		Dictionary file containing one word per line.
+		Words are randomly picked up to build nonsense sentences.
+		The GENSENTENCES_DICTIONARY environment variable can provide a default value for this file.
+	</file>
+</command>
+END;
+
+	/*==============================================================================================================
+	
+	    GetDictionary -
+	        Gets the dictionary file path.
+	
+	  ==============================================================================================================*/
+	function  GetDictionary ( $dictionary )
+	   {
+		if  ( ! $dictionary )
+		   {
+			$dictionary	=  getenv ( DICTIONARY_ENV ) ;
+			   
+			if  ( ! $dictionary )
+				error ( "No dictionary specified and the " . DICTIONARY_ENV . " environment variable is not defined." ) ;
+			   
+			if  ( ! file_exists ( $dictionary ) )
+				error ( "The dictionary specified by the " . DICTIONARY_ENV . " environment variable ($dictionary) does not exist." ) ;
+		     }
+		
+		return ( $dictionary ) ;
+	     }
+
+	
+	/*===========================================================================================
+
+		Main program.
+
+	  ===========================================================================================*/
+	// Get command-line parameters
+	$CL 		=  new CLParser ( $Definitions ) ;
+	
+	$Count		=  $CL -> count ;
+	$MinWords	=  $CL -> min_words ;
+	$MaxWords	=  $CL -> max_words ;
+	$Dictionary	=  GetDictionary ( $CL -> dictionary ) ;
+	$Output		=  $CL -> Files [0] ;
+	$Words		=  file ( $Dictionary ) ;
+
+	if  ( $MaxWords  <  $MinWords )
+		error ( "Max words per sentence ($MaxWords) is less than min ($MinWords) !" ) ;
+	
+	// Open the output file
+	if  ( ! ( $fp = @fopen ( $Output, "w" ) ) )
+		error ( "Cannot open file $Output." ) ;
+	
+	// Sentence-generation loop
+	mt_srand ( time ( ) ) ;
+	
+	for  ( $i = 0 ; $i < $Count ; $i ++ )
+	   {
+		$WordCount	=  rand ( $MinWords, $MaxWords ) ;
+		$Sentence	=  array ( ) ;
+		
+		for  ( $j = 0 ; $j < $WordCount ; $j ++ )
+			$Sentence []	=  trim ( $Words [ mt_rand ( 0, count ( $Words ) - 1 ) ] ) ;
+		
+		fputs ( $fp, implode ( ' ', $Sentence ) . "\n" ) ;
+	    }
+	
+	// All done
+	fclose ( $fp ) ;
+	output ( "$Count sentences generated." ) ;
+?>

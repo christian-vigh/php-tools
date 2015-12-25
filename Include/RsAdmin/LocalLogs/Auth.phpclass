@@ -1,0 +1,1355 @@
+<?php
+/**************************************************************************************************************
+
+    NAME
+        Auth.phpclass
+
+    DESCRIPTION
+        Analyzes auth log entries.
+
+    AUTHOR
+        Christian Vigh, 07/2015.
+
+    HISTORY
+    [Version : 1.0]    [Date : 2015/07/21]     [Author : CV]
+        Initial version.
+
+ **************************************************************************************************************/
+
+
+use		Thrak\Types\String ;
+
+
+/*==============================================================================================================
+
+    LocalAuthLog class -
+        Handles mail logfile entries.
+
+  ==============================================================================================================*/
+class  LocalAuthLog	extends  LocalLog
+   {
+	public		$Title					=  'auth' ;
+
+	// Auth message codes
+	const	AUTH_NONE					=   0 ;
+	const   AUTH_CRON_SESSION_STARTED			=   1 ;
+	const   AUTH_CRON_SESSION_CLOSED			=   2 ;
+	const   AUTH_SSH_ACCEPTED_PASSWORD			=   3 ;
+	const   AUTH_SSH_SUBSYSTEM_REQUEST			=   4 ;
+	const   AUTH_SSH_RECEIVED_DISCONNECT			=   5 ;
+	const   AUTH_SMTP_USING_MYSQL				=   6 ;
+	const   AUTH_SSH_ACCEPTED_PUBLIC_KEY			=   7 ;
+	const	AUTH_SSH_WRITE_FAILED_CONNECTION_RESET		=   8 ;
+	const   AUTH_SSH_READ_FAILED_CONNECTION_RESET		=   9 ;
+	const   AUTH_SU_SUCCESSFUL				=  10 ;
+	const   AUTH_SU_DEVICE					=  11 ;
+	const	AUTH_SSH_LISTENING				=  12 ;
+	const   AUTH_SSH_TOO_MANY_FAILURES			=  13 ;
+	const   AUTH_SSH_POSTPONED_PUBLIC_KEY			=  14 ;
+	const   AUTH_SSH_SET_SCORE_ADJUST			=  15 ;
+	const   AUTH_SSH_CONNECTION				=  16 ;
+	const   AUTH_SSH_NO_IDENTIFICATION_STRING		=  17 ;
+	const   AUTH_SSH_POSTPONED_KEYBOARD_INTERACTIVE		=  18 ;
+	const   AUTH_SSH_ACCEPTED_KEYBOARD_INTERACTIVE		=  19 ;
+	const   AUTH_SSH_POSSIBLE_BREAKIN_ATTEMPT		=  20 ;
+	const   AUTH_SSH_INVALID_USER				=  21 ;
+	const   AUTH_SSH_USERAUTH_INVALID_USER			=  22 ;
+	const   AUTH_SSH_CHECK_PASS_USER_UNKNOWN		=  23 ;
+	const	AUTH_SSH_AUTHENTICATION_FAILURE			=  24 ;
+	const   AUTH_SSH_FAILED_PASSWORD			=  25 ;
+	const   AUTH_SSH_CONNECTION_TIMED_OUT			=  26 ;
+	const   AUTH_SSH_READ_ERROR_CONNECTION_RESET		=  27 ;
+	const   AUTH_SSH_FAILED_PUBLIC_KEY			=  28 ;
+	const   AUTH_SSH_INVALID_USER_AUTHENTICATION		=  29 ;
+	const   AUTH_SSH_USER_NOT_ALLOWED			=  30 ;
+	const   AUTH_SSH_CONNECTION_CLOSED			=  31 ;
+	const	AUTH_SSH_FAILED_KEYBOARD_INTERACTIVE		=  32 ;
+	const   AUTH_SSH_VERSION_MAPPER_SCANNER			=  33 ;
+	const   AUTH_SSH_DATA_TRANSFER				=  34 ;
+	const   AUTH_SSH_CLOSING_CONNECTION			=  35 ;
+	const   AUTH_SSH_FAILED_COMMAND				=  36 ;
+	const   AUTH_SSH_BAD_PROTOCOL_VERSION_ID		=  37 ;
+	const   AUTH_SSH_IDENT_STRING_WRITE_ERROR		=  38 ;
+	const   AUTH_SSH_PROTOCOL_VERSION_MISMATCH		=  39 ;
+	const   AUTH_SSH_MSG_WRITE_ERROR			=  40 ;
+	const	AUTH_SSH_CONVERSATION_FAILED			=  41 ;
+	const	AUTH_SSH_COULD_NOT_IDENTIFY_PASSWORD		=  42 ;
+	const   AUTH_SSH_NASTY_PTR_RECORD			=  43 ;
+	const	AUTH_SSH_BROKEN_PIPE				=  44 ;
+	const   AUTH_SSH_TERMINATED				=  45 ;
+	const	AUTH_SSH_NO_HOSTKEY_ALGORITHM			=  46 ;
+	const   AUTH_SSH_INVALID_DH_VALUE			=  47 ;
+	const	AUTH_SSH_DISCONNECT_INVALID_DH_VALUE		=  48 ;
+	const	AUTH_SSH_PASSWORD_CHANGED			=  49 ; 
+	const	AUTH_SSH_GROUP_ADDED				=  50 ;
+	const	AUTH_SSH_USER_ADDED				=  51 ;
+	const	AUTH_SSH_PASSWORD_EXPIRY_CHANGED		=  52 ;
+	const	AUTH_SSH_USER_INFORMATION_CHANGED		=  53 ;
+	const	AUTH_SSH_EXITING				=  54 ;
+	const   AUTH_SASL_PASSWD2				=  55 ;
+	const	AUTH_SSH_RSA_DECRYPT_FAILED			=  56 ;
+
+
+	// Constructor -
+	//	Builds the log object
+	public function  __construct ( $string_store, $rsadmin ) 
+	   {
+		parent::__construct ( RsAdmin::LOGTYPE_AUTH, $string_store, $rsadmin ) ;
+	    }
+ 
+
+	/*--------------------------------------------------------------------------------------------------------------
+
+	    Parse -
+		Parses auth messages.
+
+	 *-------------------------------------------------------------------------------------------------------------*/
+
+	// Message of the form :
+	//	Jul 19 00:39:01 vps169910 CRON[682]: pam_unix(cron:session): session opened for user root by (uid=0)
+	//	Constant : AUTH_CRON_SESSION_STARTED
+	private static	$regex_cron_session_started		=  '#	
+									(?P<message>
+										pam_unix 
+										.*?
+										session \s+ opened \s+ for \s+ user \s+
+										(?P<user> [^\s]+)
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	Jul 19 00:30:04 vps169910 CRON[489]: pam_unix(cron:session): session closed for user root
+	//	Constant : AUTH_CRON_SESSION_CLOSED
+	private static	$regex_cron_session_closed		=  '#	
+									(?P<message>
+										pam_unix 
+										.*?
+										session \s+ closed \s+ for \s+ user \s+
+										(?P<user> [^\s]+)
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps108493 sshd[6886]: Accepted password for root from 90.59.22.189 port 4157 ssh2
+	//	Constant : AUTH_SSH_ACCEPTED_PASSWORD
+	private static	$regex_ssh_accepted_password		=  '#	
+									(?P<message>
+										Accepted \s+ password \s+ for \s+
+										(?P<user> [^\s]+)
+										\s+ from \s+
+										(?P<ip> [^\s]+)
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps108493 sshd[6886]: subsystem request for sftp by user root
+	//	Constant : AUTH_SSH_SUBSYSTEM_REQUEST 
+	private static	$regex_ssh_subsystem_request		=  '#	
+									(?P<message>
+										subsystem \s+ request \s+ for .*? by \s+ user \s+
+										(?P<user> [^\s]+)
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps108493 sshd[6886]: Received disconnect from 90.59.22.189: 11: Thrak/SSH2
+	//	Constant : AUTH_SSH_RECEIVED_DISCONNECT
+	private static	$regex_ssh_received_disconnect		=  '#	
+									(?P<message>
+										Received \s+ disconnect \s+ from \s+
+										(?P<ip> [^\s:]+)
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps108493 postfix/smtpd[6900]: sql auxprop plugin using mysql engine
+	//	Constant : AUTH_SMTP_USING_MYSQL
+	private static	$regex_smtp_using_mysql			=  '#	
+									(?P<message>
+										sql \s+ auxprop \s+ plugin \s+ using \s+ mysql \s+ engine
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps108493 sshd[26664]: Accepted publickey for root from 81.50.188.155 port 9009 ssh2
+	//	Constant : AUTH_SSH_ACCEPTED_PUBLIC_KEY
+	private static	$regex_ssh_accepted_public_key		=  '#	
+									(?P<message>
+										Accepted \s+ publickey \s+ for \s+
+										(?P<user> [^\s]+)
+										\s+ from \s+
+										(?P<ip> [^\s]+)
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps108493 sshd[16421]: fatal: Write failed: Connection reset by peer [preauth]
+	//	Constant : AUTH_SSH_WRITE_FAILED_CONNECTION_RESET
+	private static	$regex_ssh_write_failed_connection_reset=  '#	
+									(?P<message>
+										fatal: \s+ Write \s+ failed: \s+
+										Connection \s+ reset \s+ by \s+ peer
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps108493 sshd[17578]: fatal: Read from socket failed: Connection reset by peer [preauth]
+	//	Constant : AUTH_SSH_READ_FAILED_CONNECTION_RESET
+	private static	$regex_ssh_read_failed_connection_reset	=  '#	
+									(?P<message>
+										fatal: \s+ Read \s+ from \s+ socket \s+ failed: \s+
+										Connection \s+ reset \s+ by \s+ peer
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps108493 su[1844]: Successful su for mysql by root
+	//	Constant : AUTH_SU_SUCCESSFUL
+	private static	$regex_su_successful			=  '#	
+									(?P<message>
+										successful \s+ su \s+ for \s+
+										(?P<user> [^\s]+)
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps108493 su[1844]: + /dev/console root:mysql
+	//	Constant : AUTH_SU_DEVICE
+	private static  $regex_su_device			=  '#
+									(?P<message>
+										\+ \s+
+										(?P<device> [^\s]+)
+										\s+
+										(?P<user> [^:]+)
+										:
+										(?P<group> [^\s]+)
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps108493 sshd[2253]: Server listening on 0.0.0.0 port 41937.
+	//	Constant : AUTH_SSH_LISTENING
+	private static  $regex_ssh_listening			=  '#
+									(?P<message>
+										Server \s+ listening \s+ on \s+
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps108494 sshd[18505]: Disconnecting: Too many authentication failures for root [preauth]
+	//	Constant : AUTH_SSH_TOO_MANY_FAILURES
+	private static  $regex_ssh_too_many_failures		=  '#
+									(?P<message>
+										Too \s+ many \s+ authentication \s+ failures \s+ for \s+
+										(?P<user> [^\s]+)
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps108494 sshd[8799]: Postponed publickey for root from 90.54.150.8 port 19337 ssh2 [preauth]
+	//	Constant : AUTH_SSH_POSTPONED_PUBLIC_KEY
+	private static	$regex_ssh_postponed_public_key		=  '#	
+									(?P<message>
+										Postponed \s+ publickey \s+ for \s+
+										(?P<user> [^\s]+)
+										\s+ from \s+
+										(?P<ip> [^\s]+)
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps169910 sshd[678]: Set /proc/self/oom_score_adj to -800
+	//	Constant : AUTH_SSH_SET_SCORE_ADJUST
+	private static  $regex_ssh_set_score_adjust		=  '#
+									(?P<message>
+										Set \s+ .* oom_score_adj \s+ 
+										(from .*?)?
+										to \s+
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps169910 sshd[738]: Connection from 154.127.50.149 port 51454
+	//	Constant : AUTH_SSH_CONNECTION
+	private static	$regex_ssh_connection			=  '#	
+									(?P<message>
+										Connection \s+ from \s+
+										(?P<ip> [^\s:]+)
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps169910 sshd[738]: Did not receive identification string from 154.127.50.149
+	//	Constant : AUTH_SSH_NO_IDENTIFICATION_STRING
+	private static	$regex_ssh_no_identification_string	=  '#	
+									(?P<message>
+										Did \s+ not \s+ receive \s+ identification \s+ string \s+ from \s+
+										(?P<ip> [^\s:]+)
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps169910 sshd[741]: Postponed keyboard-interactive for root from 90.59.22.189 port 3622 ssh2 [preauth]
+	//	Constant : AUTH_SSH_POSTPONED_KEYBOARD_INTERACTIVE
+	private static	$regex_ssh_postponed_keyboard_interactive=  '#	
+									(?P<message>
+										Postponed \s+ keyboard-interactive[^\s]* \s+ for \s+
+										(?P<user> [^\s]+)
+										\s+ from \s+
+										(?P<ip> [^\s]+)
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps169910 sshd[741]: Accepted keyboard-interactive/pam for root from 90.59.22.189 port 3622 ssh2
+	//	Constant : AUTH_SSH_ACCEPTED_KEYBOARD_INTERACTIVE
+	private static	$regex_ssh_accepted_keyboard_interactive=  '#	
+									(?P<message>
+										Accepted \s+ keyboard-interactive[^\s]* \s+ for \s+
+										(?P<user> [^\s]+)
+										\s+ from \s+
+										(?P<ip> [^\s]+)
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps169910 sshd[768]: reverse mapping checking getaddrinfo for hosted-by.ecatel.net [93.174.93.113] failed - POSSIBLE BREAK-IN ATTEMPT!
+	//	vps169910 sshd[17031]: Address 23.238.155.140 maps to unassigned.psychz.net, but this does not map back to the address - POSSIBLE BREAK-IN ATTEMPT!
+	//	Constant : AUTH_SSH_POSSIBLE_BREAKIN_ATTEMPT
+	private static	$regex_ssh_possible_breakin_attempt	=  '#	
+									(?P<message>
+										(
+											reverse \s+ mapping \s+ checking \s+ getaddrinfo \s+ for \s+ 
+											(?P<domain_1> [^\s\[]+)
+											\s* \[
+											(?P<ip_1> [^\]]+)
+											\] \s+ 
+											failed 
+											\s+ - \s+ POSSIBLE \s+ BREAK-IN \s+ ATTEMPT
+										)
+										|
+										(
+											Address \s+
+											(?P<ip_2> [^\s]+)
+											\s+
+											maps \s+ to \s+
+											(?P<domain_2> [^\s,]+)
+											, \s+ but \s+ this \s+ does \s+ not \s+ map \s+ back \s+ to \s+ the \s+ address
+											\s+ - \s+ POSSIBLE \s+ BREAK-IN \s+ ATTEMPT
+										 )
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps169910 sshd[768]: Invalid user pi from 93.174.93.113
+	//	Constant : AUTH_SSH_INVALID_USER
+	private static	$regex_ssh_invalid_user			=  '#	
+									(?P<message>
+										Invalid \s+ user \s+
+										(?P<user> .*?)
+										\s+ from \s+
+										(?P<ip> [^\s]+)
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps169910 sshd[768]: input_userauth_request: invalid user pi [preauth]
+	//	Constant : AUTH_SSH_USERAUTH_INVALID_USER
+	private static	$regex_ssh_userauth_invalid_user	=  '#	
+									(?P<message>
+										input_userauth_request: \s+ Invalid \s+ user \s
+										(?P<user> .*? )
+										\s
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps169910 sshd[768]: pam_unix(sshd:auth): check pass; user unknown
+	//	Constant : AUTH_SSH_CHECK_PASS_USER_UNKNOWN
+	private static  $regex_ssh_check_pass_user_unknown	=  '#
+									(?P<message>
+										.*?
+										check \s+ pass; \s+ user \s+ unknown
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps169910 sshd[768]: pam_unix(sshd:auth): authentication failure; logname= uid=0 euid=0 tty=ssh ruser= rhost=93.174.93.113
+	//	Constant : AUTH_SSH_AUTHENTICATION_FAILURE
+	private static  $regex_ssh_authentication_failure	=  '#
+									(?P<message>
+										pam_unix .*?
+										authentication \s+ failure ;
+										.*?
+										(
+											rhost =
+											(?P<domain_or_ip> [^\s]+)
+										 )?
+										.*?
+										(
+											user =
+											(?P<user> [^\s]+)
+										 )?
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps169910 sshd[770]: Failed password for root from 93.174.93.113 port 58264 ssh2
+	//	Constant : AUTH_SSH_FAILED_PASSWOD
+	private static	$regex_ssh_failed_password		=  '#	
+									(?P<message>
+										Failed \s+ password \s+ for \s+
+										(?P<user> [^\s]+)
+										\s+ from \s+
+										(?P<ip> [^\s]+)
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps169910 sshd[407]: Read error from remote host 90.59.22.189: Connection timed out
+	//	Constant : AUTH_SSH_CONNECTION_TIMED_OUT
+	private static	$regex_ssh_connection_timed_out		=  '#	
+									(?P<message>
+										Read \s+ error \s+ from \s+ remote \s+ host \s+
+										(?P<ip> [^\s]+)
+										: \s+
+										Connection \s+ timed \s+ out
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps169910 sshd[1894]: Read error from remote host 90.59.22.189: Connection reset by peer
+	//	Constant : AUTH_SSH_READ_ERROR_CONNECTION_RESET
+	private static	$regex_ssh_read_error_connection_reset	=  '#	
+									(?P<message>
+										Read \s+ error \s+ from \s+ remote \s+ host \s+
+										(?P<ip> [^\s]+)
+										: \s+
+										Connection \s+ reset \s+ by \s+ peer
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps169910 sshd[9214]: Failed publickey for root from 81.50.188.155 port 9025 ssh2
+	//	Constant : AUTH_SSH_FAILED_PUBLIC_KEY
+	private static	$regex_ssh_failed_public_key		=  '#	
+									(?P<message>
+										Failed \s+ publickey \s+ for \s+
+										(?P<user> [^\s]+)
+										\s+ from \s+
+										(?P<ip> [^\s]+)
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps169910 sshd[9769]: error: PAM: Authentication failure for illegal user x from 95.85.26.222
+	//	vps169910 sshd[14966]: error: PAM: Authentication failure for root from ns376865.ip-5-196-94.eu
+	//	Constant : AUTH_SSH_INVALID_USER_AUTHENTICATION
+	private static	$regex_ssh_invalid_user_authentication	=  '#	
+									(?P<message>
+										error: \s+ PAM: \s+ Authentication \s+ failure \s+ for \s+ (illegal \s+ user \s+)?
+										(?P<user> .*?)
+										\s+ from \s+
+										(?P<ip> [^\s]+)
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps169910 sshd[10437]: User mysql from 197.239.33.22 not allowed because not listed in AllowUsers
+	//	Constant : AUTH_SSH_USER_NOT_ALLOWED
+	private static	$regex_ssh_user_not_allowed		=  '#	
+									(?P<message>
+										User \s+
+										(?P<user> [^\s]*)
+										\s+ from \s+
+										(?P<ip> [^\s]+)
+										\s+
+										not \s+ allowed \s+ because \s+ not \s+ listed \s+ in
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps169910 sshd[11997]: Connection closed by 124.74.19.100 [preauth]
+	//	Constant : AUTH_SSH_CONNECTION_CLOSED
+	private static	$regex_ssh_connection_closed		=  '#	
+									(?P<message>
+										Connection \s+ closed \s+ by \s+
+										(?P<ip> [^\s]+)
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps169910 sshd[741]: Failed keyboard-interactive for root from 90.59.22.189 port 3622 ssh2 [preauth]
+	//	Constant : AUTH_SSH_FAILED_KEYBOARD_INTERACTIVE
+	private static	$regex_ssh_failed_keyboard_interactive	=  '#	
+									(?P<message>
+										Failed \s+ keyboard-interactive[^\s]* \s+ for \s+
+										(?P<user> [^\s]+)
+										\s+ from \s+
+										(?P<ip> [^\s]+)
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps169910 sshd[26819]: scanned from 192.198.81.190 with SSH-1.0-SSH_Version_Mapper.  Don't panic.
+	//	Constant : AUTH_SSH_VERSION_MAPPER_SCANNER
+	private static	$regex_ssh_version_mapper_scanner	=  '#	
+									(?P<message>
+										scanned \s+ from \s+
+										(?P<ip> [^\s]+)
+										\s+ with \s+ SSH.*?_Version_Mapper
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps169910 sshd[31664]: Transferred: sent 4400, received 1552 bytes
+	//	Constant : AUTH_SSH_DATA_TRANSFER
+	private static	$regex_ssh_data_transfer		=  '#	
+									(?P<message>
+										Transferred: \s+ sent \s+ \d+, \s+
+										received \s+ \d+
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps169910 sshd[31664]: Closing connection to 90.59.22.189 port 15476
+	//	Constant : AUTH_SSH_CLOSING_CONNECTION
+	private static	$regex_ssh_closing_connection		=  '#	
+									(?P<message>
+										Closing \s+ connection \s+ to \s+
+										(?P<ip> [^\s]+)
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps169910 sshd[31981]: Failed none for root from 94.131.14.102 port 58448 ssh2
+	//	Constant : AUTH_SSH_FAILED_COMMAND
+	private static	$regex_ssh_failed_command		=  '#	
+									(?P<message>
+										Failed \s+ 
+										(?P<command> [^\s]+)
+										\s+ for \s+
+										(?P<user> [^\s]+)
+										\s+ from \s+
+										(?P<ip> [^\s]+)
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps169910 sshd[6961]: Bad protocol version identification 'GET / HTTP/1.0' from 182.118.45.212
+	//	Constant : AUTH_SSH_BAD_PROTOCOL_VERSION_ID
+	private static	$regex_ssh_bad_protocol_version_id	=  '#	
+									(?P<message>
+										Bad \s+ protocol \s+ version \s+ identification \s+
+										\'
+										(?P<command> [^\']*)
+										\'
+										\s+ from \s+
+										(?P<ip> [^\s]+)
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps169910 sshd[29807]: Could not write ident string to 37.187.237.250
+	//	Constant : AUTH_SSH_IDENT_STRING_WRITE_ERROR
+	private static	$regex_ssh_ident_string_write_error	=  '#	
+									(?P<message>
+										Could \s+ not \s+ write \s+ ident \s+ string \s+ to \s+
+										(?P<ip> [^\s]+)
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps169910 sshd[9239]: Protocol major versions differ for 107.150.56.180: SSH-2.0-OpenSSH_6.0p1 vs. SSH-1.5-NmapNSE_1.0
+	//	Constant : AUTH_SSH_PROTOCOL_VERSION_MISMATCH
+	private static	$regex_ssh_protocol_version_mismatch	=  '#	
+									(?P<message>
+										Protocol \s+ major \s+ versions \s+ differ \s+ for \s+
+										(?P<ip> [^\s:]+)
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps169910 sshd[15544]: error: ssh_msg_send: write
+	//	Constant : AUTH_SSH_MSG_WRITE_ERROR
+	private static	$regex_ssh_msg_write_error		=  '#	
+									(?P<message>
+										error: \s+ ssh_msg_send: \s+ write
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps169910 sshd[15800]: pam_unix(sshd:auth): conversation failed
+	//	Constant : AUTH_SSH_CONVERSATION_FAILED
+	private static	$regex_ssh_conversation_failed		=  '#	
+									(?P<message>
+										pam_unix .*? : \s+ conversation \s+ failed
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps169910 sshd[15800]: pam_unix(sshd:auth): auth could not identify password for [cycle]
+	//	Contant : AUTH_COULD_NOT_IDENTIFY_PASSWORD
+	private static	$regex_ssh_could_not_identify_password	=  '#	
+									(?P<message>
+										pam_unix .*? : \s+ auth \s+ could \s+ not \s+ identify \s+ password \s+ for \s+
+										\[
+										(?P<user> [^\]]+)
+										\]
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps169910 sshd[13099]: Nasty PTR record "121.201.96.82" is set up for 121.201.96.82, ignoring
+	//	Constant : AUTH_SSH_NASTY_PTR_RECORD
+	private static	$regex_ssh_nasty_ptr_record		=  '#	
+									(?P<message>
+										Nasty \s+ PTR \s+ record \s+ "
+										(?P<ip> [^\s:]+)
+										"
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps169910 sshd[12981]: fatal: Write failed: Broken pipe [preauth]
+	//	Constant : AUTH_SSH_BROKEN_PIPE
+	private static	$regex_ssh_broken_pipe			=  '#	
+									(?P<message>
+										.*? : \s+ Broken \s+ pipe
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps108493 sshd[2137]: Received signal 15; terminating.
+	//	Constant : AUTH_SSH_TERMINATED
+	private static	$regex_ssh_terminated			=  '#	
+									(?P<message>
+										.*? Received \s+ signal
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps169910 sshd[10852]: fatal: no hostkey alg [preauth]
+	//	Constant : AUTH_SSH_NO_HOSTKEY_ALGORITHM
+	private static	$regex_ssh_no_hostkey_algorithm			=  '#	
+									(?P<message>
+										.*? no \s+ hostkey \s+ alg
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps169910 sshd[30145]: invalid public DH value: <= 1 [preauth]
+	//	Constant : AUTH_SSH_INVALID_DH_VALUE
+	private static	$regex_ssh_invalid_dh_value		=  '#	
+									(?P<message>
+										.*? invalid \s+ public \s+ DH \s+ value
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps169910 sshd[30145]: Disconnecting: bad client public DH value [preauth]
+	//	Constant : AUTH_SSH_DISCONNECT_INVALID_DH_VALUE
+	private static	$regex_ssh_disconnect_invalid_dh_value	=  '#	
+									(?P<message>
+										.*? Disconnecting: \s+ bad \s+ client \s+ public \s+ DH \s+ value
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps223414 passwd[2024]: pam_unix(passwd:chauthtok): password changed for root
+	// or :
+	//	vps223414 usermod[4113]: change user 'postfix' password
+	// Constant : AUTH_SSH_PASSWORD_CHANGED
+	private static  $regex_ssh_password_changed		=  '#	
+									(?P<message>
+										(
+											( pam_unix .*? : \s+ password \s+ changed \s+ for \s+ )
+											|
+											( change \s+ user \s+ \' )
+										 )
+										(?P<user> [^\s\']+)
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps223414 groupadd[3621]: group added to /etc/group: name=ssl-cert, GID=104
+	// or :
+	//	vps223414 groupadd[3621]: new group: name=ssl-cert, GID=104
+	// Constant : AUTH_SSH_GROUP_ADDED
+	private static  $regex_ssh_group_added			=  '#	
+									(?P<message>
+										(
+											( group \s+ added \s+ .* : ) 
+											|
+											( new \s+ group : ) 
+										 )
+										\s+ name=
+										(?P<group> [^,\s]+)
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps223414 useradd[5516]: new user: name=mysql, UID=102, GID=105, home=/nonexistent, shell=/bin/false
+	// or :
+	//	vps223414 gpasswd[21293]: user postfix added by root to group sasl
+	// Constant : AUTH_SSH_USER_ADDED
+	private static  $regex_ssh_user_added			=  '#	
+									(?P<message>
+										(
+											( user \s+ added \s+ .* : ) 
+											|
+											( new \s+ user : ) 
+										 )
+										\s+ name=
+										(?P<user> [^,\s]+)
+										.*
+									 )
+								    #imsx' ;
+	private static  $regex_ssh_user_added2			=  '#	
+									(?P<message>
+										user \s+
+										(?P<user> [^,\s]+)
+										\s+ added \s+ by 
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps223414 chage[5521]: changed password expiry for mysql
+	// Constant : AUTH_SSH_PASSWORD_EXPIRY_CHANGED
+	private static  $regex_ssh_password_expiry_changed	=  '#	
+									(?P<message>
+										changed \s+ password \s+ expiry \s+ for \s+
+										(?P<user> [^\s]+)
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps223414 chfn[5524]: changed user 'mysql' information
+	// Constant : AUTH_SSH_USER_INFORMATION_CHANGED
+	private static  $regex_ssh_user_information_changed	=  '#	
+									(?P<message>
+										changed \s+ user \s+
+										\'
+										(?P<user> [^\']+)
+										\'
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps223414 sshd[2025]: Exiting on signal 15
+	// Constant : AUTH_SSH_EXITING
+	private static  $regex_ssh_exiting		=  '#	
+									(?P<message>
+										Exiting \s+ on \s+ signal
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps223414 saslpasswd2: sql_select option missing
+	// (all saslpasswd2 messages are grouped under this constant)
+	private static  $regex_ssh_saslpasswd2			=  '#	
+									(?P<message>
+										saslpasswd2: 
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps108495 sshd[15444]: error: RSA_public_decrypt failed: error:0407006A:lib(4):func(112):reason(106)
+	// Constant : AUTH_SSH_RSA_DECRYPT_FAILED
+	private static  $regex_ssh_rsa_decrypt_failed	=  '#	
+									(?P<message>
+										error: \s+ RSA_public_decrypt \s+ failed
+										.*
+									 )
+								    #imsx' ;
+
+
+	protected function  Parse ( $line, &$parsed_data, $string_store )
+	   {
+		static	$re	=  "#
+					(?P<host> [^\s]+)
+					\s+
+					(?P<module> [^\[:]+)
+					(
+						\[
+						(?P<pid> [^\]]+)
+						\] 
+					 )?
+					: \s+
+					(?P<message> .*)
+				    #imsx" ;
+
+		// First, check that the supplied message has three parts : a severity, an optional client ip and a message
+		if  ( preg_match ( $re, $line, $match ) )
+		   {
+			$log_code		=  self::AUTH_NONE ;
+			$message		=  $match [ 'message' ] ;
+			$pid			=  ( isset ( $match [ 'pid' ] ) ) ?  $match [ 'pid' ] : 0 ;
+			$ip_id			=  0 ;
+			$server_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_SERVER_NAME, $match [ 'host' ] ) ;
+			$module_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MODULE_NAME, $match [ 'module' ] ) ;
+			$message_id		=  0 ;
+			$user_id		=  0 ;
+			$group_id		=  0 ;
+			$device_name_id		=  0 ;
+			$domain_id		=  0 ;
+			$command_id		=  0 ;
+
+			// The big IF that tries to recognize all possible log messages :
+
+			// Message of the form :
+			//	Jul 19 00:39:01 vps169910 CRON[682]: pam_unix(cron:session): session opened for user root by (uid=0)
+			if  ( preg_match ( self::$regex_cron_session_started, $message, $regex_match ) ) 
+			   {
+				$user_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_USER_NAME			, $regex_match [ 'user' ] ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_CRON_SESSION_STARTED ;
+			    }
+			// Message of the form :
+			//	Jul 19 00:30:04 vps169910 CRON[489]: pam_unix(cron:session): session closed for user root
+			else if  ( preg_match ( self::$regex_cron_session_closed, $message, $regex_match ) ) 
+			   {
+				$user_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_USER_NAME			, $regex_match [ 'user' ] ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_CRON_SESSION_CLOSED ;
+			    }
+			// Message of the form :
+			//	vps108493 sshd[6886]: Accepted password for root from 90.59.22.189 port 4157 ssh2
+			else if  ( preg_match ( self::$regex_ssh_accepted_password, $message, $regex_match ) ) 
+			   {
+				$user_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_USER_NAME			, $regex_match [ 'user' ] ) ;
+				$ip			=  $this -> PreprocessIp ( $regex_match [ 'ip' ] ) ;
+				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP			, $ip ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SSH_ACCEPTED_PASSWORD ;
+			    }
+			// Message of the form :
+			//	vps108493 sshd[6886]: subsystem request for sftp by user root
+			else if  ( preg_match ( self::$regex_ssh_subsystem_request, $message, $regex_match ) ) 
+			   {
+				$user_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_USER_NAME			, $regex_match [ 'user' ] ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SSH_SUBSYSTEM_REQUEST ;
+			    }
+			// Message of the form :
+			//	vps108493 sshd[6886]: Received disconnect from 90.59.22.189: 11: Thrak/SSH2
+			else if  ( preg_match ( self::$regex_ssh_received_disconnect, $message, $regex_match ) ) 
+			   {
+				$ip			=  $this -> PreprocessIp ( $regex_match [ 'ip' ] ) ;
+				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP			, $ip ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SSH_RECEIVED_DISCONNECT ;
+			    }
+			// Message of the form :
+			//	vps108493 postfix/smtpd[6900]: sql auxprop plugin using mysql engine
+			else if  ( preg_match ( self::$regex_smtp_using_mysql, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SMTP_USING_MYSQL ;
+			    }
+			// Message of the form :
+			//	vps108493 sshd[26664]: Accepted publickey for root from 81.50.188.155 port 9009 ssh2
+			else if  ( preg_match ( self::$regex_ssh_accepted_public_key, $message, $regex_match ) ) 
+			   {
+				$user_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_USER_NAME			, $regex_match [ 'user' ] ) ;
+				$ip			=  $this -> PreprocessIp ( $regex_match [ 'ip' ] ) ;
+				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP			, $ip ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SSH_ACCEPTED_PUBLIC_KEY ;
+			    }
+			// Message of the form :
+			//	vps108493 sshd[16421]: fatal: Write failed: Connection reset by peer [preauth]
+			else if  ( preg_match ( self::$regex_ssh_write_failed_connection_reset, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SSH_WRITE_FAILED_CONNECTION_RESET ;
+			    }
+			// Message of the form :
+			//	vps108493 sshd[17578]: fatal: Read from socket failed: Connection reset by peer [preauth]
+			else if  ( preg_match ( self::$regex_ssh_read_failed_connection_reset, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SSH_READ_FAILED_CONNECTION_RESET ;
+			    }
+			// Message of the form :
+			//	vps108493 su[1844]: Successful su for mysql by root
+			else if  ( preg_match ( self::$regex_su_successful, $message, $regex_match ) ) 
+			   {
+				$user_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_USER_NAME			, $regex_match [ 'user' ] ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SU_SUCCESSFUL ;
+			    }
+			// Message of the form :
+			//	vps108493 su[1844]: + /dev/console root:mysql
+			else if  ( preg_match ( self::$regex_su_device, $message, $regex_match ) ) 
+			   {
+				$user_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_USER_NAME			, $regex_match [ 'user' ] ) ;
+				$group_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_GROUP_NAME		, $regex_match [ 'group' ] ) ;
+				$device_name_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_DEVICE_NAME		, $regex_match [ 'device' ] ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SU_DEVICE ;
+			    }
+			// Message of the form :
+			//	vps108493 sshd[2253]: Server listening on 0.0.0.0 port 41937.
+			else if  ( preg_match ( self::$regex_ssh_listening, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SSH_LISTENING ;
+			    }
+			// Message of the form :
+			//	vps108494 sshd[18505]: Disconnecting: Too many authentication failures for root [preauth]
+			else if  ( preg_match ( self::$regex_ssh_too_many_failures, $message, $regex_match ) ) 
+			   {
+				$user_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_USER_NAME			, $regex_match [ 'user' ] ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SSH_TOO_MANY_FAILURES ;
+			    }
+			// Message of the form :
+			//	vps108493 sshd[26664]: Postponed publickey for root from 81.50.188.155 port 9009 ssh2
+			else if  ( preg_match ( self::$regex_ssh_postponed_public_key, $message, $regex_match ) ) 
+			   {
+				$user_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_USER_NAME			, $regex_match [ 'user' ] ) ;
+				$ip			=  $this -> PreprocessIp ( $regex_match [ 'ip' ] ) ;
+				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP			, $ip ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SSH_POSTPONED_PUBLIC_KEY ;
+			    }
+			// Message of the form :
+			//	vps169910 sshd[678]: Set /proc/self/oom_score_adj to -800
+			else if  ( preg_match ( self::$regex_ssh_set_score_adjust, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SSH_SET_SCORE_ADJUST ;
+			    }
+			// Message of the form :
+			//	vps169910 sshd[738]: Connection from 154.127.50.149 port 51454
+			else if  ( preg_match ( self::$regex_ssh_connection, $message, $regex_match ) ) 
+			   {
+				$ip			=  $this -> PreprocessIp ( $regex_match [ 'ip' ] ) ;
+				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP			, $ip ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SSH_CONNECTION ;
+			    }
+			// Message of the form :
+			//	vps169910 sshd[738]: Did not receive identification string from 154.127.50.149
+			else if  ( preg_match ( self::$regex_ssh_no_identification_string, $message, $regex_match ) ) 
+			   {
+				$ip			=  $this -> PreprocessIp ( $regex_match [ 'ip' ] ) ;
+				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP			, $ip ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SSH_NO_IDENTIFICATION_STRING ;
+			    }
+			// Message of the form :
+			//	vps169910 sshd[741]: Postponed keyboard-interactive for root from 90.59.22.189 port 3622 ssh2 [preauth]
+			else if  ( preg_match ( self::$regex_ssh_postponed_keyboard_interactive, $message, $regex_match ) ) 
+			   {
+				$user_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_USER_NAME			, $regex_match [ 'user' ] ) ;
+				$ip			=  $this -> PreprocessIp ( $regex_match [ 'ip' ] ) ;
+				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP			, $ip ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SSH_POSTPONED_KEYBOARD_INTERACTIVE ;
+			    }
+			// Message of the form :
+			//	vps169910 sshd[741]: Accepted keyboard-interactive/pam for root from 90.59.22.189 port 3622 ssh2
+			else if  ( preg_match ( self::$regex_ssh_accepted_keyboard_interactive, $message, $regex_match ) ) 
+			   {
+				$user_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_USER_NAME			, $regex_match [ 'user' ] ) ;
+				$ip			=  $this -> PreprocessIp ( $regex_match [ 'ip' ] ) ;
+				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP			, $ip ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SSH_ACCEPTED_KEYBOARD_INTERACTIVE ;
+			    }
+			// Message of the form :
+			//	vps169910 sshd[768]: reverse mapping checking getaddrinfo for hosted-by.ecatel.net [93.174.93.113] failed - POSSIBLE BREAK-IN ATTEMPT!
+			else if  ( preg_match ( self::$regex_ssh_possible_breakin_attempt, $message, $regex_match ) ) 
+			   {
+				if  ( isset ( $regex_match [ 'domain_1' ] )  &&  $regex_match [ 'domain_1' ] )
+					$domain_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_DOMAIN_NAME, $regex_match [ 'domain_1' ] ) ;
+				else if  ( isset ( $regex_match [ 'domain_2' ] )  &&  $regex_match [ 'domain_2' ] )
+					$domain_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_DOMAIN_NAME, $regex_match [ 'domain_2' ] ) ;
+
+				if  ( isset ( $regex_match [ 'ip_1' ] )  &&  $regex_match [ 'ip_1' ] )
+				   {
+					$ip			=  $this -> PreprocessIp ( $regex_match [ 'ip_1' ] ) ;
+					$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP, $ip ) ;
+				    }
+				else if  ( isset ( $regex_match [ 'ip_2' ] )  &&  $regex_match [ 'ip_2' ] )
+				   {
+					$ip			=  $this -> PreprocessIp ( $regex_match [ 'ip_2' ] ) ;
+					$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP, $ip ) ;
+				    }
+
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SSH_POSSIBLE_BREAKIN_ATTEMPT ;
+			    }
+			// Message of the form :
+			//	vps169910 sshd[768]: Invalid user pi from 93.174.93.113
+			else if  ( preg_match ( self::$regex_ssh_invalid_user, $message, $regex_match ) ) 
+			   {
+				$user_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_USER_NAME			, $regex_match [ 'user' ] ) ;
+				$ip			=  $this -> PreprocessIp ( $regex_match [ 'ip' ] ) ;
+				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP			, $ip ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SSH_INVALID_USER ;
+			    }
+			// Message of the form :
+			//	vps169910 sshd[768]: input_userauth_request: invalid user pi [preauth]
+			else if  ( preg_match ( self::$regex_ssh_userauth_invalid_user, $message, $regex_match ) ) 
+			   {
+				$user_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_USER_NAME			, $regex_match [ 'user' ] ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SSH_USERAUTH_INVALID_USER ;
+			    }
+			// Message of the form :
+			//	vps169910 sshd[768]: pam_unix(sshd:auth): check pass; user unknown
+			else if  ( preg_match ( self::$regex_ssh_check_pass_user_unknown, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SSH_CHECK_PASS_USER_UNKNOWN ;
+			    }
+			// Message of the form :
+			//	vps169910 sshd[768]: pam_unix(sshd:auth): authentication failure; logname= uid=0 euid=0 tty=ssh ruser= rhost=93.174.93.113
+			else if  ( preg_match ( self::$regex_ssh_authentication_failure, $message, $regex_match ) ) 
+			   {
+				$domain_or_ip		=  ( isset ( $regex_match [ 'domain_or_ip' ] ) ) ?  $regex_match [ 'domain_or_ip' ] : '' ;
+
+				if  ( $domain_or_ip ) 
+				   {
+					if  ( String::IsIpAddress ( $domain_or_ip ) )
+					   {
+						$ip		=  $this -> PreprocessIp ( $domain_or_ip ) ;
+						$ip_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP, $domain_or_ip ) ;
+					    }
+					else
+						$domain_id	=  $string_store -> Insert ( LogStringStore::LOGSTORE_DOMAIN_NAME, $domain_or_ip ) ;
+				    }
+
+				if  ( isset ( $regex_match [ 'user' ] ) )
+					$user_id	=  $string_store -> Insert ( LogStringStore::LOGSTORE_USER_NAME, $regex_match [ 'user' ] ) ;
+
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SSH_AUTHENTICATION_FAILURE ;
+			    }
+			// Message of the form :
+			//	vps169910 sshd[770]: Failed password for root from 93.174.93.113 port 58264 ssh2
+			else if  ( preg_match ( self::$regex_ssh_failed_password, $message, $regex_match ) ) 
+			   {
+				$user_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_USER_NAME			, $regex_match [ 'user' ] ) ;
+				$ip			=  $this -> PreprocessIp ( $regex_match [ 'ip' ] ) ;
+				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP			, $ip ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SSH_FAILED_PASSWORD ;
+			    }
+			// Message of the form :
+			//	vps169910 sshd[407]: Read error from remote host 90.59.22.189: Connection timed out
+			else if  ( preg_match ( self::$regex_ssh_connection_timed_out, $message, $regex_match ) ) 
+			   {
+				$ip			=  $this -> PreprocessIp ( $regex_match [ 'ip' ] ) ;
+				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP			, $ip ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SSH_CONNECTION_TIMED_OUT ;
+			    }
+			// Message of the form :
+			//	vps169910 sshd[1894]: Read error from remote host 90.59.22.189: Connection reset by peer
+			else if  ( preg_match ( self::$regex_ssh_read_error_connection_reset, $message, $regex_match ) ) 
+			   {
+				$ip			=  $this -> PreprocessIp ( $regex_match [ 'ip' ] ) ;
+				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP			, $ip ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SSH_READ_ERROR_CONNECTION_RESET ;
+			    }
+			// Message of the form :
+			//	vps169910 sshd[9214]: Failed publickey for root from 81.50.188.155 port 9025 ssh2
+			else if  ( preg_match ( self::$regex_ssh_failed_public_key, $message, $regex_match ) ) 
+			   {
+				$user_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_USER_NAME			, $regex_match [ 'user' ] ) ;
+				$ip			=  $this -> PreprocessIp ( $regex_match [ 'ip' ] ) ;
+				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP			, $ip ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SSH_FAILED_PUBLIC_KEY ;
+			    }
+			// Message of the form :
+			//	vps169910 sshd[9769]: error: PAM: Authentication failure for illegal user x from 95.85.26.222
+			else if  ( preg_match ( self::$regex_ssh_invalid_user_authentication, $message, $regex_match ) ) 
+			   {
+				$user_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_USER_NAME			, $regex_match [ 'user' ] ) ;
+				$ip			=  $this -> PreprocessIp ( $regex_match [ 'ip' ] ) ;
+
+				if  ( String::IsIpAddress ( $ip ) )
+					$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP, $ip ) ;
+				else
+					$domain_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_DOMAIN_NAME, $ip ) ;
+
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SSH_INVALID_USER_AUTHENTICATION ;
+			    }
+			// Message of the form :
+			//	vps169910 sshd[10437]: User mysql from 197.239.33.22 not allowed because not listed in AllowUsers
+			else if  ( preg_match ( self::$regex_ssh_user_not_allowed, $message, $regex_match ) ) 
+			   {
+				$user_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_USER_NAME			, $regex_match [ 'user' ] ) ;
+
+				if  ( String::IsIpAddress ( $regex_match [ 'ip' ] ) )
+				   {
+					$ip			=  $this -> PreprocessIp ( $regex_match [ 'ip' ] ) ;
+					$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP, $ip ) ;
+				    }
+				else
+					$domain_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_DOMAIN_NAME, $regex_match [ 'ip' ] ) ;
+
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SSH_USER_NOT_ALLOWED ;
+			    }
+			// Message of the form :
+			//	vps169910 sshd[11997]: Connection closed by 124.74.19.100 [preauth]
+			else if  ( preg_match ( self::$regex_ssh_connection_closed, $message, $regex_match ) ) 
+			   {
+				$ip			=  $this -> PreprocessIp ( $regex_match [ 'ip' ] ) ;
+				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP			, $ip ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SSH_CONNECTION_CLOSED ;
+			    }
+			// Message of the form :
+			//	vps169910 sshd[741]: Failed keyboard-interactive for root from 90.59.22.189 port 3622 ssh2 [preauth]
+			else if  ( preg_match ( self::$regex_ssh_failed_keyboard_interactive, $message, $regex_match ) ) 
+			   {
+				$user_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_USER_NAME			, $regex_match [ 'user' ] ) ;
+				$ip			=  $this -> PreprocessIp ( $regex_match [ 'ip' ] ) ;
+				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP			, $ip ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SSH_FAILED_KEYBOARD_INTERACTIVE ;
+			    }
+			// Message of the form :
+			//	vps169910 sshd[26819]: scanned from 192.198.81.190 with SSH-1.0-SSH_Version_Mapper.  Don't panic.
+			else if  ( preg_match ( self::$regex_ssh_version_mapper_scanner, $message, $regex_match ) ) 
+			   {
+				$ip			=  $this -> PreprocessIp ( $regex_match [ 'ip' ] ) ;
+				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP			, $ip ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SSH_VERSION_MAPPER_SCANNER ;
+			    }
+			// Message of the form :
+			//	vps169910 sshd[31664]: Transferred: sent 4400, received 1552 bytes
+			else if  ( preg_match ( self::$regex_ssh_data_transfer, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SSH_DATA_TRANSFER ;
+			    }
+			// Message of the form :
+			//	vps169910 sshd[31664]: Closing connection to 90.59.22.189 port 15476
+			else if  ( preg_match ( self::$regex_ssh_closing_connection, $message, $regex_match ) ) 
+			   {
+				$ip			=  $this -> PreprocessIp ( $regex_match [ 'ip' ] ) ;
+				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP			, $ip ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SSH_CLOSING_CONNECTION ;
+			    }
+			// Message of the form :
+			//	vps169910 sshd[31981]: Failed none for root from 94.131.14.102 port 58448 ssh2
+			else if  ( preg_match ( self::$regex_ssh_failed_command, $message, $regex_match ) ) 
+			   {
+				$command_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_AUTH_COMMAND		, $regex_match [ 'command' ] ) ;
+				$user_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_USER_NAME			, $regex_match [ 'user' ] ) ;
+				$ip			=  $this -> PreprocessIp ( $regex_match [ 'ip' ] ) ;
+				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP			, $ip ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SSH_FAILED_COMMAND ;
+			    }
+			// Message of the form :
+			//	vps169910 sshd[6961]: Bad protocol version identification 'GET / HTTP/1.0' from 182.118.45.212
+			else if  ( preg_match ( self::$regex_ssh_bad_protocol_version_id, $message, $regex_match ) ) 
+			   {
+				$command_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_AUTH_VERSION		, $regex_match [ 'command' ] ) ;
+				$ip			=  $this -> PreprocessIp ( $regex_match [ 'ip' ] ) ;
+				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP			, $ip ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SSH_BAD_PROTOCOL_VERSION_ID ;
+			    }
+			// Message of the form :
+			//	vps169910 sshd[29807]: Could not write ident string to 37.187.237.250
+			else if  ( preg_match ( self::$regex_ssh_ident_string_write_error, $message, $regex_match ) ) 
+			   {
+				$ip			=  $this -> PreprocessIp ( $regex_match [ 'ip' ] ) ;
+				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP			, $ip ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SSH_IDENT_STRING_WRITE_ERROR ;
+			    }
+			// Message of the form :
+			//	vps169910 sshd[9239]: Protocol major versions differ for 107.150.56.180: SSH-2.0-OpenSSH_6.0p1 vs. SSH-1.5-NmapNSE_1.0
+			else if  ( preg_match ( self::$regex_ssh_protocol_version_mismatch, $message, $regex_match ) ) 
+			   {
+				$ip			=  $this -> PreprocessIp ( $regex_match [ 'ip' ] ) ;
+				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP			, $ip ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SSH_PROTOCOL_VERSION_MISMATCH ;
+			    }
+			// Message of the form :
+			//	vps169910 sshd[15544]: error: ssh_msg_send: write
+			else if  ( preg_match ( self::$regex_ssh_msg_write_error, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SSH_MSG_WRITE_ERROR ;
+			    }
+			// Message of the form :
+			//	vps169910 sshd[15800]: pam_unix(sshd:auth): conversation failed
+			else if  ( preg_match ( self::$regex_ssh_conversation_failed, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SSH_CONVERSATION_FAILED ;
+			    }
+			// Message of the form :
+			//	vps169910 sshd[15800]: pam_unix(sshd:auth): auth could not identify password for [cycle]
+			else if  ( preg_match ( self::$regex_ssh_could_not_identify_password, $message, $regex_match ) ) 
+			   {
+				$user_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_USER_NAME			, $regex_match [ 'user' ] ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SSH_COULD_NOT_IDENTIFY_PASSWORD ;
+			    }
+			// Message of the form :
+			//	vps169910 sshd[13099]: Nasty PTR record "121.201.96.82" is set up for 121.201.96.82, ignoring
+			else if  ( preg_match ( self::$regex_ssh_nasty_ptr_record, $message, $regex_match ) ) 
+			   {
+				$ip			=  $this -> PreprocessIp ( $regex_match [ 'ip' ] ) ;
+				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP			, $ip ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SSH_NASTY_PTR_RECORD ;
+			    }
+			// Message of the form :
+			//	vps169910 sshd[12981]: fatal: Write failed: Broken pipe [preauth]
+			else if  ( preg_match ( self::$regex_ssh_broken_pipe, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SSH_BROKEN_PIPE ;
+			    }
+			// Message of the form :
+			//	vps108493 sshd[2137]: Received signal 15; terminating.
+			else if  ( preg_match ( self::$regex_ssh_terminated, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SSH_TERMINATED ;
+			    }
+			// Message of the form :
+			//	vps169910 sshd[10852]: fatal: no hostkey alg [preauth]
+			else if  ( preg_match ( self::$regex_ssh_no_hostkey_algorithm, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SSH_NO_HOSTKEY_ALGORITHM ;
+			    }
+			// Message of the form :
+			//	vps169910 sshd[30145]: invalid public DH value: <= 1 [preauth]
+			else if  ( preg_match ( self::$regex_ssh_invalid_dh_value, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SSH_INVALID_DH_VALUE ;
+			    }
+			// Message of the form :
+			//	vps169910 sshd[30145]: Disconnecting: bad client public DH value [preauth]
+			else if  ( preg_match ( self::$regex_ssh_disconnect_invalid_dh_value, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SSH_DISCONNECT_INVALID_DH_VALUE ;
+			    }
+			// Message of the form :
+			//	vps223414 passwd[2024]: pam_unix(passwd:chauthtok): password changed for root
+			else if  ( preg_match ( self::$regex_ssh_password_changed, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$user_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_USER_NAME			, $regex_match [ 'user' ] ) ;
+				$log_code		=  self::AUTH_SSH_PASSWORD_CHANGED ;
+			    }
+			// Message of the form :
+			//	vps223414 groupadd[3621]: group added to /etc/group: name=ssl-cert, GID=104
+			else if  ( preg_match ( self::$regex_ssh_group_added, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$group_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_GROUP_NAME		, $regex_match [ 'group' ] ) ;
+				$log_code		=  self::AUTH_SSH_GROUP_ADDED ;
+			    }
+			// Message of the form :
+			//	vps223414 useradd[5516]: new user: name=mysql, UID=102, GID=105, home=/nonexistent, shell=/bin/false
+			else if  ( preg_match ( self::$regex_ssh_user_added, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$user_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_USER_NAME			, $regex_match [ 'user' ] ) ;
+				$log_code		=  self::AUTH_SSH_USER_ADDED ;
+			    }
+			// Message of the form :
+			//	vps223414 gpasswd[21293]: user postfix added by root to group sasl
+			else if  ( preg_match ( self::$regex_ssh_user_added2, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$user_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_USER_NAME			, $regex_match [ 'user' ] ) ;
+				$log_code		=  self::AUTH_SSH_USER_ADDED ;
+			    }
+			// Message of the form :
+			//	vps223414 chage[5521]: changed password expiry for mysql
+			else if  ( preg_match ( self::$regex_ssh_password_expiry_changed, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$user_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_USER_NAME			, $regex_match [ 'user' ] ) ;
+				$log_code		=  self::AUTH_SSH_PASSWORD_EXPIRY_CHANGED ;
+			    }
+			// Message of the form :
+			//	vps223414 chfn[5524]: changed user 'mysql' information
+			else if  ( preg_match ( self::$regex_ssh_user_information_changed, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$user_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_USER_NAME			, $regex_match [ 'user' ] ) ;
+				$log_code		=  self::AUTH_SSH_USER_INFORMATION_CHANGED ;
+			    }
+			// Message of the form :
+			//	vps223414 sshd[2025]: Exiting on signal 15
+			else if  ( preg_match ( self::$regex_ssh_exiting, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SSH_EXITING ;
+			    }
+			// Message of the form :
+			//	vps108495 sshd[15444]: error: RSA_public_decrypt failed: error:0407006A:lib(4):func(112):reason(106)
+			else if  ( preg_match ( self::$regex_ssh_rsa_decrypt_failed, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SSH_RSA_DECRYPT_FAILED ;
+			    }
+			// Message of the form :
+			//	vps223414 saslpasswd2: *
+			else if  ( $match [ 'module' ]  ==  'saslpasswd2' ) //preg_match ( self::$regex_ssh_saslpasswd2, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SASL_PASSWD2 ;
+			    }
+			else
+			   {
+				warning ( new \Thrak\System\ParseException ( "The following {$this -> Title} log entry message part could not be interpreted :\n\t$line" ) ) ;
+
+				return ( false ) ;
+			    }
+
+			// Message has been processed ; assign individual column values
+			$parsed_data	=
+			   [
+				'type'		=>  $log_code,
+				'pid'		=>  $pid,
+				'data'		=>
+				   [
+					LogStringStore::LOGSTORE_IP			=>  $ip_id,
+					LogStringStore::LOGSTORE_DOMAIN_NAME		=>  $domain_id,
+					LogStringStore::LOGSTORE_SERVER_NAME		=>  $server_id,
+					LogStringStore::LOGSTORE_MODULE_NAME		=>  $module_id,
+					LogStringStore::LOGSTORE_MESSAGE		=>  $message_id,
+					LogStringStore::LOGSTORE_AUTH_COMMAND		=>  $command_id,
+					LogStringStore::LOGSTORE_USER_NAME		=>  $user_id,
+					LogStringStore::LOGSTORE_GROUP_NAME		=>  $group_id,
+					LogStringStore::LOGSTORE_DEVICE_NAME		=>  $device_name_id
+				    ]
+			    ] ;
+
+			return ( true ) ;
+		    }
+		else 
+			error ( new \Thrak\System\ParseException ( "The following {$this -> Title} log entry could not be interpreted :\n\t$line" ) ) ;
+	    }
+   }
+
+
+

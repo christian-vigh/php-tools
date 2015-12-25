@@ -1,0 +1,283 @@
+<?php
+	//!phpcmd(Utilities, 2.0) : Find last modified files.
+	/***************************************************************************************************
+
+	    NAME
+		lastfiles.phs
+
+	    DESCRIPTION
+		Finds last modified files.
+
+	    AUTHOR
+	     	Christian Vigh, 02/2015.
+	 
+	    HISTORY
+	    [Version : 1.0]	[Date : 2015/02/04]	[Author : CV]
+	     	Initial version.
+
+	 ***************************************************************************************************/
+	require ( "tools.phpinclude" ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Types\String ;
+	use  Thrak\IO\Path ;
+	use  Thrak\IO\AsciiReport ;
+	use  Thrak\Processors\IniFile ;
+	use  Thrak\Internet\Bing\Translator ;
+	use  Thrak\Runtime\AsynchronousCommand ;
+	   
+	
+	/*==================================================================================================
+
+		Command line parameters.
+
+	  ==================================================================================================*/
+	$Definitions = <<<END
+<command name="lastfiles" allow-files="true" min-files="1" max-files="*" value-text="path(s)" value-help="Paths to be searched">
+
+	<usage>
+		Searches for files based upon their modification time.
+	</usage>
+	
+	<datetime name="after, a, since, s">
+		Searches files modified after the specified date/time.
+	</datetime>
+	
+	<datetime name="before, b">
+		Searches files modified before the specified date/time.
+	</datetime>
+	
+	<datetime name="between, in" arguments="2">
+		Searches files modified between the two specified date/times.
+	</datetime>
+	
+	<set name="display_options, display_option, do" default="path">
+		Specifies which columns of information should be displayed.
+		
+		<constant name="all, a" constant="DO_ALL" value="0xFFFFFFFF">
+			Display all columns in the following order : isdir, date, time, size, path.
+		</constant>
+		
+		<constant name="path, p" constant="DO_PATH" value="1">
+			Display file/directory path.
+		</constant>
+		
+		<constant name="isdir, i" constant="DO_ISDIR" value="2">
+			Display 1 if the path is a directory, 0 otherwise.
+		</constant>
+		
+		<constant name="date, d" constant="DO_DATE" value="4">
+			Display file modification date.
+		</constant>
+		
+		<constant name="time, t" constant="DO_TIME" value="8">
+			Display file modification time.
+		</constant>
+		
+		<constant name="size, s" constant="DO_SIZE" value="16">
+			Display file size.
+		</constant>
+	</set>
+	
+	<string name="separator, sep" default=";">
+		Field separator to be used when displaying file information.
+	</string>
+	
+	<flag name="verbose, v">
+		Output informations on standard error.
+	</flag>
+	
+	<exclude name="after" with="before, between"/>
+</command>
+END;
+
+	
+	/*==================================================================================================
+
+	    SearchFiles -
+		Performs file search.
+
+	  ==================================================================================================*/
+	function  SearchFiles ( )
+	   {
+		global  $Files, $DisplayOptions, $Separator, $Verbose ;
+		global  $StartTime, $EndTime ;
+		
+		// Convert date to local format (but couldn't make the strftime() function working)
+		$start_date	=  date ( 'd/m/Y', $StartTime ) ;
+		$start_time	=  date ( 'H:i:s', $StartTime ) ;
+		$end_date	=  date ( 'd/m/Y', $EndTime ) ;
+		$end_time	=  date ( 'H:i:s', $EndTime ) ;
+		
+		// Check the specified path(s) for existence
+		$ErrorPaths	=  [] ;
+		
+		foreach  ( $Files  as  $file )
+		   {
+			if  ( ! file_exists ( $file ) )
+				$ErrorPaths []	=  $file ;
+		    }
+		
+		if  ( count ( $ErrorPaths ) )
+			error ( "The following paths specified on the command line do not exist :\n\t. " .
+					implode ( "\n\t. ", $ErrorPaths ) ) ;
+
+		// Show scan range
+		$msg	=  "Scanning" ;
+		
+		if  ( $StartTime )
+			$msg	.=  " from $start_date $start_time" ;
+		
+		if  ( $EndTime )
+			$msg	.=  " to $end_date $end_time" ;
+		
+		error_output ( "$msg..." ) ;
+		
+		// Command to execute for displaying the results
+		$execute	=  "/C \"CMD /C ECHO @isdir{$Separator}@fdate{$Separator}@ftime{$Separator}@fsize{$Separator}@path\" " ;
+		
+		// Loop again on each path to be searched
+		$total_size	=  0 ;
+		$total_dirs	=  0 ;
+		$total_files	=  0 ;
+		
+		foreach  ( $Files  as  $file )
+		   {
+			// Build the command to be executed
+			$command	=  "FORFILES /S /P " . Path::RealPath ( Path::ToHost ( $file ) ) . " $execute " ;
+			
+			// FORFILES does not allow for a range specification ; we will have to narrow the results included
+			// in the range start datetime..end datetime
+			if  ( ! $StartTime )
+			   {
+				if  ( $EndTime )
+					$command	.=  "/D -$end_date" ;
+				else 
+					$command	.=  "/D +01/01/1970" ;
+			    }
+			else
+				$command	.=  "/D +$start_date" ;
+			
+			if  ( $Verbose ) 
+				error_output ( $command ) ;
+			
+			// Build the command object then loop through its output lines
+			$cmd	=  new AsynchronousCommand ( $command ) ;
+			$cmd -> SetPollTimeout ( 2000 ) ;
+			$cmd -> Run ( ) ;
+
+			while  ( $cmd -> IsRunning ( ) )
+			   {
+				while ( ( $line = $cmd -> ReadLine ( ) )  !==  false )
+				   {
+					$line	=  trim ( $line ) ;
+
+					// Ignore lines starting with the word "Error", which signals an access problem
+					if  ( ! $line )
+						continue ;
+					else if  ( ! strncasecmp ( $line, "Erreur", 6 ) )
+					   {
+						error_output ( $line ) ;
+						continue ;
+					    }
+					else
+					   {
+						// Get individual line components, as reported by the FORFILES command
+						$components	=  explode ( $Separator, $line, 5 ) ;
+						$isdir		=  $components [0] ;
+						$date		=  $components [1] ;
+						$time		=  $components [2] ;
+						$size		=  $components [3] ;
+						$path		=  $components [4] ;
+						$path		=  substr ( $path, 1, strlen ( $path ) - 2 ) ;
+	
+						// Filter out files whose modification date/time is out of range
+						if  ( ( $date  <=  $start_date  &&  $time  <  $start_time )  ||
+						      ( $date  >=  $end_date    &&  $time  >  $end_time   ) )
+							continue ;
+					
+						// Convert the "isdir" boolean to an integer value
+						if  ( ! strcasecmp ( $isdir, "true" ) )
+						   {
+							$isdir	=  "1" ;
+							$total_dirs ++ ;
+						    }
+						else
+						   {
+							$isdir	=  "0" ;
+							$total_files ++ ;
+						    }
+					
+						// Rebuild the line, keeping only the fields to be displayed
+						$components	=  [] ;
+					
+						if  ( $DisplayOptions [ 'isdir' ] )
+							$components []	=  $isdir ;
+					
+						if  ( $DisplayOptions [ 'date' ] )
+							$components []	=  $date ;
+						
+						if  ( $DisplayOptions [ 'time' ] )
+							$components []	=  $time ;
+					
+						if  ( $DisplayOptions [ 'size' ] )
+							$components []	=  $size ;
+						
+						if  ( $DisplayOptions [ 'path' ] )
+							$components []	=  $path ;
+						
+						// Now display the line
+						$line	=  implode ( $Separator, $components ) ;
+						output ( $line ) ;
+						
+						$total_size	+=  $size ;
+					    }
+				    }
+			    }
+		
+			$cmd -> Terminate ( ) ;	
+		    }
+		
+		if  ( $Verbose )
+			error_output ( "files: $total_files, dirs: $total_dirs, total size: " .
+					number_format ( $total_size, 0, '.', ' ' ) . " bytes") ;
+	    }
+	
+
+	/*==================================================================================================
+
+		Get command-line parameters and configuration file.
+
+	  ==================================================================================================*/
+	$CL 			=  new CLParser ( $Definitions ) ;
+	$AfterDateTime		=  $CL -> after ;
+	$BeforeDateTime		=  $CL -> before ;
+	$BetweenDateTime	=  $CL -> between ;
+	$DisplayOptions		=  $CL -> display_options ;
+	$Separator		=  $CL -> separator ;
+	$Verbose		=  $CL -> verbose ;
+	$Files			=  $CL -> Files ;
+
+
+	// Determine the start and stop dates
+	$StartDate		=  '0000-00-00 00:00:00' ;
+	$EndDate		=  '2038-01-18 23:59:00' ;
+	
+	if  ( $AfterDateTime )
+		$StartDate	=  $AfterDateTime [ 'datetime' ] ;
+	
+	if  ( $BeforeDateTime )
+		$EndDate	=  $BeforeDateTime [ 'datetime' ] ;
+	
+	if  ( $BetweenDateTime )
+	   {
+		$StartDate	=  $BetweenDateTime [0] [ 'datetime' ] ;
+		$EndDate	=  $BetweenDateTime [0] [ 'date' ] . ' ' .
+					( ( $BetweenDateTime [0] [ 'time' ]  ==  '00:00:00' ) ?  '23:59:59' : $BetweenDateTime [0] [ 'time' ] ) ;
+	    }
+	
+	$StartTime	=  strtotime ( $StartDate ) ;
+	$EndTime	=  strtotime ( $EndDate ) ;
+
+	// Search modified files
+	SearchFiles ( ) ;
