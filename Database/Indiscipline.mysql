@@ -241,6 +241,7 @@ CREATE TABLE  whois_information
 								
 	PRIMARY KEY 			( whoi_id ),
 	UNIQUE KEY			( whoi_ipv4_low, whoi_ipv4_high ),
+	UNIQUE KEY			( whoi_parent_id, whoi_ipv4_low, whoi_ipv4_high ),
 	KEY 				( whoi_ipv4_high )
     )  ENGINE = MyISAM CHARSET latin1 COMMENT 'Whois information' ;
    

@@ -1,0 +1,7 @@
+*.tss
+/Data/
+/logs/
+/public/
+/Test Data
+/Unix
+/Bin/test*.phs
