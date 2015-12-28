@@ -222,8 +222,6 @@ CREATE TABLE  whois_information
 								COMMENT 'Last update for this entry',
 	whoi_last_whois_update 		TIMESTAMP 		NOT NULL DEFAULT 0
 								COMMENT 'Very last update of any whois information',
-	whoi_parent_id 			BIGINT UNSIGNED 	NOT NULL DEFAULT 0
-								COMMENT 'Id of the parent whois information, if any',
 	whoi_ip_low 			CHAR(39) 		NOT NULL DEFAULT ''
 								COMMENT 'Low ip address',
 	whoi_ip_high 			CHAR(39)		NOT NULL DEFAULT ''
@@ -241,7 +239,6 @@ CREATE TABLE  whois_information
 								
 	PRIMARY KEY 			( whoi_id ),
 	UNIQUE KEY			( whoi_ipv4_low, whoi_ipv4_high ),
-	UNIQUE KEY			( whoi_parent_id, whoi_ipv4_low, whoi_ipv4_high ),
 	KEY 				( whoi_ipv4_high )
     )  ENGINE = MyISAM CHARSET latin1 COMMENT 'Whois information' ;
    
