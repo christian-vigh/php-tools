@@ -98,7 +98,7 @@ abstract class  LocalLog	extends  Object
 
 		if  ( ! $row_count )
 		   {
-			output ( "{$prefix}\tNo new row to process." ) ;
+			echo ( "{$prefix}\tNo new row to process." ) ;
 
 			return ( 0 ) ;
 		    }
