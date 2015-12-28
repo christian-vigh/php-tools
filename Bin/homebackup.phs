@@ -30,6 +30,9 @@
 		. Use the date of the last backup, whether incremental or not, instead of the date of the 
 		  last incremental backup, when the -incremental option is specified.
 
+	    [Version : 1.0.4]	[Date : 2015/12/28]	[Author : CV]
+		. Added the possibility to stop services and applications before backup begins.
+
 	 ***************************************************************************************************/
 	require ( "tools.phpinclude" ) ;
 
@@ -45,6 +48,7 @@
 	use  Thrak\Windows\LogicalDrives ;
 	use  Thrak\Windows\LogicalDrive ;
 	use  Thrak\Windows\WShell ;
+	use  Thrak\Windows\Wmi ;
 	use  Thrak\Math ;
 	
 	
@@ -608,6 +612,87 @@ END;
 	
 	/*==============================================================================================================
 	
+	    stop/start services/applications -
+	        Stops services and applications defined in the .ini file then restart them after backup.
+		Services and applications to stop are defined by the StopServices and StopApplications keys of the
+		[Settings] section.
+	
+	  ==============================================================================================================*/
+	function  stop_services ( )
+	   {
+		global		$StopServices ;
+
+		foreach  ( $StopServices  as  $service )
+		   {
+			$command	=  "NET STOP $service" ;
+			output ( $command ) ;
+			system ( $command ) ;
+		    }
+	    }
+
+
+	function  stop_applications ( )
+	   {
+		global		$StopApplications, $StoppedApplications ;
+
+		$wmi		=  new Wmi ( ) ;
+		$where		=  [] ;
+
+		foreach  ( $StopApplications  as  $app )
+			$where []	=  "CommandLine LIKE '%$app%'" ;
+
+		$query		=  "SELECT * FROM Win32_Process WHERE " . implode ( ' OR ', $where ) ;
+		$processes	=  $wmi -> Query ( $query ) ;
+
+		foreach  ( $processes  as  $process )
+		   {
+			$StoppedApplications [ $process -> Caption ]	=  $process -> CommandLine ;
+
+			echo ( "Stopping " . $process -> Caption . "..." ) ;
+
+			if  ( ! strcasecmp ( $process -> Name, "Outlook.exe" ) ) 
+			   {
+				$outlook	=  new \COM ( "Outlook.Application" ) ;
+				$outlook -> Quit ( ) ;
+			    }
+			else
+				$process -> Terminate ( 0 ) ;
+
+			output ( "done" ) ;
+		    }
+	    }
+
+
+	function  start_services ( )
+	   {
+		global		$StopServices ;
+
+		foreach  ( $StopServices  as  $service )
+		   {
+			$command	=  "NET START $service" ;
+			output ( $command ) ;
+			system ( $command ) ;
+		    }
+	    }
+
+
+	function  start_applications ( )
+	   {
+		global		$StoppedApplications ;
+
+		$shell	=  new WShell ( ) ;
+
+		foreach  ( $StoppedApplications  as  $name => $cmdline )
+		   {
+			echo ( "Starting $name..." ) ;
+			$shell -> Exec ( $cmdline ) ;
+			output ( "done" ) ;
+		    }
+	    }
+
+
+	/*==============================================================================================================
+	
 	    verify_backup_sources -
 	        Verifies the existence of the various sources belonging to the specified backup.
 	
@@ -1017,6 +1102,7 @@ END;
 		global		$ConfigurationData ;
 		global		$PreferredDrive, $TargetDirectory, $HistoryDataDirectory, $LastBackupDate, $LastBackupType , $MaxHistoryLogs ;
 		global		$BackupGroups, $DefaultBackupGroup, $DefaultIncrementalBackupGroup, $DefaultSyncBackupGroup ;
+		global		$StopApplications, $StopServices ;
 		
 		
 		$ConfigurationData	=  IniFile::LoadFromFile ( $config ) ;
@@ -1162,6 +1248,18 @@ END;
 		    }
 		else
 			$DefaultIncrementalBackupGroup		=  $DefaultBackupGroup ;
+
+		// Get the list of services to be stopped
+		$value		=  $ConfigurationData -> GetKey ( 'Settings', 'StopServices' ) ;
+
+		if  ( $value )
+			$StopServices	=  String::ExplodeAndTrim ( ' ', $value ) ;
+
+		// Get the list of applications to be stopped
+		$value		=  $ConfigurationData -> GetKey ( 'Settings', 'StopApplications' ) ;
+
+		if  ( $value )
+			$StopApplications	=  String::ExplodeAndTrim ( ' ', $value ) ;
 	    }
 	
 
@@ -1894,7 +1992,7 @@ END;
 		Global constants and variables.
 
 	  ==================================================================================================*/
-	// Options coming from the HomeBackup .ini file
+	// Options coming from the HomeBackup.ini file
 	$PreferredDrive			=  false ;			// Preferred (= most probable) USB drive letter to be used
 	$TargetDirectory		=  false ;			// Target drive
 	$HistoryDataDirectory		=  false ;			// Directory for backup history data
@@ -1907,6 +2005,9 @@ END;
 	$MaxHistoryLogs			=  100 ;			// Max number of backup files to be kept
 	$MaxHistorySummaries		=  200 ;			// Max number of history summaries
 	$DefaultBackup			=  false ;
+	$StopServices			=  [] ;				// Services and applications to stop before backup
+	$StopApplications		=  [] ;
+	$StoppedApplications		=  [] ;
 	
 	$CL 				=  new CLParser ( $Definitions ) ;
 	$BackupGroup			=  $CL -> backup_group ;
@@ -2057,16 +2158,24 @@ END;
 			   {
 				case	'incremental' :
 					verify_backup_sources ( $ConfigurationFile, $BackupGroups, $BackupGroup ) ;
+					stop_services ( ) ;
+					stop_applications ( ) ;
 					PerformIncrementalBackup ( ) ;
 					remove_old_logs ( ) ;
 					save_history ( ) ;
+					start_services ( ) ;
+					start_applications ( ) ;
 					break ;
 				
 				case	'sync' :
 					verify_backup_sources ( $ConfigurationFile, $BackupGroups, $BackupGroup ) ;
+					stop_services ( ) ;
+					stop_applications ( ) ;
 					PerformSyncBackup ( ) ;
 					remove_old_logs ( ) ;
 					save_history ( ) ;
+					start_services ( ) ;
+					start_applications ( ) ;
 					break ;
 				
 				default :
