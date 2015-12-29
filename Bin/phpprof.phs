@@ -112,7 +112,7 @@ END;
 	output ( "Profiling       : $command" ) ;
 	output ( "Profiler output : $OutputDir/$OutputFile" ) ;
 	
-	system ( $command ) ;
+	passthru ( $command ) ;
 	
 	// If the profiler output file exists, open the profiler
 	if  ( $CL -> edit  &&  file_exists ( $OutputFile ) )
