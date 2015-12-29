@@ -64,6 +64,7 @@ class  RsAdmin			extends  Object
 	const   TABLE_WHOIS_INFORMATION			=  'whois_information' ;			// Whois data information
 	const	TABLE_WHOIS_INFORMATION_BLOCKS		=  'whois_information_blocks' ;			// Whois data information, by block
 	const   TABLE_WHOIS_INFORMATION_BLOCK_ENTRIES	=  'whois_information_block_entries' ;		// Whois data information, by keyword
+	const   TABLE_WHOIS_STRING_STORE		=  'whois_string_store' ;			// String store for whois data
 	const   TABLE_SERVER_IP_DOMAIN_ASSOCIATIONS	=  'server_ip_domain_associations' ;		// Associations between domains and ips
 	const   TABLE_SERVER_LOGENTRIES_STRING_STORE	=  'server_logfile_entries_string_store' ;	// String store for logfile entries
 	const	TABLE_WHOIS_MISSING_RANGES		=  'whois_missing_ranges' ;			// Missing ranges table, recomputed after each update
