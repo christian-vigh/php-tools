@@ -1,5 +1,5 @@
 <?php
-	//!phpcmd(Administration, 1.0, production) : Collects whois information.
+	//!phpcmd(Administration, 2.0, production) : Collects whois information.
 	/**************************************************************************************************************
 	
 	    NAME
@@ -25,6 +25,13 @@
 		. Added the whois_missing_ranges table, that holds the last computed missing ranges
 		. Added the whois_variables table, which hold the following 
 		. Added the following parameters
+
+	    [Version : 2.0]	[Date : 2015/12/25]     [Author : CV]
+		. Added the -join_unallocated_ranges option.
+		. Optimized range merge after reading from database (passed from 90s to 3s...)
+		. Optimized subrange removal
+		. Completely rewrote database update
+		. Removed the notion of parent range
 
 	 **************************************************************************************************************/
 	require ( "tools.phpinclude" ) ;
@@ -66,8 +73,21 @@
 		Benchmarks some functions used internally.
 	</flag> 
 
+	<flag name="collect, c">
+		Collects whois data on remote servers.
+	</flag>
+
+	<file name="configuration_file, cf" disposition="existing" default="thraktools://Data/rsadmin.ini">
+		Hosted servers parameters file.
+	</file>
+	
 	<flag name="extract_new_ips, eni, x">
 		Updates the whois database with the new ips coming from the server_string_store table.
+	</flag>
+
+	<flag name="keep_files, kf">
+		Normally, files are removed from the remote servers once they have been processed.
+		This options tels whoisupdate to keep them after processing.
 	</flag>
 
 	<unsigned name="limit, l" min-value="1">
@@ -75,13 +95,17 @@
 		To be used with the -list_xxx options.
 	</unsigned>
 
-	<flag name="find_parents, fp">
-		For each record in the local whois database, searches for a parent entry that includes this ip range,
-		and updates the parent id column accordingly.
+	<flag name="join_unallocated_ranges, jur">
+		Groups unallocated consecutive ranges into one single range. Only service provider entries are
+		concerned.
 	</flag>
 		
 	<flag name="list_allocation_statistics, las">
 		Lists statistics about ip address allocations (allocated/unallocated, range count, ip count).
+	</flag>
+
+	<flag name="list_configured_servers, lcs">
+		Lists the servers configured for this command.
 	</flag>
 
 	<flag name="list_countries, lc">
@@ -104,6 +128,19 @@
 	<unsigned name="next, n" min-value="1" default="1">
 		Extract the specified number of whois ip ranges from the remote whois databases.
 	</unsigned>
+
+	<flag name="reset_tables" hidden="true">
+		Resets whois tables.
+	</flag>
+	
+	<string name="server_path, sp" default="/server/data/whois">
+		Path on the remote server where the files containing whois data are stored.
+	</string>
+
+	<string name="servers, server, s" default="*" arguments="0..*">
+		Server name(s) on which collected random data is to be retrieved.
+		Wildcard characters are authorized, and search is performed on every server alias.
+	</string>
 
 	<string name="sort_by, sb">
 		Defines sort options by field name, optionally followed by "ASC" or "DESC".
@@ -143,15 +180,157 @@ END;
 	
 	  ==============================================================================================================*/
 
-	// add_whois_data -
-	//	Adds whois data to the database.
-	function  add_whois_data ( $ip, $whois_data, $separator )
+	// dbadd_whois_entry -
+	//	Adds a new whois entry to the database.
+	function  dbadd_whois_entry ( $ip_range, $buffer, $whois_data, $whois_block )
 	   {
-		$command	=  "whois $ip" ;
-		$output		=  Path::GetVolatileTempFilename ( 'whois', '%f.%p.%s.txt' ) ;
-		file_put_contents ( $output, "$command\n{$whois_data -> Contents}" ) ;
-		ExtractWhoisData ( $output, $separator, false ) ;
-		unlink ( $output ) ;
+		global		$Database, $WhoisStringStore ;
+
+		$flags		=  $whois_data -> Flags ;
+		$country	=  $whois_block -> GetCountry ( ) ;
+		$update_time	=  $whois_block -> GetUpdateTime ( ) ;
+		$data		=  $Database -> Escape ( $whois_data -> Contents ) ;
+
+		if  ( $update_time )
+			$last_update	=  "'" . date ( 'Y-m-d H:i:s', $update_time ) . "'" ;
+		else
+			$last_update	=  'NOW()' ; 
+
+		$query		=  "
+					INSERT INTO whois_information
+					SET
+						whoi_last_update	=  NOW(),
+						whoi_last_whois_update	=  $last_update,
+						whoi_ip_low		=  '{$ip_range [0]}',
+						whoi_ip_high		=  '{$ip_range [1]}',
+						whoi_ipv4_low		=  INET_ATON( whoi_ip_low ),
+						whoi_ipv4_high		=  INET_ATON( whoi_ip_high ),
+						whoi_flags		=  $flags,
+						whoi_country		=  '$country',
+						whoi_text		=  '$data'
+				   " ;
+		$Database -> Execute ( $query ) ;
+		$id	=  $Database -> GetLastInsertId ( ) ;
+
+		// Insert records into the whois_information_blocks table
+		foreach  ( $whois_block  as  $block )
+		   {
+			$query	=  "
+					INSERT INTO " . RsAdmin::TABLE_WHOIS_INFORMATION_BLOCKS . "
+					SET
+						whoib_information_id	=  $id,
+						whoib_type		=  {$block -> Type}
+				   " ;
+
+			$Database -> Execute ( $query ) ;
+			$block_id	=  $Database -> GetLastInsertId ( ) ;
+
+			foreach  ( $block  as  $entry )
+			   {
+				$keyword_id	=  $WhoisStringStore -> Insert ( WhoisInformation::WHOIS_STRING_STORE_KEYWORD	, $entry -> Keyword ) ;
+				$text_id	=  $WhoisStringStore -> Insert ( WhoisInformation::WHOIS_STRING_STORE_TEXT	, $entry -> Text ) ;
+				$value_id	=  $WhoisStringStore -> Insert ( WhoisInformation::WHOIS_STRING_STORE_VALUE, 
+											serialize ( $entry -> Value ) ) ;
+
+				// Insert records into the whois_information_block_entries table
+				$status = $buffer -> Add
+				   ([
+						'whoibe_information_id'	=>  $id,
+						'whoibe_block_id'	=>  $block_id,
+						'whoibe_type'		=>  $entry -> Type,
+						'whoibe_common_type'	=>  $entry -> CommonType,
+						'whoibe_keyword_id'	=>  $keyword_id,
+						'whoibe_text_id'	=>  $text_id,
+						'whoibe_value_id'	=>  $value_id
+				     ]) ;
+			    }
+		    }
+	    }
+
+
+	// dbdelete_whois_entry -
+	//	Deletes a whois entry.
+	function  dbdelete_whois_entry ( $id )
+	   {
+		global		$Database ;
+
+		$Database -> Execute ( "DELETE FROM " . RsAdmin::TABLE_WHOIS_INFORMATION . " WHERE whoi_id = $id" ) ;
+		$Database -> Execute ( "DELETE FROM " . RsAdmin::TABLE_WHOIS_INFORMATION_BLOCKS . " WHERE whoib_information_id = $id" ) ;
+		$Database -> Execute ( "DELETE FROM " . RsAdmin::TABLE_WHOIS_INFORMATION_BLOCK_ENTRIES . " WHERE whoibe_information_id = $id" ) ;
+	    }
+
+
+	// dbreplace_whois_entry -
+	//	Adds a new whois entry to the database.
+	function  dbreplace_whois_entry ( $ip_range, $buffer, $whois_data, $whois_block, $row )
+	   {
+		global		$Database ;
+
+		$whois_time		=  $whois_block -> GetUpdateTime ( ) ;
+		$db_time		=  strtotime ( $row [ 'whoi_last_whois_update' ] ) ;
+		$id			=  $row [ 'whoi_id' ] ;
+
+
+		if  ( $whois_time  >  $db_time )
+		   {
+			dbdelete_whois_entry ( $id ) ;
+			dbadd_whois_entry ( $ip_range, $buffer, $whois_data, $whois_block ) ;
+
+			return ( true ) ;
+		    }
+		else
+		   {
+			$query		=  "
+						UPDATE " . RsAdmin::TABLE_WHOIS_INFORMATION . "
+						SET whoi_last_update = NOW()
+						WHERE 
+							whoi_id = $id
+					   " ;
+			$Database -> Execute ( $query ) ;
+
+			return ( false ) ;
+		    }
+	    }
+
+
+	// dbreset -
+	//	Reset the whois tables.
+	function  dbreset ( )
+	   {
+		global		$Database ;
+
+		$Database -> Execute ( "TRUNCATE TABLE " . RsAdmin::TABLE_WHOIS_INFORMATION ) ;
+		$Database -> Execute ( "TRUNCATE TABLE " . RsAdmin::TABLE_WHOIS_INFORMATION_BLOCKS ) ;
+		$Database -> Execute ( "TRUNCATE TABLE " . RsAdmin::TABLE_WHOIS_INFORMATION_BLOCK_ENTRIES ) ;
+		$Database -> Execute ( "TRUNCATE TABLE " . RsAdmin::TABLE_WHOIS_MISSING_RANGES ) ;
+
+		$flags	=  WhoisInformation::WHOIS_FLAGS_PROVIDER | WhoisInformation::WHOIS_FLAGS_UNALLOCATED_RANGE ;
+
+		$query	=  "
+				INSERT INTO " . RsAdmin::TABLE_WHOIS_INFORMATION . "
+				SET
+					whoi_ip_low		=  '0.0.0.0',
+					whoi_ip_high		=  '0.255.255.255',
+					whoi_ipv4_low		=  INET_ATON( whoi_ip_low ),
+					whoi_ipv4_high		=  INET_ATON( whoi_ip_high ),
+					whoi_last_update	=  NOW(),
+					whoi_last_whois_update	=  NOW(),
+					whoi_flags		=  $flags
+			   " ;
+		$Database -> Execute ( $query ) ;
+
+		$query	=  "
+				INSERT INTO " . RsAdmin::TABLE_WHOIS_INFORMATION . "
+				SET
+					whoi_ip_low		=  '240.0.0.0',
+					whoi_ip_high		=  '255.255.255.255',
+					whoi_ipv4_low		=  INET_ATON( whoi_ip_low ),
+					whoi_ipv4_high		=  INET_ATON( whoi_ip_high ),
+					whoi_last_update	=  NOW(),
+					whoi_last_whois_update	=  NOW(),
+					whoi_flags		=  $flags
+			   " ;
+		$Database -> Execute ( $query ) ;
 	    }
 
 
@@ -206,7 +385,7 @@ END;
 						ORDER BY whomr_ip_low
 					   " ;
 
-			$Database -> SetQuery ( $query ) ;
+			$Database -> SetSimpleQuery ( $query ) ;
 			$missing_ranges		=  $Database -> LoadRows ( ) ;
 
 			return ( $missing_ranges ) ;
@@ -225,17 +404,22 @@ END;
 						whoi_ipv4_low AS 'low',
 						MAX(whoi_ipv4_high) AS 'high'
 					FROM whois_information
-					WHERE
-						whoi_parent_id = 0
 					GROUP BY whoi_ipv4_low
 					ORDER BY whoi_ipv4_low, whoi_ipv4_high
 				   " ;
 
 		// We will directly use direct mysqli calls since the $Database methods are not performant on thousand of rows
-		$Database -> SetQuery ( $query ) ;
+		$Database -> SetSimpleQuery ( $query ) ;
 	
 		$sql_ranges		=  $Database -> LoadAllRows ( ) ;
 		$sql_range_count	=  count ( $sql_ranges ) ;
+
+		// Special case : whois database is empty
+		if  ( ! $sql_range_count )
+		   {
+			$Database -> Execute ( "TRUNCATE TABLE " . RsAdmin::TABLE_WHOIS_MISSING_RANGES ) ;
+			return ( [ [ 'whoi_ipv4_low' => 0, 'whoi_ipv4_high' => MAX_IP, 'whoi_ip_low' => '0.0.0.0', 'whoi_ip_high' => '255.255.255.255' ] ] ) ;
+		    }
 
 		$timer -> Step ( 'Load ip ranges', [ 'count' => number_format ( $sql_range_count, 0, '.', ' ' ) ] ) ;
 
@@ -244,10 +428,10 @@ END;
 		$joined_ranges		=  array_fill ( 0, $sql_range_count, 0 ) ;
 
 		$last_range		=  $sql_ranges [0] ;
-		$last_range		=  [ 'low' => ( double ) $last_range [0], 'high' => ( double ) $last_range [0] ] ;
+		$last_range		=  [ 'low' => ( double ) $last_range [0], 'high' => ( double ) $last_range [1] ] ;
 
 		$joined_ranges [0]	=  $last_range ;
-		$current_index		=  0 ;
+		$joined_ranges_top		=  0 ;
 
 		for  ( $i = 1 ; $i  <  $sql_range_count ; $i ++ )
 		   {
@@ -256,40 +440,39 @@ END;
 
 			if  ( $last_range [ 'high' ] + 1  ==  $low )
 			   {
-				$joined_ranges [ $current_index ] [ 'high' ]	=  
+				$joined_ranges [ $joined_ranges_top ] [ 'high' ]	=  
 				$last_range [ 'high' ]				=  $high ;
 			    }
 			else
 			   {
 				$last_range					=  [ 'low' => $low, 'high' => $high ] ;
-				$joined_ranges [ ++ $current_index ]		=  $last_range ;
+				$joined_ranges [ ++ $joined_ranges_top ]		=  $last_range ;
 			    }
 		    }
 
-		$timer -> Step ( 'Join adjacent ranges', [ 'count' => number_format ( $current_index + 1, 0, '.', ' ' ) ] ) ;
+		$timer -> Step ( 'Join adjacent ranges', [ 'count' => number_format ( $joined_ranges_top + 1, 0, '.', ' ' ) ] ) ;
 
 		// In the remaining ranges, keep only the ranges that are not subranges of anybody.
-		// This is the most expensive step and its performance is O(n2).
-		// On the test data set, this reduced the number of ranges from 1350 to 320.
-		$reduced_ranges		=  [] ;
+		$joined_range_count	=  $joined_ranges_top + 1 ;
+		$joined_ranges		=  array_slice ( $joined_ranges, 0, $joined_range_count ) ;
 
-		for  ( $i = 0 ; $i  <=  $current_index ; $i ++ )
+		$reduced_ranges		=  [ $joined_ranges [0] ] ;
+		$reduced_ranges_top	=  0 ;
+
+		for  ( $i = 1 ; $i  <  $joined_range_count ; $i ++ )
 		   {
 			$joined_range	=  $joined_ranges [$i] ;
-			$add_range	=  true ;
+			$low		=  $reduced_ranges [ $reduced_ranges_top ] [ 'low' ] ;
+			$high		=  $reduced_ranges [ $reduced_ranges_top ] [ 'high' ] ;
 
-			foreach  ( $reduced_ranges  as  $reduced_range )
+			if  ( $joined_range [ 'low'  ]  >=  $low  &&  $joined_range [ 'low'  ]  <  $high  &&
+			      $joined_range [ 'high' ]  >=  $low  &&  $joined_range [ 'high' ]  <=  $high ) 
+			      ;
+			else
 			   {
-				if  ( $joined_range [ 'low' ]   >=  $reduced_range [ 'low' ]  &&  $joined_range [ 'low' ]   <=  $reduced_range [ 'high' ]  &&
-				      $joined_range [ 'high' ]  >=  $reduced_range [ 'low' ]  &&  $joined_range [ 'high' ]  <=  $reduced_range [ 'high' ] )
-				   {
-					$add_range	=  false ;
-					break ;
-				    }
-			    }
-
-			if  ( $add_range )
 				$reduced_ranges []	=  $joined_range ;
+				$reduced_ranges_top ++ ;
+			    }
 		    }
 
 		$timer -> Step ( 'Remove subranges', [ 'count' => number_format ( count ( $reduced_ranges ), 0, '.', ' ' ) ] ) ;
@@ -471,6 +654,26 @@ ShootAgain:
 	    }
 
 
+	// optimize_tables -
+	//	Optimizes whois tables.
+	function  optimize_tables ( )
+	   {
+		global	$Database ;
+
+
+		$tables		=  
+		   [
+			RsAdmin::TABLE_WHOIS_INFORMATION,
+			RsAdmin::TABLE_WHOIS_INFORMATION_BLOCK_ENTRIES,
+			RsAdmin::TABLE_WHOIS_INFORMATION_BLOCKS,
+			RsAdmin::TABLE_WHOIS_STRING_STORE
+		    ] ;
+
+		foreach  ( $tables  as  $table )
+			$Database -> Execute ( "OPTIMIZE TABLE $table" ) ;
+	    }
+
+
 	// report_ips -
 	//	Provides a standardized way to report an ip range list.
 	function  report_ips ( $rows, $title, $summary = null )
@@ -603,7 +806,7 @@ ShootAgain:
 			    }
 			else
 			   {
-				add_whois_data ( $ip, $whois_data, $separator ) ;
+				add_whois_data_for_ip ( $ip, $whois_data, $separator ) ;
 				output ( "done" ) ;
 
 				if  ( $current  !=  $low )
@@ -714,7 +917,7 @@ ShootAgain:
 					$iphigh BETWEEN whoi_ipv4_low AND whoi_ipv4_high 
 			   " ;
 		
-		$Database -> SetQuery ( $query ) ;
+		$Database -> SetSimpleQuery ( $query ) ;
 		$Database -> Query ( ) ;
 		$rows	=  $Database -> LoadRows ( ) ;
 
@@ -741,6 +944,115 @@ ShootAgain:
 					whoi_flags		=  $flags
 			   " ;
 		$Database -> Execute ( $query ) ;
+	    }
+
+
+	/*==================================================================================================
+
+	    CollectFiles -
+		Collects data from the specified server list.
+
+	  ==================================================================================================*/
+	function  CollectFiles ( $hosts, $server_path, $keepfiles )
+	   {
+		global		$RsAdmin, $Separator ;
+		
+
+		output ( "Collecting and checking whois data..." ) ;
+		$total_host_files_processed	=  0 ;
+		$total_whois_entries		=  0 ;
+		$saved_file_id			=  0 ;
+		
+		// Process each server
+		foreach  ( $hosts  as  $host )
+		   {
+			output ( "\tServer $host :" ) ;
+			
+			// Connect
+			$server			=  $RsAdmin -> FindServer ( $host ) ;
+			$server -> Connect ( false, true, true ) ;
+			
+			$fs			=  $server -> GetFileSystem ( ) ;
+
+			// The remote path specifiedby the -server_path option must exist
+			try
+			   {
+				$rs			=  @$fs -> opendir ( $server_path ) ;
+			    }
+			catch ( Exception $e )
+			   {
+				$rs	=  null ;
+			    }
+
+			if  ( ! $rs ) 
+				continue ;
+
+			// Process each file on the remote server
+			$host_files_processed	=  0 ;
+			$server_whois_entries	=  0 ;
+				
+			while  ( $path = $fs -> readdir ( $rs ) )
+			   {
+				$server_file		=  "$server_path/$path" ;
+				$keep_this_file		=  $keepfiles ;
+
+				// Well, remote file mask is hardcoded ("whois.*.gz")...
+				if  ( $fs -> is_file ( $server_file )  &&  String::Matches ( $path, 'whois.*.gz' ) )
+				   {
+					output ( "\t\t$server_file..." ) ;
+				
+					$host_files_processed ++ ;
+					$total_host_files_processed ++ ;
+
+					// Unzip remote file contents
+					$fp				=  $fs -> gzopen ( $server_file, 'r' ) ;
+					$contents			=  $fs -> gzread ( $fp ) ;
+					gzclose ( $fp ) ;
+
+					// Extract downloaded whois data
+					try
+					   {
+						list ( $count, $total )		=  ExtractWhoisDataFromString ( explode ( "\n", $contents ), $Separator, true, "\t\t" ) ;
+					    }
+					// If an exception occurred, save current downloaded file and don't remove the original on the server
+					catch ( Exception $e )
+					   {
+						$count		=  
+						$total		=  0 ;
+						$message	=  $e -> getMessage ( ) ;
+						$keep_this_file	=  true ;
+
+						$saved_file_id ++ ;
+						$output_file	=  Path::RealPath ( "tmp://whois.$saved_file_id.txt" ) ;
+						file_put_contents ( $output_file, $contents ) ;
+
+						warning ( "\n$message\nOutput saved to $output_file (original file " .
+								( ( $keep_this_file ) ?  "kept" : "removed" ) . ')' ) ;
+					    }
+
+					// Remove remote file if needed
+					if  ( ! $keep_this_file )
+						$fs -> unlink ( $server_file ) ;
+
+					output ( "\n\t\t--> $count whois queries processed, $total total whois entries" ) ;
+					$server_whois_entries	+=  $count ;
+					$total_whois_entries	+=  $count ;
+				    }
+			    }
+			
+			$fs -> closedir ( $rs ) ;
+			output ( "\t--> $server_whois_entries whois entries processed in $host_files_processed files." ) ;
+		    }
+
+		// Join unallocated ranges
+		JoinUnallocatedRanges ( ) ;
+
+		// Optimize tables
+		echo ( "Optimizing tables..." ) ;
+		optimize_tables ( ) ;
+		output ( "done" ) ;
+
+		output ( "--> $total_whois_entries total whois entries processed in $total_host_files_processed files on " . count ( $hosts ) . " servers." ) ;
 	    }
 
 
@@ -804,24 +1116,8 @@ ShootAgain:
 
 			if  ( ( $whois_data -> Flags & WhoisInformation::WHOIS_FLAGS_SERVER_MASK )  ==  WhoisInformation::WHOIS_FLAGS_SERVER_FOUND )
 			   {
-				$command	=  'whois ' . $range [ 'whoi_ip_low' ] ;
-				$output		=  Path::GetVolatileTempFilename ( 'whois.www', '%f.%p.%s.txt' ) ;
-				file_put_contents ( $output, "$command\n{$whois_data -> Contents}" ) ;
-
-				$next_ip	=  ExtractWhoisData ( $output, $separator, true, $start_ip [ 'ip-address' ] ) ;
-				unlink ( $output ) ;
-
+				ExtractWhoisData ( $whois_data, true ) ;
 				$ip_range	=  $whois_data [0] -> GetIpRange ( ) ;
-
-				// Some fucking AfriNIC entries return the whole address space !
-				// In this case use the specified start address and make the end address finish with .255
-				if  ( $ip_range [0]  ==  '0.0.0.0'  &&  $ip_range [1]  ==  '255.255.255.255' ) 
-				   {
-					$ipv4_low	=  Convert::IpStringToInteger ( $start_ip [ 'ip-address' ] ) ;
-					$ipv4_high	=  ( round ( ( ( double ) $ipv4_low ) / 256, 0 ) * 256 ) + 255 ;
-					$ip_range [1]	=  Convert::IntegerToIpString ( $ipv4_high ) ;
-				    }
-
 				$next_ip	=  ( double ) Convert::IpStringToInteger ( $ip_range [1] ) + 1 ;
 				output ( " -> {$ip_range [1]}" ) ;
 
@@ -943,24 +1239,69 @@ ShootAgain:
 		$text	=  implode ( "\n", $whois_lines ) ;
 		
 		file_put_contents ( $output_file, $text ) ;
-		ExtractWhoisData ( $file, $separator ) ;
+		ExtractWhoisDataFromFile ( $file, $separator ) ;
 		unlink ( $file ) ;
 	    }
 
 
 	/*==============================================================================================================
 	
-	    ExtractWhoisData -
+	    ExtractWhoisDataFromFile -
 	        Extracts whois data from a file.
 	
 	  ==============================================================================================================*/
-	function  ExtractWhoisData ( $file, $separator, $verbose = true, $start_ip = null ) 
+	function  ExtractWhoisDataFromFile ( $file, $separator, $verbose = true, $indent = '' ) 
+	   {
+		if  ( $verbose )
+			output ( "{$indent}Getting whois entries from file \"$file\" : " ) ;
+
+		list ( $count, $total )	=  ExtractWhoisDataFromString ( $file, file ( $file ), $separator, $verbose, $indent ) ;
+
+		if  ( $verbose )
+			output ( "\n{$indent}--> $count whois queries processed, $total total whois entries" ) ;
+	    }
+
+
+	function  ExtractWhoisDataFromString ( $contents, $separator, $verbose = true, $indent = '' ) 
 	   {
 		global		$Database, $WhoisStringStore ;
 
+		$parts	=  SplitWhoisData ( $contents, $separator ) ;
+		$total	=  0 ;
 
-		$parts			=  SplitWhoisData ( file ( $file ), $separator ) ;
-		$entry_buffer		=  new BufferedInsert
+		foreach  ( $parts  as  $part )
+		   {
+			try 
+			   {
+				$whois_data	 =  WhoisInformation::GetInstance ( $part [ 'ip' ], $part [ 'data' ] ) ;
+				$total		+=  ExtractWhoisData ( $whois_data, $verbose ) ;
+			    }
+			// Ignore exceptions thrown when empty contents are retrieved - it may happen that whois returns nothing
+			// (maybe because of a netwrok error at the time the command was run)
+			catch ( Exception  $e )
+			   {
+				$message	=  $e -> getMessage ( ) ;
+
+				if  ( strpos ( $message, 'Empty whois information retrieved' )  ===  false )
+					throw ( $e ) ;
+				else
+					warning ( $message ) ;
+			    }
+		    }
+
+		return ( [ count ( $parts ), $total ] ) ;
+	    }
+
+
+	function  ExtractWhoisData ( $whois_data, $verbose = true )
+	   {
+		global		$Database, $WhoisStringStore ;
+
+		// Parse whois data information
+		$queried_ip		=  $whois_data -> QueriedIp ;
+
+		// Get buffered table for whois block entries
+		$buffer		=  new BufferedInsert
 		   (
 			'whois_information_block_entries',
 			[
@@ -975,247 +1316,252 @@ ShootAgain:
 			8192
 		    ) ;
 
-		// Loop through whois data input
-		foreach  ( $parts  as  $part )
+		// No data entry - either 'not found' or something like 'query limit exceeded'
+		// Just add this entry, which relates to a single ip, not an ip range.
+		// Of course, individual records will have to be joined using the -join_unallocated_ranges option
+		// Note that this one-ip range will only be added if no other range contains it
+		if  ( ! count ( $whois_data ) )
 		   {
-			// Parse whois data information
-			$whois_data	=  WhoisInformation::GetInstance ( $part [ 'ip' ], $part [ 'data' ] ) ;
+			$ip	=  $whois_data -> QueriedIp ;
+			$flags	=  WhoisInformation::WHOIS_FLAGS_UNALLOCATED_RANGE | WhoisInformation::WHOIS_FLAGS_PROVIDER ;
+			$ipv4	=  Convert::IpStringToInteger ( $ip ) ;
 
-			$data		=  $Database -> Escape ( $part [ 'data' ] ) ;
-			$flags		=  $whois_data -> Flags ;
+			$query	=  "
+					SELECT 1 FROM " . RsAdmin::TABLE_WHOIS_INFORMATION . "
+					WHERE
+						$ipv4 BETWEEN whoi_ipv4_low AND whoi_ipv4_high
+					LIMIT 1
+				   " ;
+			$Database -> SetSimpleQuery ( $query ) ;
+			$status	=  $Database -> LoadValue ( ) ;
 
-			if  ( String::IsIPV6Address ( $part [ 'ip' ] ) )
-				$flags	|=  WhoisInformation::WHOIS_FLAGS_IS_IPV6 ;
-
-			// No data entry - either 'not found' or something like 'query limit exceeded'
-			if  ( ! count ( $whois_data ) )
-				continue ;
-
-			// Loop through ip ranges
-			foreach  ( $whois_data  as  $range )
+			if  ( $status )
+				$char	= '?' ;
+			else
 			   {
-				$ip_range	=  $range -> GetIpRange ( ) ;
+				$query	=  "
+						INSERT INTO " . RsAdmin::TABLE_WHOIS_INFORMATION . "
+						SET
+							whoi_ip_low		=  '$ip',
+							whoi_ip_high		=  '$ip',
+							whoi_ipv4_low		=  INET_ATON( whoi_ip_low ),
+							whoi_ipv4_high		=  INET_ATON( whoi_ip_high ),
+							whoi_last_update	=  NOW(),
+							whoi_last_whois_update	=  NOW(),
+							whoi_flags		=  $flags
+					   " ;
+				$Database -> Execute ( $query ) ;
+				$char	=  '!' ;
+			    }
 
-				// Some fucking AfriNIC entries return the whole address space !
-				// In this case use the specified start address and make the end address finish with .255
-				if  ( $ip_range [0]  ==  '0.0.0.0'  &&  $ip_range [1]  ==  '255.255.255.255' ) 
+			if  ( $verbose )
+			   {
+				echo ( $char ) ;
+				flush ( ) ;
+			    }
+
+			return ( 1 ) ;
+		    }
+
+		// Escape whois data for insertion in the database
+		$data		=  $Database -> Escape ( $whois_data -> Contents ) ;
+
+		// Add an IPV6 flag if needed 
+		if  ( String::IsIPV6Address ( $whois_data -> QueriedIp ) )
+			$whois_data -> Flags	|=  WhoisInformation::WHOIS_FLAGS_IS_IPV6 ;
+
+		// Loop through ip ranges
+		$result		=  0 ;
+
+		foreach  ( $whois_data  as  $whois_range )
+		   {
+			$ip_range	=  $whois_range -> GetIpRange ( ) ;
+
+			// Some fucking AfriNIC entries return the whole address space !
+			// In this case use the searched address and make the end address finish with .255
+			if  ( $ip_range [0]  ==  '0.0.0.0'  &&  $ip_range [1]  ==  '255.255.255.255' ) 
+			   {
+				$ipv4_low	=  Convert::IpStringToInteger ( $searched_ip ) ;
+				$ipv4_high	=  ( round ( ( ( double ) $ipv4_low ) / 256, 0 ) * 256 ) + 255 ;
+				$end_ip		=  Convert::IntegerToIpString ( $ipv4_high ) ;
+
+				$whois_range -> SetIpRange ( $searched_ip, $end_ip ) ;
+				$ip_range	=  $whois_range -> GetIpRange ( ) ;
+			    }
+
+			// Retrieve all ranges that intersect with this one
+			// The query is splitted into two subqueries joined by an union, and not one single query because that would cause
+			// mysql to add heavy extra processing to match the joined WHERE clauses
+			$ip_low		=  Convert::IpStringToInteger ( $ip_range [0] ) ;
+			$ip_high	=  Convert::IpStringToInteger ( $ip_range [1] ) ;
+			$query		=  "
+						SELECT 
+							whoi_id,
+							whoi_last_update,
+							whoi_ip_low,
+							whoi_ip_high,
+							whoi_ipv4_low,
+							whoi_ipv4_high,
+							whoi_flags,
+							whoi_last_whois_update
+						FROM whois_information
+						WHERE
+							whoi_flags & 1 = 1 AND
+							whoi_ipv4_low	=  $ip_low AND
+							whoi_ipv4_high	=  $ip_high
+						ORDER BY whoi_ipv4_low, whoi_ipv4_high	
+						" ;
+			$Database -> SetSimpleQuery ( $query ) ;
+			$db_range		=  $Database -> LoadRow ( ) ;
+
+			if  ( $db_range )
+			   {
+				$db_range_flags		=  $db_range [ 'whoi_flags' ] ;
+				$this_ip_range		=  [ Convert::IpStringToInteger ( $ip_range [0] ), Convert::IpStringToInteger ( $ip_range [1] ) ] ;
+				$db_ip_range		=  [ ( double ) $db_range [ 'whoi_ipv4_low' ], ( double ) $db_range [ 'whoi_ipv4_high' ] ] ;
+
+
+				if  ( ( $db_range_flags & WhoisInformation::WHOIS_FLAGS_SERVER_MASK )  ==  WhoisInformation::WHOIS_FLAGS_SERVER_FOUND )
 				   {
-					if  ( $start_ip )
+					if  ( ( $whois_data -> Flags & WhoisInformation::WHOIS_FLAGS_SERVER_MASK )  ==  WhoisInformation::WHOIS_FLAGS_SERVER_FOUND )
 					   {
-						$ipv4_low	=  Convert::IpStringToInteger ( $start_ip ) ;
-						$ipv4_high	=  ( round ( ( ( double ) $ipv4_low ) / 256, 0 ) * 256 ) + 255 ;
-						$end_ip		=  Convert::IntegerToIpString ( $ipv4_high ) ;
-
-						$range -> SetIpRange ( $start_ip, $end_ip ) ;
-					   }
-					else
-						error ( "Found range 0.0.0.0 - 255.255.255.255 but not substitute ip specified !" ) ;
-				    }
-
-				$ip_range	=  $range -> GetIpRange ( ) ;
-
-				// Check if this range already exists
-				$query		=  "
-							SELECT  
-								whoi_id, 
-								whoi_last_update
-							FROM whois_information
-							WHERE 
-								whoi_ipv4_low	=  INET_ATON( '{$ip_range [0]}' ) AND
-								whoi_ipv4_high	=  INET_ATON( '{$ip_range [1]}' )
-						   " ;
-				$Database -> SetSimpleQuery ( $query ) ;
-				$row		=  $Database -> LoadRow ( ) ;
-
-				// Update database if no such ip range has been found or if its last update time is older than the time
-				// specified with the -update_time parameter is older than the entry
-				if  ( ! $row )
-				   {
-					$id	=  $row [ 'whoi_id' ] ;
-
-					// If a row has been found, it must be outdated, so delete it
-					if  ( $row ) 
-					    {
-						$Database -> Execute ( "DELETE FROM whois_information WHERE whoi_id = $id" ) ;
-						$Database -> Execute ( "DELETE FROM whois_information_blocks WHERE whoib_information_id = $id" ) ;
-						$Database -> Execute ( "DELETE FROM whois_information_block_entries WHERE whoibe_information_id = $id" ) ;
-
-						$char	=  'D' ;
-					     }
-					else
-						$char	=  '.' ;
-					
-
-					// Insert record into the whois_information table
-					$country	=  $range -> GetCountry ( ) ;
-					$update_time	=  $range -> GetUpdateTime ( ) ;
-
-					if  ( $update_time )
-						$last_update	=  "'" . date ( 'Y-m-d H:i:s', $update_time ) . "'" ;
-					else
-						$last_update	=  'NOW()' ; 
-
-					$query		=  "
-								INSERT INTO whois_information
-								SET
-									whoi_last_update	=  NOW(),
-									whoi_last_whois_update	=  $last_update,
-									whoi_ip_low		=  '{$ip_range [0]}',
-									whoi_ip_high		=  '{$ip_range [1]}',
-									whoi_ipv4_low		=  INET_ATON( whoi_ip_low ),
-									whoi_ipv4_high		=  INET_ATON( whoi_ip_high ),
-									whoi_flags		=  $flags,
-									whoi_country		=  '$country',
-									whoi_text		=  '$data'
-							   " ;
-					$Database -> Execute ( $query ) ;
-					$information_id			=  $Database -> GetLastInsertId ( ) ;
-
-					// Find if this range has a whois parent entry
-					$query	=  "
-							SELECT whoi_id
-							FROM whois_information
-							WHERE
-								INET_ATON( '{$ip_range [0]}' ) > whoi_ipv4_low AND INET_ATON( '{$ip_range [0]}' ) < whoi_ipv4_high AND
-								INET_ATON( '{$ip_range [1]}' ) > whoi_ipv4_low AND INET_ATON( '{$ip_range [1]}' ) < whoi_ipv4_high
-							ORDER BY whoi_ipv4_low, whoi_ipv4_high
-							LIMIT 1
-						   " ;
-
-					$Database -> SetSimpleQuery ( $query ) ;
-					$outer	=  $Database -> LoadRow ( ) ;
-
-					if  ( $outer )
-					   {
-						$query	=  "
-								UPDATE whois_information
-								SET
-									whoi_parent_id = {$outer [ 'whoi_id' ]}
-								WHERE
-									whoi_id = $information_id
-							   " ;
-						$Database -> Execute ( $query ) ;
-					     }
-
-
-					// Insert records into the whois_information_blocks table
-					foreach  ( $range  as  $block )
-					   {
-						$query	=  "
-								INSERT INTO whois_information_blocks
-								SET
-									whoib_information_id	=  $information_id,
-									whoib_type		=  {$block -> Type}
-							   " ;
-
-						$Database -> Execute ( $query ) ;
-						$block_id	=  $Database -> GetLastInsertId ( ) ;
-
-						foreach  ( $block  as  $entry )
-						   {
-							$keyword_id	=  $WhoisStringStore -> Insert ( WhoisInformation::WHOIS_STRING_STORE_KEYWORD, $entry -> Keyword ) ;
-							$text_id	=  $WhoisStringStore -> Insert ( WhoisInformation::WHOIS_STRING_STORE_TEXT, $entry -> Text ) ;
-							$value_id	=  $WhoisStringStore -> Insert ( WhoisInformation::WHOIS_STRING_STORE_VALUE, 
-											serialize ( $entry -> Value ) ) ;
-
-							// Insert records into the whois_information_block_entries table
-							$status = $entry_buffer -> Add
-							   ([
-									'whoibe_information_id'	=>  $information_id,
-									'whoibe_block_id'	=>  $block_id,
-									'whoibe_type'		=>  $entry -> Type,
-									'whoibe_common_type'	=>  $entry -> CommonType,
-									'whoibe_keyword_id'	=>  $keyword_id,
-									'whoibe_text_id'	=>  $text_id,
-									'whoibe_value_id'	=>  $value_id
-							     ]) ;
-
-							if  ( $status  &&  $verbose )
-								echo ( '!' ) ;
-						    }
+						$status		=  dbreplace_whois_entry ( $ip_range, $buffer, $whois_data, $whois_range, $db_range ) ;
+						$char		=  ( $status ) ?  'u' : 'U' ;
 					    }
-			
-					if  ( $verbose ) 
-						echo ( $char ) ;
+					else
+					   {
+						dump ( $this_ip_range ) ;
+						dump ( $db_ip_range ) ;
+						dump ( $db_ranges ) ;
+						error ( "UNHANDLED CASE : searched whois entry does not exist" ) ;
+					    }
 				    }
 				else
 				   {
-					if  ( $verbose )
-						echo ( 'x' ) ;
+					dump ( $this_ip_range ) ;
+					dump ( $db_ip_range ) ;
+					dump ( $db_ranges ) ;
+					error ( "UNHANDLED CASE : found whois entry is marked as non-existent in the local database" ) ;
 				    }
 			    }
+			else
+			   {
+				dbadd_whois_entry ( $ip_range, $buffer, $whois_data, $whois_range ) ;
+				$char	=  'a' ;
+			    }
 
-			$entry_buffer -> Flush ( ) ;
+			if  ( $verbose )
+			   {
+				echo ( $char ) ;
+				flush ( ) ;
+			    }
+
+			$result ++ ;
 		    }
+
+		return ( $result ) ;
 	    }
+
+
 
 
 	/*==============================================================================================================
 	
-	    FindParents -
-	        For each row in the local whois database, tries to find if there is a parent row, ie a row whose ip range
-		englobes the ip range of the current row.
+	    JoinUnallocatedRanges -
+	        Joins unallocated consecutive ranges.
 	
 	  ==============================================================================================================*/
-	function  FindParents ( )
+	function  JoinUnallocatedRanges ( )
 	   {
-		global	$Database ;
+		global		$Database ;
 
-		// Reset the parent id column
-		$Database -> Execute (  "UPDATE whois_information SET whoi_parent_id = 0" ) ;
+		$table				=  RsAdmin::TABLE_WHOIS_INFORMATION ;
+		$flags				=  WhoisInformation::WHOIS_FLAGS_PROVIDER | WhoisInformation::WHOIS_FLAGS_UNALLOCATED_RANGE ;
+		$query				=  "
+							SELECT 
+								whoi_id		AS 'id', 
+								whoi_ipv4_low	AS 'low', 
+								whoi_ipv4_high  AS 'high' 
+							FROM $table
+							WHERE
+								whoi_flags & $flags = $flags
+							ORDER BY whoi_ipv4_low, whoi_ipv4_high
+						   " ;
 
-		// Select all rows from the local database
-		$query	=  "
-				SELECT 
-					whoi_id,
-					whoi_ip_low,
-					whoi_ip_high,
-					whoi_ipv4_low AS 'low',
-					whoi_ipv4_high AS 'high'
-				FROM whois_information
-				WHERE
-					whoi_flags = 1
-			   " ;
-		$Database -> SetQuery ( $query ) ;
-		$rows  =  $Database -> LoadRows ( ) ;
-
-		// Loop through the retrieved rows
-		foreach  ( $rows  as  $row )
+		$Database -> SetSimpleQuery ( $query ) ;
+		$unallocated_ranges		=  $Database -> LoadAllRows ( true ) ;
+		$unallocated_range_count	=  count ( $unallocated_ranges ) ;
+		$joined_ranges			=  [] ;
+		
+		// Collect consecutive ranges to be merged
+		for ( $i = 1 ; $i  <  $unallocated_range_count ; $i ++ )
 		   {
-			$low	=  $row [ 'low' ] ;
-			$high	=  $row [ 'high' ] ;
+			$joined		=  false ;
+			$joined_range	=
+			   [
+				'ids'		=>  [ $unallocated_ranges [$i-1] [ 'id' ] ],
+				'low'		=>  $unallocated_ranges [$i-1] [ 'low' ],
+				'high'		=>  $unallocated_ranges [$i-1] [ 'high' ],
+			    ] ;
 
-			// Search for an englobing ip range
-			$query	=  "
-					SELECT whoi_id
-					FROM whois_information
-					WHERE
-						$low > whoi_ipv4_low AND $low < whoi_ipv4_high AND
-						$high > whoi_ipv4_low AND $high < whoi_ipv4_high
-					ORDER BY whoi_ipv4_low, whoi_ipv4_high
-					LIMIT 1
-				   " ;
-
-			$Database -> SetSimpleQuery ( $query ) ;
-			$outer	=  $Database -> LoadRow ( ) ;
-
-			// If found, then set the parent id column for this row
-			if  ( $outer )
+			while  ( $i  <  $unallocated_range_count  &&  $unallocated_ranges [$i] [ 'low' ]  ==  $joined_range [ 'high' ] + 1 )
 			   {
-				$query	=  "
-						UPDATE whois_information
-						SET
-							whoi_parent_id = {$outer [ 'whoi_id' ]}
-						WHERE
-							whoi_id = {$row [ 'whoi_id' ]}
-					   " ;
-				$Database -> Execute ( $query ) ;
-				echo '.' ;
+				$joined_range [ 'high' ]	=  $unallocated_ranges [$i] [ 'high' ] ;
+				$joined_range [ 'ids' ] []	=  $unallocated_ranges [$i] [ 'id' ] ;
+				$joined				=  true ;
+				$i ++ ;
 			    }
-			else
-				echo 'x' ;
-		     }
 
+			if  ( $joined )
+				$joined_ranges []	=  $joined_range ;
+		    }
+
+		// Loop through collected ranges
+		$report		=  new AsciiReport
+		   (
+			[ 'member' => 'low'  , 'title' => 'Low'    ],
+			[ 'member' => 'high' , 'title' => 'High'   ],
+			[ 'member' => 'count', 'title' => 'Merged' ]
+		    ) ;
+		$data		=  [] ;
+
+		foreach  ( $joined_ranges  as  $joined_range )
+		   {
+			// Insert first the new range before deleting the existing ones
+			$query		=  "
+						INSERT INTO $table
+						SET
+							whoi_last_update	=  NOW(),
+							whoi_ip_low		=  INET_NTOA( '{$joined_range [ 'low' ]}'  ),
+							whoi_ip_high		=  INET_NTOA( '{$joined_range [ 'high' ]}' ),
+							whoi_flags		=  $flags,
+							whoi_ipv4_low		=  {$joined_range [ 'low' ]},
+							whoi_ipv4_high		=  {$joined_range [ 'high' ]}
+					   " ;
+			$Database -> Execute ( $query ) ;
+
+			// Then delete the merged ranges
+			$query		=  "
+						DELETE FROM $table
+						WHERE
+							whoi_id IN 
+							   (" .
+								implode ( ', ', $joined_range [ 'ids' ] ) .
+							    ")
+					   " ;
+			$Database -> Execute ( $query ) ;
+
+			$data []	=  
+			   [ 
+				'low'	=>  Convert::IntegerToIpString ( $joined_range [ 'low' ] ),
+				'high'	=>  Convert::IntegerToIpString ( $joined_range [ 'high' ] ),
+				'count'	=>  count ( $joined_range [ 'ids' ] )
+			    ] ;
+		    }
+
+		output ( "Merged ranges summary :" ) ;
+		echo $report -> Generate ( $data ) ;
+		echo $report -> Summary ( 'joined range' ) ;
 	    }
 
 
@@ -1273,8 +1619,7 @@ ShootAgain:
 							SELECT COUNT(*)
 							FROM whois_information
 							WHERE
-								whoi_flags = 1 AND
-								whoi_parent_id = 0
+								whoi_flags = 1
 						 ) AS 'allocated_ranges',
 						(
 							SELECT COUNT(*)
@@ -1286,8 +1631,7 @@ ShootAgain:
 							SELECT SUM(whoi_ipv4_high - whoi_ipv4_low + 1)
 							FROM whois_information
 							WHERE
-								whoi_flags = 1 AND
-								whoi_parent_id = 0
+								whoi_flags = 1
 						 ) AS 'allocated_ips',
 						(
 							SELECT SUM(whoi_ipv4_high - whoi_ipv4_low + 1)
@@ -1430,7 +1774,7 @@ ShootAgain:
 				WHERE
 					{$ip [ 'ip' ]} BETWEEN whoi_ipv4_low AND whoi_ipv4_high
 			   " ;
-		$Database -> SetQuery ( $query ) ;
+		$Database -> SetSimpleQuery ( $query ) ;
 		$rows	=  $Database -> LoadRows ( ) ;
 
 		if  ( count ( $rows ) )
@@ -1473,19 +1817,23 @@ ShootAgain:
 			   {
 				if  ( count ( $part ) )
 				   {
-					$parts []	=  [ 'ip' => $ip, 'data' => implode ( "\n", $part ) ] ;
-					$part		=  [] ;
-					$ip		=  $match [ 'ip' ] ;
+					$ipv4			=  Convert::IpStringToInteger ( $ip ) ;
+					$parts [ $ipv4 ]	=  [ 'ip' => $ip, 'data' => implode ( "\n", $part ) ] ;
+					$part			=  [] ;
+					$ip			=  $match [ 'ip' ] ;
 				    }
 				else
-					$ip		=  $match [ 'ip' ] ;
+					$ip			=  $match [ 'ip' ] ;
 			    }
 			else
 				$part []	=  $line ;
 		    }
 
 		if  ( count ( $part ) )
-			$parts []	=  [ 'ip' => $ip, 'data' => implode ( "\r\n", $part ) ] ;
+		   {
+			$ipv4			=  Convert::IpStringToInteger ( $ip ) ;
+			$parts [ $ipv4 ]	=  [ 'ip' => $ip, 'data' => implode ( "\r\n", $part ) ] ;
+		    }
 
 		return ( $parts ) ;
 	    }
@@ -1502,15 +1850,21 @@ ShootAgain:
 	$CL 				=  new CLParser ( $Definitions ) ;
 	$AddUnallocatedRange		=  $CL -> add_unallocated_range ;
 	$Benchmark			=  $CL -> benchmark ;
+	$Collect			=  $CL -> collect ;
+	$ConfigurationFile		=  $CL -> configuration_file ;
 	$ExtractNewIps			=  $CL -> extract_new_ips ;
-	$FindParents			=  $CL -> find_parents ;
-	$Limit				=  $CL -> Limit ;
+	$JoinUnallocatedRanges		=  $CL -> join_unallocated_ranges ;
+	$KeepFiles			=  $CL -> keep_files ;
+	$Limit				=  $CL -> limit ;
 	$ListAllocationStatistics	=  $CL -> list_allocation_statistics ;
+	$ListConfiguredServers		=  $CL -> list_configured_servers ;
 	$ListCountries			=  $CL -> list_countries ;
 	$ListKeywords			=  $CL -> list_keywords ;
 	$ListMissingRanges		=  $CL -> list_missing_ranges ;
 	$ListIpReferences		=  $CL -> list_ip_references ;
 	$Next				=  $CL -> next ;
+	$ServerPath			=  $CL -> server_path ;
+	$Servers			=  $CL -> servers ;
 	$SortBy				=  $CL -> sort_by ; 
 	$StartIp			=  $CL -> start_ip ;
 	$UseMissingRanges		=  $CL -> use_missing_ranges ;
@@ -1518,18 +1872,20 @@ ShootAgain:
 	$WhoisIpFile			=  $CL -> whois_ip_file ;
 	$WhoisIps			=  $CL -> whois_ips ;
 
+	$RsAdmin			=  new RsAdmin ( $ConfigurationFile ) ;
+	$ServerList			=  $RsAdmin -> FindServers ( $Servers ) ;
 	$HadOption			=  false ;
 	$Separator			=  '/^whois \s+ (?P<ip> [0-9a-f:\-.]+)/imsx' ;
 	$WhoisStringStore		=  new  StringStore ( 'whois_string_store', 'String store for whois data information', 16384, 32 ) ;
 	$TLDList			=  new  TLDList ( ) ;
-	$TryAddresses			=  [ 8, 16, 32, 64, 128, 160, 192, 224, 240 ] ;
+	$TryAddresses			=  [ 8, 16, 32, 48, 64, 96, 128, 160, 192, 224, 240 ] ;
 
 
 	// -whois_data_file option :
 	//	Extracts whois data from the specified file.
 	if  ( ! $HadOption  &&  $WhoisDataFile )
 	   {
-		ExtractWhoisData ( $WhoisDataFile, $Separator ) ;
+		ExtractWhoisDataFromFile ( $WhoisDataFile, $Separator ) ;
 		$HadOption	=  true ;
 	    }
 
@@ -1550,6 +1906,15 @@ ShootAgain:
 		$HadOption	=  true ;
 	    }
 
+	// -collect option :
+	//	Retrieves whois data collected by remote servers.
+	if  ( ! $HadOption  &&  $Collect )
+	   {
+		CollectFiles ( $ServerList, $ServerPath, $KeepFiles ) ;	
+		$HadOption	=  true ;
+	    }
+
+
 	// -add_unallocated_range :
 	//	Add an unallocated IP range to the database.
 	if  ( ! $HadOption  &&  $CL -> IsSpecified ( 'add_unallocated_range' ) )
@@ -1566,20 +1931,19 @@ ShootAgain:
 		$HadOption	=  true ;
 	    }
 
-	// -find_parents :
-	//	For each record in the local whois database, searches for a parent entry that includes this ip range,
-	//	and updates the parent id column accordingly.
-	if  ( ! $HadOption  &&  $FindParents )
-	   {
-		FindParents ( ) ;
-		$HadOption	=  true ;
-	    }
-
 	// -next :
 	//	Extracts the specified number of whois entries from the remote whois databases.
 	if  ( ! $HadOption  &&  $CL -> IsSpecified ( 'next' ) )
 	   {
 		ExtractWhoisDataFromWWW ( $Next, $Separator, $StartIp ) ;
+		$HadOption	=  true ;
+	    }
+
+	// -join_unallocated_ranges :
+	//	Joins unallocated ranges.
+	if  ( ! $HadOption  &&  $JoinUnallocatedRanges )
+	   {
+		JoinUnallocatedRanges ( ) ;
 		$HadOption	=  true ;
 	    }
 
@@ -1623,6 +1987,18 @@ ShootAgain:
 		$HadOption	=  true ;
 	    }
 
+	// -list_configured_servers :
+	//	Lists the servers configured for this command.
+	if  ( ! $HadOption  &&  $ListConfiguredServers ) 
+	   {
+		$RsAdmin -> ListServers ( ) ;
+		$HadOption	=  true ;
+	    }
+
+	// Reset whois tables
+	if  ( $CL -> reset_tables )
+		dbreset ( ) ;	
+	
 	// Provide a default option if nothing specified
 	if  ( ! $HadOption )
 		ListMissingRanges ( PHP_INT_MAX ) ;
