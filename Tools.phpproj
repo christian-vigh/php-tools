@@ -41,12 +41,10 @@
     <Compile Include="Bin\rsgetrandom.phs" />
     <Compile Include="Bin\rswebprotect.phs" />
     <Compile Include="Bin\rswhm.phs" />
-    <Compile Include="Bin\rswhoiscollect.phs" />
     <Compile Include="Bin\rwhois.phs" />
     <Compile Include="Bin\qotd.phs" />
     <Compile Include="Bin\minify.phs" />
     <Compile Include="Bin\testhtml.phs" />
-    <Compile Include="Bin\whoisupdate.phs" />
     <Compile Include="Bin\tld.phs" />
     <Compile Include="Bin\winkb.phs" />
     <Compile Include="Data\rswebsync\scripts\findfiles.php" />
@@ -553,6 +551,7 @@
   </ItemGroup>
   <ItemGroup>
     <Content Include="Bin\guts.phs" />
+    <Content Include="Bin\myip.phs" />
     <Content Include="Bin\px.phs" />
     <Content Include="Bin\drives.phs" />
     <Content Include="Bin\iecache.phs" />
@@ -560,6 +559,7 @@
     <Content Include="Bin\rsiptables.phs" />
     <Content Include="Bin\rswebsync.phs" />
     <Content Include="Bin\ufile.phs" />
+    <Content Include="Bin\whoisupdate.phs" />
     <Content Include="Bin\zratio.phs" />
     <Content Include="Database\Indiscipline.mysql" />
     <Content Include="Benchmark\MySQL - Select random record\randomtest.phs">

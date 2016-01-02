@@ -67,7 +67,7 @@ class  RsAdmin			extends  Object
 	const   TABLE_WHOIS_STRING_STORE		=  'whois_string_store' ;			// String store for whois data
 	const   TABLE_SERVER_IP_DOMAIN_ASSOCIATIONS	=  'server_ip_domain_associations' ;		// Associations between domains and ips
 	const   TABLE_SERVER_LOGENTRIES_STRING_STORE	=  'server_logfile_entries_string_store' ;	// String store for logfile entries
-	const	TABLE_WHOIS_MISSING_RANGES		=  'whois_missing_ranges' ;			// Missing ranges table, recomputed after each update
+	const	TABLE_WHOIS_UNSCANNED_IPS		=  'whois_unscanned_ips' ;			// Unscanned ips
 
 	// Configuration file and .ini file object
 	protected		$ConfigurationFile ;
@@ -809,7 +809,7 @@ class  RsAdmin			extends  Object
 				     " ;
 		$db -> SetSimpleQuery ( $query ) ;
 		$rows		=  $db -> LoadRows ( )  ;
-		$row_count	=  count ( $rows ) ;
+		$row_count	=  ( $rows ) ?  count ( $rows ) : 0 ;
 
 		if  ( $row_count )
 		   {

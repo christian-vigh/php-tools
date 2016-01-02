@@ -297,17 +297,17 @@ CREATE TABLE  whois_information_block_entries
    
 /*==============================================================================================================
 
-    whois_missing_ranges -
-        Holds information about the last computed missing ranges.
+    whois_unscanned_ips -
+        Holds information about which blocks of 256 ips have not yet been scanned.
 
   ==============================================================================================================*/
-DROP TABLE IF EXISTS  whois_missing_ranges ;
-CREATE TABLE  whois_missing_ranges 
+DROP TABLE IF EXISTS  whois_unscanned_ips ;
+CREATE TABLE  whois_unscanned_ips 
    (
-	whomr_ip_low 		INT UNSIGNED 		NOT NULL DEFAULT 0
-							COMMENT 'Low ip of the range',
-	whomr_ip_high 		INT UNSIGNED		NOT NULL DEFAULT 0
-							COMMENT 'High ip of the range',
+	whoui_ip_low 		INT UNSIGNED 		NOT NULL DEFAULT 0
+							COMMENT 'Low ip address',
+	whoui_ip_high 		INT UNSIGNED 		NOT NULL DEFAULT 0
+							COMMENT 'High ip address',
 							
-	PRIMARY KEY 		( whomr_ip_low, whomr_ip_high )
-    )  ENGINE = MyISAM CHARSET latin1 COMMENT 'Whois missing ranges' ;
+	PRIMARY KEY		( whoui_ip_low, whoui_ip_high )
+    )  ENGINE = MyISAM CHARSET latin1 COMMENT 'Whois unscanned ips' ;
