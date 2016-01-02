@@ -550,7 +550,6 @@
     <Folder Include="Unix\root\whois\" />
   </ItemGroup>
   <ItemGroup>
-    <Content Include="Bin\guts.phs" />
     <Content Include="Bin\myip.phs" />
     <Content Include="Bin\px.phs" />
     <Content Include="Bin\drives.phs" />

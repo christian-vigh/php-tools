@@ -837,6 +837,7 @@ END;
 					$permissions		=  ( $diff_entry [ 'local' ] [ 'mode' ]  &  S_IFDIR ) ? 
 									$domain_entry [ 'directory-permissions' ] : $domain_entry [ 'file-permissions' ] ;
 					$fs -> chmod ( $remote_name, $permissions ) ;
+					$domain_entry [ 'server' ] -> Execute ( "chown {$domain_entry [ 'user' ]}:{$domain_entry [ 'group' ]} $remote_name" ) ;
 					break ;
 
 				case	'mtime' :
