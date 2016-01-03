@@ -341,14 +341,19 @@ class  LocalHttpErrorLogBase	extends  LocalLog
 	//	[crit] [client 180.76.15.138] (13)Permission denied:
         //	server/www/www.wuthering-bytes.com/site/.htaccess pcfg_openfile: unable to check htaccess file,
         //	ensure it is readable
-	//	Constant : HTTP_PERMISSION_DENIED
+	// or :
+	//	[error] [client 109.211.242.184] (13)Permission denied: file permissions deny server access:
+	//	/server/www/www.wuthering-bytes.com/site/favicon.png
+	// Constant : HTTP_PERMISSION_DENIED
 	private static	$regex_permission_denied		=  '#
 									(?P<message>
 									    (
 										.* Permission \s+ denied: \s+
+										(
+											file \s+ permissions \s+ deny \s+ server \s+ access: \s* 
+										 )?
 										(?P<file> [^\s]+)
 									     ) 
-									     \s+ pcfg_openfile:
 									     .*
 									 )
 								    #imsx' ;
