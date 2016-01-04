@@ -1,0 +1,52 @@
+// All the results shown here operate on a 100-million string store table
+
+/***
+	Select duplicate crc values. Results are :
+
+	- Number of duplicate crc values	:  1 144 834
+	- Max number of duplicates for 1 crc	:  4 (a crc search will require at most 4 lookups on a 100-million rows table)
+	- Average query time			:  80s
+ ***/
+SELECT 
+	crc, 
+	COUNT(crc) as 'count'
+FROM crc32_collision_test
+GROUP BY crc
+HAVING COUNT(crc) > 1
+ORDER BY COUNT(crc) DESC
+
+/***
+	Select the number of duplicate crc values on the whole table. This is a query using the above one.
+	The result is : 2 293 757
+ ***/
+SELECT SUM(count)
+FROM
+   (
+	SELECT 
+		crc, 
+		COUNT(crc) as 'count'
+	FROM crc32_collision_test
+	GROUP BY crc
+	HAVING COUNT(crc) > 1
+	ORDER BY COUNT(crc) DESC
+    ) as Selection ;
+
+/***
+	Count of duplicated crc values :
+	- Number of crc values having 4 duplicates	:  48
+	- Number of crc values having 3 duplicates	:  8993
+	- Number of crc values having 2 duplicates	:  1 135 793
+ ***/
+SELECT crc_count, COUNT(crc_count)
+FROM
+   (
+	SELECT 
+		crc, 
+		COUNT(crc) as 'count'
+	FROM crc32_collision_test
+	GROUP BY crc
+	HAVING COUNT(crc) > 1
+	ORDER BY COUNT(crc) DESC
+    ) AS Selection
+GROUP BY crc_count
+ORDER BY COUNT(crc_count)

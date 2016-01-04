@@ -1,0 +1,31 @@
+/***
+	Create  string store and fill it with sentences formed by 3 to 11 words taken from
+	 264k-words english dictionary.
+	 The number of sentences is 100 millions. Each sentence is unique.
+	 Index on crc field is added after filling the table, otherwise it would impact the
+	 performance of the LOAD DATA statement.
+ ***/
+DROP TABLE IF EXISTS crc32_collision_test ;
+
+CREATE TABLE crc32_collision_test
+   ( 
+	id 		INTEGER 		NOT NULL AUTO_INCREMENT,
+	crc 		INTEGER UNSIGNED 	NOT NULL DEFAULT 0,
+	type 		SMALLINT 		NOT NULL DEFAULT 0,
+	text 		VARCHAR(4096)		NOT NULL DEFAULT '',
+
+	PRIMARY KEY 	( id )
+    ) ENGINE = MyISAM CHARSET latin1 ;
+
+LOAD DATA LOCAL INFILE 'C:/Temp/crc/sorted.txt'
+	INTO TABLE crc32_collision_test
+	FIELDS TERMINATED BY ';' OPTIONALLY ENCLOSED BY '"' ESCAPED BY '"'
+	LINES TERMINATED BY '\n'
+	( text ) ;
+
+UPDATE crc32_collision_test SET crc = CRC32(text) ;
+
+ALTER TABLE crc32_collision_test
+	ADD KEY USING HASH ( crc ) ;
+
+OPTIMIZE TABLE crc32_collision_test ;
