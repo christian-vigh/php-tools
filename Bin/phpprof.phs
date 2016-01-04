@@ -76,7 +76,7 @@ END;
 	$CL 			=  new CLParser ( $Definitions ) ;
 	$Settings		=  $Configuration -> Get ( 'PhpTools/phpprof' ) ;
 	$Remaining		=  $CL -> Files ;
-	$Editor			=  WhenSet::GetValue ( $Settings, 'editor'		, ( $CL -> editor )		?  $CL -> editor : 'wincachegrind' ) ;
+	$Editor			=  WhenSet::GetValue ( $Settings, 'editor'		, ( $CL -> editor )		?  $CL -> editor : 'qcachegrind' ) ;
 	$EditorArguments	=  WhenSet::GetValue ( $Settings, 'editor-arguments'	, ( $CL -> editor_arguments )	?  $CL -> editor_arguments : '' ) ;
 	$OutputFormat		=  WhenSet::GetValue ( $Settings, 'output', '%f.xt' ) ;
 	$OutputFile		=  $CL -> output ;
