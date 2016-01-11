@@ -1,4 +1,5 @@
 *.tss
+*.suo
 /Data/
 /logs/
 /public/

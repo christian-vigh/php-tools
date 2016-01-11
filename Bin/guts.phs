@@ -1,0 +1,304 @@
+<?php
+	/**************************************************************************************************************
+	
+	    NAME
+	        guts.phs
+	
+	    DESCRIPTION
+	        Github management on multiple projects.
+	
+	    AUTHOR
+	        Christian Vigh, 01/2016.
+	
+	    HISTORY
+	        [Version : 1.0]		[Date : 2016-01-11]     [Author : CV]
+	                Initial version.
+	
+	 **************************************************************************************************************/
+	require ( "tools.phpinclude" ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Processors\CL\CLException ;
+	use  Thrak\Types\String ;
+	use  Thrak\IO\Console ;
+	use  Thrak\IO\Path ;
+	use  Thrak\IO\AsciiReport ;
+	use  Thrak\Processors\IniFile ;
+
+
+	/*==================================================================================================
+
+		Command line parameters.
+
+	  ==================================================================================================*/
+	$Definitions = <<<END
+<command allow-files="false">
+
+	<usage>
+		Github management on multiple projects.
+	</usage>
+	
+	<file name="configuration_file, cf" disposition="existing" default="thraktools://Data/guts.ini">
+		Specifies the location of the guts configuration file.
+	</file>
+
+	<flag name="list, l">
+		Lists currently defined projects, with pending changes.
+	</flag>
+
+	<flag name="list_porcelain_flags, lpf, porcelain_flags, pf">
+		Lists the combinations of the first two characters of each line when "git status" is ran with
+		the --porcelain flag.
+	</flag>
+
+	<flag name="status, s">
+		Lists currently defined projects, with pending changes.
+		The difference with the -list option is that only projects having pending changes will be listed.
+	</flag>
+	
+</command>
+END;
+
+
+	/*==============================================================================================================
+
+		Helper functions.        
+
+	  ==============================================================================================================*/
+
+	// get_project_settings -
+	//	Returns settings associated with a project.
+	function  get_project_settings ( $inifile, $key, $key_value, $project_sections )
+	   {
+		$project_data	=  [] ;
+
+		if  ( ( $value = String::BooleanValue ( $key_value ) )  !==  null )
+		   {
+			if  ( ! $value )
+				return ( false ) ;
+			else
+			   {
+				$lckey	=  strtolower ( $key ) ;
+
+				if  ( ! isset ( $project_sections [ $lckey ] ) )
+					error ( "No section [Project : $key] exists" ) ;
+
+				// Get project name, if different from the key specified in the [Projects] section
+				$value				=  $inifile -> GetKey ( $project_sections [ $lckey ] [ 'section' ], 'Name' ) ;
+				$project_data [ 'name' ]	=  ( $value ) ?  $value : $key ;
+
+				// Get project path
+				$value				=  $inifile -> GetKey ( $project_sections [ $lckey ] [ 'section' ], 'Path' ) ;
+
+				if  ( ! $value )
+					error ( "No Path key defined for project $key in section [{$project_sections [ $lckey ] [ 'section' ]}]" ) ;
+
+				$project_data [ 'path' ]	=  $value ;
+			    }
+		    }
+		else 
+		   {
+			$project_data [ 'name' ]	=  $key ;
+			$project_data [ 'path' ]	=  $key_value ;
+		    }
+
+		// Check that the project path exists and contains a .git subdirectory
+		if  ( ! is_dir ( $project_data [ 'path' ] ) ) 
+			error ( "Path \"{$project_data [ 'path' ]}\" does not exist for project \"$key\"" ) ;
+
+		if  ( ! is_dir ( $project_data [ 'path' ] . '/.git' ) ) 
+			error ( "Path \"{$project_data [ 'path' ]}\" for project \"$key\" does not have a .git directory." ) ;
+
+		// All done, return
+		return ( $project_data ) ;
+	    }
+
+
+	/*==============================================================================================================
+	
+	     ListRepositories -
+		Lists the available repositories with their pending changes.
+	
+	  ==============================================================================================================*/
+	function  ListRepositories ( $include_all )
+	   {
+		global		$ConfigurationData ;
+
+		$data	=  [] ;
+
+		foreach ( $ConfigurationData [ 'projects' ]  as  $project )
+		   {
+			$cwd	= getcwd ( ) ;
+
+			chdir ( $project [ 'path' ] ) ;
+			$output =  [] ;
+			exec ( "git status --porcelain", $output ) ;
+
+			$file_statuses	=  [] ;
+			$file_names	=  [] ;
+
+			foreach  ( $output  as  $line )
+			   {
+				$line	=  rtrim ( $line ) ;
+
+				if  ( ! $line )
+					continue ;
+
+				$file_statuses []	=  '[' . substr ( $line, 0, 2 ) . ']' ;
+				$file_names []		=  substr ( $line, 3 ) ;
+			    }
+
+			if  ( count ( $file_names )  ||  $include_all )
+			   {
+				$data []	=
+				   [
+					'project'	=>  $project [ 'name' ],
+					'path'		=>  $project [ 'path' ],
+					'status'	=>  implode ( "\n", $file_statuses ),
+					'file'		=>  implode ( "\n", $file_names )
+				    ] ;
+			    }
+
+			chdir ( $cwd ) ;
+		    }
+
+		$report		=  new AsciiReport
+		   (
+			[ 'member' => 'project'	, 'title' => 'Project'	],
+			[ 'member' => 'path'	, 'title' => 'Path'	],
+			[ 'member' => 'status'	, 'title' => 'State'	],
+			[ 'member' => 'file'	, 'title' => 'File'	]
+		    ) ;
+
+		$extra_summary	=  ( $include_all ) ?
+					'' : ' (' . count ( $ConfigurationData [ 'projects' ] ) . ' scanned)' ;
+
+		echo $report -> Generate ( $data ) ;
+		echo $report -> Summary ( 'project', '', $extra_summary ) ;
+	    }
+
+	
+	/*==============================================================================================================
+	
+	    ListPorcelainFlags -
+		Lists the combinations of the first two characters of each line when "git status" is ran with
+		the --porcelain flag.
+	
+	  ==============================================================================================================*/
+	function  ListPorcelainFlags ( )
+	   {
+		echo <<<END
+Git file status help :
+
+X           Y    Meaning
+-------------------------------------------------
+          [MD]   not updated
+M        [ MD]   updated in index
+A        [ MD]   added to index
+D         [ M]   deleted from index
+R        [ MD]   renamed in index
+C        [ MD]   copied in index
+[MARC]           index and work tree matches
+[ MARC]     M    work tree changed since index
+[ MARC]     D    deleted in work tree
+-------------------------------------------------
+D           D    unmerged, both deleted
+A           U    unmerged, added by us
+U           D    unmerged, deleted by them
+U           A    unmerged, added by them
+D           U    unmerged, deleted by us
+A           A    unmerged, both added
+U           U    unmerged, both modified
+-------------------------------------------------
+?           ?    untracked
+!           !    ignored
+-------------------------------------------------	    
+END;
+	    }
+
+
+	/*==============================================================================================================
+	
+	    LoadConfiguration -
+		Loads the configuration defined in guts.ini.
+	
+	  ==============================================================================================================*/
+	function  LoadConfiguration ( $configuration_file )
+	   {
+		$data			=  [ 'projects' => [] ] ;
+		$inifile		=  IniFile::LoadFromFile ( $configuration_file ) ;
+		$inifile -> SetVariableStore ( 'Variables' ) ;
+
+		// Retrieve project-specific parameters (section of type [Project : name])
+		$sections		=  $inifile -> GetSections ( 'Project \s* : \s* (?P<name> [^\s]+)' ) ;
+		$project_sections	=  [] ;
+
+		foreach  ( $sections  as  $section )
+		   {
+			$project_name		=  $section [ 'match' ] [ 'name' ] ;
+			$project_section	=  $section [ 'name' ] ;
+			$project_keys		=  $inifile -> GetKeys ( $project_section ) ;
+
+			$project_sections [ strtolower ( $project_name ) ]	=
+			   [
+				'name'		=>  $project_name,
+				'section'	=>  $project_section,
+				'keys'		=>  $project_keys 
+			    ] ;
+		    }
+
+		// Retrieve project list 
+		$projects		=  $inifile -> GetKeys ( 'Projects' ) ;
+
+		foreach  ( $projects  as  $name => $value )
+		   {
+			$pdata	=  get_project_settings ( $inifile, $name, $value, $project_sections ) ;
+
+			if  ( $pdata )
+				$data [ 'projects' ] [ strtolower ( $name ) ]	=  $pdata ;
+		    }
+
+		ksort ( $data [ 'projects' ] ) ;
+		return ( $data ) ;
+	    }
+
+
+	/*==================================================================================================
+
+		Global constants and variables.
+
+	  ==================================================================================================*/
+	$CL 			=  new  CLParser ( $Definitions ) ;
+	$ConfigurationFile	=  $CL -> configuration_file ;
+	$List			=  $CL -> list ;
+	$ListPorcelainFlags	=  $CL -> list_porcelain_flags ;
+	$Status			=  $CL -> status ;
+
+	$ConfigurationData	=  LoadConfiguration ( $ConfigurationFile ) ;
+	$HadOption		=  false ;
+
+	// -list option :
+	//	Lists all repositories.
+	if  ( ! $HadOption  &&  $List )
+	   {
+		ListRepositories ( true ) ;
+		$HadOption	=  false ;
+	    }
+
+	// -list_porcelain_flags option :
+	//	Lists the combinations of the first two characters of each line when "git status" is ran with
+	//	the --porcelain flag.
+	if  ( ! $HadOption  &&  $ListPorcelainFlags )
+	   {
+		ListPorcelainFlags ( ) ;
+		$HadOption	=  false ;
+	    }
+
+	// -status option :
+	//	Lists repositories having pending changes.
+	if  ( ! $HadOption  &&  $Status )
+	   {
+		ListRepositories ( false ) ;
+		$HadOption	=  false ;
+	    }
+

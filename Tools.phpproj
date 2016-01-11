@@ -90,7 +90,9 @@
     <Compile Include="Unix\root\whoiscollect\whoiscollect.php" />
   </ItemGroup>
   <ItemGroup>
-    <Folder Include="Benchmark\MySQL - Select random record" />
+    <Folder Include="Benchmark\MySQL\" />
+    <Folder Include="Benchmark\MySQL\Crc32 on big tables\" />
+    <Folder Include="Benchmark\MySQL\Select random record\" />
     <Folder Include="Bin" />
     <Folder Include="Data" />
     <Folder Include="Data\HomeBackup\" />
@@ -550,6 +552,10 @@
     <Folder Include="Unix\root\whois\" />
   </ItemGroup>
   <ItemGroup>
+    <Content Include="Benchmark\MySQL\Crc32 on big tables\init.mysql" />
+    <Content Include="Benchmark\MySQL\Crc32 on big tables\stats.mysql" />
+    <Content Include="Benchmark\MySQL\Select random record\randomtest.phs" />
+    <Content Include="Bin\guts.phs" />
     <Content Include="Bin\myip.phs" />
     <Content Include="Bin\px.phs" />
     <Content Include="Bin\drives.phs" />
@@ -561,9 +567,6 @@
     <Content Include="Bin\whoisupdate.phs" />
     <Content Include="Bin\zratio.phs" />
     <Content Include="Database\Indiscipline.mysql" />
-    <Content Include="Benchmark\MySQL - Select random record\randomtest.phs">
-      <SubType>Content</SubType>
-    </Content>
     <Content Include="Bin\gensentences.phs" />
     <Content Include="Bin\manglestring.phs">
       <SubType>Content</SubType>
