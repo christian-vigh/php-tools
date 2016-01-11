@@ -256,7 +256,7 @@ END;
 			    }
 		    }
 
-		// Generate the report
+		// Generate the report 
 		$report		=  new AsciiReport
 		   (
 			[ 'member' => 'project'	, 'title' => 'Project'	],
