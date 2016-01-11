@@ -66,6 +66,20 @@ END;
 
 	  ==============================================================================================================*/
 
+	// execute_git_command -
+	//	Executes the specified git command.
+	function  execute_git_command ( $project_path, $command, &$output )
+	   {
+		$output		=  [] ;
+		$cwd		=  getcwd ( ) ;
+		chdir ( $project_path ) ;
+		exec ( $command, $output, $status ) ;
+		chdir ( $cwd ) ;
+
+		return ( $status ) ;
+	    }
+
+
 	// get_project_settings -
 	//	Returns settings associated with a project.
 	function  get_project_settings ( $inifile, $key, $key_value, $project_sections )
@@ -94,12 +108,34 @@ END;
 					error ( "No Path key defined for project $key in section [{$project_sections [ $lckey ] [ 'section' ]}]" ) ;
 
 				$project_data [ 'path' ]	=  $value ;
+
+				// Get local repository name for local project (for project that have multiple sources but only one master)
+				$value				=  $inifile -> GetKey ( $project_sections [ $lckey ] [ 'section' ], 
+												'LocalRepository' ) ;
+
+				if  ( $value )
+					$repository		=  get_repository ( $project_data [ 'path' ], $value, 'push' ) ;
+				else
+					$repository		=  get_repository ( $project_data [ 'path' ], $project_data [ 'name' ], 'push' ) ;
+
+				if  ( ! $repository )
+					error ( "Project \"{$project [ 'name' ]}\" does not have valid remote(s)." ) ;
+
+				$project_data [ 'local-repository' ]	=  $repository [ 'local' ] ;
+				$project_data [ 'remote-repository' ]	=  $repository [ 'remote' ] ;
+
+				// Get remote branch
+				$project_data [ 'remote-branch' ]	=  $inifile -> GetKey ( $project_sections [ $lckey ] [ 'section' ], 
+												'RemoteBranch',
+												'master' ) ;
 			    }
 		    }
 		else 
 		   {
-			$project_data [ 'name' ]	=  $key ;
-			$project_data [ 'path' ]	=  $key_value ;
+			$project_data [ 'name' ]		=  $key ;
+			$project_data [ 'path' ]		=  $key_value ;
+			$project_data [ 'local-repository']	=  $key ;
+			$project_data [ 'remote-branch' ]	=  'master' ;
 		    }
 
 		// Check that the project path exists and contains a .git subdirectory
@@ -111,6 +147,57 @@ END;
 
 		// All done, return
 		return ( $project_data ) ;
+	    }
+
+
+	// get_repositories -
+	//	Gets the names of the repositories for the fetch and push operations.
+	function  get_repositories ( $project_path )
+	   {
+		static		$re	=  '/
+						(?P<local> [^\s]+)
+						\s+
+						(?P<remote> [^\s]+)
+						\s+ \(
+						(?P<keyword> [^)]+)
+						\)
+					    /imsx' ;
+
+		execute_git_command ( $project_path, "git remote -v", $output ) ;
+		$result		=  [] ;
+
+		foreach  ( $output  as  $line )
+		   {
+			$line	=  trim ( $line ) ;
+
+			if  ( ! $line )
+				continue ;
+
+			if  ( preg_match ( $re, $line, $match ) )
+			   {
+				$result []	=
+				   [
+					'local'		=>  $match [ 'local' ],
+					'remote'	=>  $match [ 'remote' ],
+					'operation'	=>  strtolower ( $match [ 'keyword' ] )
+				    ] ;
+			    }
+		    }
+
+		return ( $result ) ;
+	    }
+
+	function  get_repository ( $project_path, $repository, $operation )
+	   {
+		$result		=  get_repositories ( $project_path ) ;
+
+		foreach  ( $result  as  $entry )
+		   {
+			if  ( ! strcasecmp ( $operation, $entry [ 'operation' ] )  &&  ! strcasecmp ( $repository, $entry [ 'local' ] ) )
+				return ( $entry ) ;
+		    }
+
+		return ( false ) ;
 	    }
 
 
@@ -126,14 +213,22 @@ END;
 
 		$data	=  [] ;
 
+		// Loop through defined projects
 		foreach ( $ConfigurationData [ 'projects' ]  as  $project )
 		   {
-			$cwd	= getcwd ( ) ;
+			// Get current local repository status
+			$status			=  execute_git_command ( $project [ 'path' ], "git status --porcelain", $output ) ;
 
-			chdir ( $project [ 'path' ] ) ;
-			$output =  [] ;
-			exec ( "git status --porcelain", $output ) ;
+			// Get the status of what is pushable - add potential entries to the list retrieved above, with the special modifier ">>"
+			$local_repository	=  $project [ 'local-repository' ] ;
+			$remote_branch		=  $project [ 'remote-branch' ] ;
 
+			execute_git_command ( $project [ 'path' ], "git diff --name-only -- $local_repository/$remote_branch", $diff_output ) ;
+
+			foreach  ( $diff_output  as  $file )
+				$output []	=  ">> $file" ;
+
+			// Collect the list of files to be updated/added/modified/deleted/pushed for this project
 			$file_statuses	=  [] ;
 			$file_names	=  [] ;
 
@@ -148,6 +243,7 @@ END;
 				$file_names []		=  substr ( $line, 3 ) ;
 			    }
 
+			// Add current project to the report - only if we have to include them all or if there are pending updates
 			if  ( count ( $file_names )  ||  $include_all )
 			   {
 				$data []	=
@@ -158,10 +254,9 @@ END;
 					'file'		=>  implode ( "\n", $file_names )
 				    ] ;
 			    }
-
-			chdir ( $cwd ) ;
 		    }
 
+		// Generate the report
 		$report		=  new AsciiReport
 		   (
 			[ 'member' => 'project'	, 'title' => 'Project'	],
@@ -201,7 +296,7 @@ C        [ MD]   copied in index
 [MARC]           index and work tree matches
 [ MARC]     M    work tree changed since index
 [ MARC]     D    deleted in work tree
--------------------------------------------------
+-------------------------------------------------------------------
 D           D    unmerged, both deleted
 A           U    unmerged, added by us
 U           D    unmerged, deleted by them
@@ -209,10 +304,11 @@ U           A    unmerged, added by them
 D           U    unmerged, deleted by us
 A           A    unmerged, both added
 U           U    unmerged, both modified
--------------------------------------------------
+-------------------------------------------------------------------
 ?           ?    untracked
 !           !    ignored
--------------------------------------------------	    
+>           >    waiting to be pushed on remote (guts-specific)
+-------------------------------------------------------------------
 END;
 	    }
 
