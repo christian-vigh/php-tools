@@ -97,6 +97,8 @@ END;
 				if  ( ! isset ( $project_sections [ $lckey ] ) )
 					error ( "No section [Project : $key] exists" ) ;
 
+				$project_data [ 'section' ]	=   $project_sections [ $lckey ] [ 'name' ] ;
+
 				// Get project name, if different from the key specified in the [Projects] section
 				$value				=  $inifile -> GetKey ( $project_sections [ $lckey ] [ 'section' ], 'Name' ) ;
 				$project_data [ 'name' ]	=  ( $value ) ?  $value : $key ;
@@ -133,6 +135,7 @@ END;
 		else 
 		   {
 			$project_data [ 'name' ]		=  $key ;
+			$project_data [ 'section' ]		=  $key ;
 			$project_data [ 'path' ]		=  $key_value ;
 			$project_data [ 'local-repository']	=  $key ;
 			$project_data [ 'remote-branch' ]	=  'master' ;
@@ -223,7 +226,7 @@ END;
 			$local_repository	=  $project [ 'local-repository' ] ;
 			$remote_branch		=  $project [ 'remote-branch' ] ;
 
-			execute_git_command ( $project [ 'path' ], "git diff --name-only -- $local_repository/$remote_branch", $diff_output ) ;
+			execute_git_command ( $project [ 'path' ], "git diff --name-only $local_repository/$remote_branch", $diff_output ) ;
 
 			foreach  ( $diff_output  as  $file )
 				$output []	=  ">> $file" ;
@@ -248,6 +251,7 @@ END;
 			   {
 				$data []	=
 				   [
+					'section'	=>  $project [ 'section' ],
 					'project'	=>  $project [ 'name' ],
 					'path'		=>  $project [ 'path' ],
 					'status'	=>  implode ( "\n", $file_statuses ),
@@ -259,10 +263,11 @@ END;
 		// Generate the report 
 		$report		=  new AsciiReport
 		   (
-			[ 'member' => 'project'	, 'title' => 'Project'	],
-			[ 'member' => 'path'	, 'title' => 'Path'	],
-			[ 'member' => 'status'	, 'title' => 'State'	],
-			[ 'member' => 'file'	, 'title' => 'File'	]
+			[ 'member' => 'section'	, 'title' => 'Ini section'	],
+			[ 'member' => 'project'	, 'title' => 'Project'		],
+			[ 'member' => 'path'	, 'title' => 'Path'		],
+			[ 'member' => 'status'	, 'title' => 'State'		],
+			[ 'member' => 'file'	, 'title' => 'File'		]
 		    ) ;
 
 		$extra_summary	=  ( $include_all ) ?
