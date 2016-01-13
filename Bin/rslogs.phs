@@ -18,6 +18,12 @@
 	    [Version : 1.0.1]	[Date : 2015/11/29]     [Author : CV]
 		. Added the -list_configured_servers option.
 
+	    [Version : 1.1]	[Date : 2016/01/13]     [Author : CV]
+		. Removed the ResetLog*() methods and parameters, as well as the FindString() function and
+		  the following parameters : -find_string, -limit, -sort_by, -where.
+		. Added the -query_ips, -query_date and -query_string parameters.
+		. Added topics in the help definition.
+
 	 ***************************************************************************************************/
 	require ( "tools.phpinclude" ) ;
 
@@ -60,16 +66,6 @@
 	<flag name="extract, e">
 		Extracts data from the captured log entries, having the type specified by the -log_type parameter.
 	</flag>
-	
-	<string name="find_string, fs">
-		Searches for a string in the string store. Search automatically includes the '%' mysql wildcard character
-		at the beginning and at the end of the string.
-		The -limit option can be used to limit searched string count. Ordering is made on string type then string value.
-	</string>
-
-	<integer name="limit, l">
-		Indicates the maximum number of records to be returned by queries.
-	</integer>
 	
 	<flag name="list_configured_servers, lcs">
 		Lists the servers configured for this command.
@@ -123,19 +119,9 @@
 		Optimizes all the tables related to log entries.
 	</flag>
 
-	<flag name="query_ips, qi">
-		Displays accesses by domain and ip, together with the resolved hostname.
-		The -sort_by option can specify one of the following keywords for this query : <?= implode ( ', ', \$QueryIpsData [ 'sort' ] ) ?>.
-		The -where option can use the following columns : <?= implode ( ', ', \$QueryIpsData [ 'columns' ] ) ?>.
-	</flag>
-	
-	<flag name="reset_log_data">
-		Resets the the extracted data log.
-	</flag>
-	
-	<flag name="reset_log_tables">
-		Resets the log tables, including the extracted data log.
-	</flag>
+	<ip-address name="query_ips, query_ip, qi" arguments="1..*">
+		Displays accesses performed by the specified ip(s).
+	</ip-address>
 	
 	<flag name="resolve_ips, resolve_ip, ri">
 		Resolves ip addresses to domain names (for unresolved ip addresses), including whois data for both the
@@ -151,24 +137,6 @@
 		Wildcard characters are authorized, and search is performed on every server alias.
 	</string>
 
-	<list name="sort_by, sb, sort" value-text="field-list">
-		Specifies the sort order. This parameter is to be used in conjunction with one of the
-		-query_xxx parameters, and its value is a list of field names accepted by the corresponding
-		-query_xxx option.
-		Each field name can be followed by an optional "ASC" or "DESC" value.
-	</list>
-
-	<range name="string_store_types, string_store_type, sst" arguments="1..*" default="*" allow-null="both">
-		Restricts string store searches (-find_string option) to the specified range(s) of values.
-		Authorized values are :
-		<?php
-			\$types	=  LogStringStore::GetTypes ( ) ;
-			
-			foreach ( \$types  as  \$type )
-				echo '- ' . sprintf ( '%02d', \$type [ 'value' ] ) . ': ' .  \$type [ 'name' ] . "\\n" ;
-		 ?>
-	</range>
-
 	<flag name="sync">
 		Equivalent to : -update -extract -resolve_ips -optimize_tables.
 	</flag>
@@ -176,72 +144,10 @@
 	<flag name="update, u">
 		Updates the logs from the remote servers, having the type specified by the -log_type parameter.
 	</flag>
-	
-	<string name="where, w">
-		Includes a WHERE clause in the -query_xxx queries.
-	</string>
 </command>
 END;
 
 	
-
-	/*==================================================================================================
-
-	    FindString -
-		Finds a string in the string store.
-
-	  ==================================================================================================*/
-	function  FindString ( $string )
-	   {
-		global		$Database, $Limit, $StringStoreTypes ;
-
-		$escaped_string	=  $Database -> Escape ( $string ) ;
-		$types		=  LogStringStore::GetTypes ( ) ;
-		$limit_clause	=  ( $Limit ) ? "LIMIT $Limit" : '' ;
-		$id_clause	=  ( $StringStoreTypes ) ? 
-					'AND type IN (' . implode ( ',', $StringStoreTypes ) . ')' :
-					'' ;
-		$query		=  "
-					SELECT *
-					FROM server_string_store
-					WHERE
-						value LIKE '%$escaped_string%' 
-						$id_clause 
-					ORDER BY type, value
-					$limit_clause
-				   " ;
-		$Database -> SetSimpleQuery ( $query ) ;
-		$rows		=  $Database -> LoadRows ( ) ;
-		$row_count	=  count ( $rows ) ;
-
-		if  ( $row_count )
-		   {
-			$report		=  new AsciiReport 
-			   (
-				[ 'member' => 'id'	, 'title' => 'Id'							],
-				[ 'member' => 'type'	, 'title' => 'Entry type'						],
-				[ 'member' => 'value'	, 'title' => 'String'		, 'width' => 80, 'overflow' => 'wrap'	]
-			    ) ;
-			$data		=  [] ;
-
-			foreach  ( $rows  as  $row )
-			   {
-				$id		=  $row [ 'id' ] ;
-				$type		=  $row [ 'type' ] ;
-				$type		=  ( isset ( $types [ $type ] ) ) ?  
-							$types [ $type ] [ 'label' ] . ' (' . $type . ')' :
-							'*** unknown (' . $type . ') ***' ;
-				$value		=  $row [ 'value' ] ;
-
-				$data []	=  [ 'id' => $id, 'type' => $type, 'value' => $value ] ;
-			    }
-
-			echo $report -> Generate ( $data ) ;
-			echo $report -> Summary ( 'string' ) ;
-		    }
-		else
-			output ( "No match." ) ;
-	    }
 
 
 	/*==================================================================================================
@@ -740,128 +646,80 @@ END;
 
 	  ==================================================================================================*/
 	
-	// Query logs per ip address
-	$QueryIpsData		=
-	  [
-		'option'	=>  '-query_ips',
-		'sort'		=>  [ 'ip', 'count', 'last_access', 'host', 'blocked' ],
-		'columns'	=>  [ 'ip', 'domains', 'count', 'last_access', 'host', 'blocked' ],
-		'labels'	=>
-		   [
-			[ 'member' => 'ip'		, 'title' => 'Ip'							],
-			[ 'member' => 'domains'		, 'title' => 'Domains'		, 'width' => 30, 'overflow' => 'wrap'	],
-			[ 'member' => 'count'		, 'title' => 'Count'							],
-			[ 'member' => 'last_access'	, 'title' => 'Last access'						],
-			[ 'member' => 'host'		, 'title' => 'Resolved hostname', 'width' => 60, 'overflow' => 'wrap'	],
-			[ 'member' => 'blocked'		, 'title' => 'B?'		, 'align' => 'center'			]
-		    ],
-		'output'	=>  true,
-			'query'		=>  "
-						SELECT 
-							serle_ip AS 'ip',
-							count,
-							last_access,
-							server_resolved_ips. hostname  AS  'host',
-							GROUP_CONCAT(DISTINCT domain ORDER BY domain SEPARATOR '\n' ) AS 'domains',
-							CASE 
-								WHEN server_iptables. seri_id IS NULL
-								THEN ''
-								ELSE '*'
-							END  AS  'blocked'
-						FROM
+	// QueryIps -
+	//	Queries the logs for the specified ips.
+	function  QueryIps ( $ips )
+	   {
+		global		$Database ;
+
+		$ip_list	=  [] ;
+
+		foreach  ( $ips  as  $ip )
+			$ip_list []	=  "'" . $ip [ 'ip-address' ] . "'" ;
+
+		$ip_string	=  implode ( ', ', $ip_list ) ;
+		$ip_store_type	=  LogStringStore::LOGSTORE_IP ;
+
+		$query		=  "
+					SELECT
+						server_logfile_entries. serle_date 	AS 'date',
+						servers. ser_name 			AS 'server',
+						server_domains. serd_domain 		AS 'domain',
+						server_logfiles. serl_path 		AS 'logfile',
+						server_string_store. value 		AS 'ip',
+						IF( server_resolved_ips. serri_domain_id = 0, 
+							computer_string_store. value,
+							domain_string_store. value ) AS 'ipdomain'
+					FROM server_logfile_data
+					LEFT JOIN server_logfile_entries ON
+						server_logfile_entries. serle_id = server_logfile_data. serld_parent_id
+					LEFT JOIN server_logfiles ON
+						server_logfiles. serl_id = server_logfile_entries. serle_logfile_id
+					LEFT JOIN server_domains ON
+						server_domains. serd_id = server_logfiles. serl_domain_id
+					LEFT JOIN servers ON
+						servers. ser_id = server_domains. serd_server_id
+					LEFT JOIN server_string_store ON
+						server_string_store. id = server_logfile_data. serld_string_store_id
+					LEFT JOIN server_resolved_ips ON
+						server_resolved_ips. serri_ip_id = server_string_store. id
+					LEFT JOIN server_string_store AS domain_string_store ON
+						domain_string_store. id = server_resolved_ips. serri_domain_id
+					LEFT JOIN server_string_store AS computer_string_store ON
+						computer_string_store. id = server_resolved_ips. serri_computer_name_id
+					WHERE
+						server_logfile_data. serld_string_store_id IN
 						   (
-							SELECT 
-								server_logfile_entries. serle_ip, 
-                                                                server_logfile_entries. serle_resolved_ip_id,
-								COUNT(server_logfile_entries. serle_ip) AS 'count',
-								MAX(server_logfile_entries. serle_date) as 'last_access',
-								server_domains. serd_domain  AS  'domain'
-							FROM server_logfile_entries
-							INNER JOIN server_logfiles ON server_logfiles. serl_id = server_logfile_entries. serle_logfile_id
-								{PARAMETER:logtype}
-							INNER JOIN server_domains ON server_domains. serd_id = server_logfiles. serl_domain_id
-							INNER JOIN servers ON servers. ser_id = server_domains. serd_server_id
+							SELECT id
+							FROM server_string_store
 							WHERE
-								serle_ip <> '' AND
-								{PARAMETER:servers}
-							GROUP BY 
-								server_logfile_entries. serle_ip, 
-								server_logfiles. serl_domain_id
-						    ) AS logfile_ips
-						LEFT JOIN server_resolved_ips ON server_resolved_ips. id = logfile_ips. serle_resolved_ip_id
-						LEFT JOIN server_iptables ON server_iptables. seri_source = serle_ip
-						{WHERE}
-						GROUP BY serle_ip
-						{ORDER}
-						{LIMIT}
-					    "
-	    ] ;
-		
+								type = $ip_store_type AND
+								value IN ( $ip_string )
+						    )
+					ORDER BY 
+						server_logfile_entries. serle_date,
+						servers. ser_name,
+						server_domains. serd_domain,
+						server_string_store. value
+				   " ;
+
+		$Database -> SetQuery ( $query ) ;
+		$rows		=  $Database -> LoadRows ( ) ;
+		$report		=  new AsciiReport 
+		   (
+			[ 'member' => 'date'	, 'title' => 'Date'		],
+			[ 'member' => 'server'	, 'title' => 'Server'		],
+			[ 'member' => 'domain'	, 'title' => 'Domain'		],
+			[ 'member' => 'logfile'	, 'title' => 'Log file'		],
+			[ 'member' => 'ip'	, 'title' => 'Ip'		],
+			[ 'member' => 'ipdomain', 'title' => 'Ip domain'	]
+		    ) ;
+
+		echo $report -> Generate ( $rows ) ;
+		echo $report -> Summary ( 'ip entry' ) ;
+	    }
 	
 	    
-	/*==================================================================================================
-
-	    ResetLogTables, ResetLogData -
-		Resets the log tables.
-		ResetLogData only resets the server_log_data table, which has been generated with the 
-		-extract option.
-
-	  ==================================================================================================*/
-	function  ResetLogTables ( )
-	   {
-		global		$RsAdmin ;
-		
-		
-		$answer		=  Console::Prompt ( "Reset all log tables", [ 'y', 'n' ], 'n', true ) ;
-		
-		if  ( ! strcasecmp ( $answer, 'y' ) )
-		   {
-			$db	=  $RsAdmin -> Database ;
-			
-			$logfiles			=  $db -> Truncate ( RsAdmin::TABLE_SERVER_LOGFILES ) ;
-			$logfile_entries		=  $db -> Truncate ( RsAdmin::TABLE_SERVER_LOGFILE_ENTRIES ) ;
-			$logfile_data			=  $db -> Truncate ( RsAdmin::TABLE_SERVER_LOGFILE_DATA ) ;
-			$string_store_entries		=  $db -> Truncate ( RsAdmin::TABLE_SERVER_STRING_STORE ) ;
-			$le_string_store_entries	=  $db -> Truncate ( RsAdmin::TABLE_SERVER_LOGENTRIES_STRING_STORE ) ;
-			
-			output ( "Logfiles removed                          : $logfiles" ) ;
-			output ( "Logfile entries removed                   : $logfile_entries" ) ;
-			output ( "Logfile data entries removed              : $logfile_data" ) ;
-			output ( "String store entries removed              : $string_store_entries" ) ;
-			output ( "Log entries string store entries removed  : $le_string_store_entries" ) ;
-		    }
-	    }
-
-
-	function  ResetLogData ( ) 
-	   {
-		global		$RsAdmin ;
-		
-		
-		$answer		=  Console::Prompt ( "Reset extracted log data", [ 'y', 'n' ], 'n', true ) ;
-		
-		if  ( ! strcasecmp ( $answer, 'y' ) )
-		   {
-			$db	=  $RsAdmin -> Database ;
-			$query	=  "
-					UPDATE " . RsAdmin::TABLE_SERVER_LOGFILE_ENTRIES . "
-					SET
-						serle_processed		=  0,
-						serle_entry_type	=  0,
-						serle_process_id	=  0
-					WHERE
-						serle_processed <> 0
-				   " ;
-			$db -> Execute ( $query ) ;
-
-			$logfile_entries	=  $db -> GetAffectedRows ( ) ;
-			$logfile_data		=  $db -> Truncate ( RsAdmin::TABLE_SERVER_LOGFILE_DATA ) ;
-							
-			output ( "Logfile entries updated      : $logfile_entries" ) ;
-			output ( "Logfile data entries removed : $logfile_data" ) ;
-		    }
-	    }
-
 
 	/*==================================================================================================
 
@@ -991,41 +849,6 @@ END;
 	
 	/*==================================================================================================
 
-	    RunQuery -
-		Runs a query, using the specified query data along with the values of the -limit, -sort_by
-		and -where command-line parameters.
-
-	  ==================================================================================================*/
-	function  RunQuery ( $query_data )
-	   {
-		global		$RsAdmin, $Limit, $SortBy, $Where, $ServerList, $LogType ;
-
-
-		$query_data [ 'parameters' ]	=
-		   [
-			[ 'name' => 'LIMIT'	, 'value' => $Limit  ],
-			[ 'name' => 'ORDER'	, 'value' => $SortBy ],
-			[ 'name' => 'WHERE'	, 'value' => $Where  ],
-			[ 'name' => 'PARAMETER'	, 
-				'value' => 'servers. ser_name IN ( ' . String::ImplodeWithQuotedStrings ( ', ', $ServerList, "'" ) . ')', 
-				'index' => 'servers' 
-			 ]
-		    ] ;
-
-		if  ( $LogType  !=   -1 )
-			$query_data [ 'parameters' ] []	=  
-			   [ 
-				'name'		=> 'PARAMETER', 
-				'value'		=> "AND server_logfiles. serl_logfile_type = $LogType",
-				'index'		=> 'logtype'
-			    ] ;
-		
-		$RsAdmin -> QueryLog ( $query_data ) ;
-	    }
-
-
-	/*==================================================================================================
-
 		Global constants and variables.
 
 	  ==================================================================================================*/
@@ -1034,8 +857,6 @@ END;
 	$CheckExtractedData		=  $CL -> check_extracted_data ;
 	$ConfigurationFile		=  $CL -> configuration_file ;
 	$Extract			=  $CL -> extract ;
-	$FindString			=  $CL -> find_string ;
-	$Limit				=  $CL -> limit ;
 	$ListConfiguredServers		=  $CL -> list_configured_servers ;
 	$ListLogEntryStatistics		=  $CL -> list_log_entry_statistics ;
 	$ListStringStoreStatistics	=  $CL -> list_string_store_statistics ;
@@ -1043,16 +864,11 @@ END;
 	$LogType			=  ( integer ) $CL -> log_type ;
 	$OptimizeTables			=  $CL -> optimize_tables ;
 	$QueryIps			=  $CL -> query_ips ;
-	$ResetLogData			=  $CL -> reset_log_data ;
-	$ResetLogTables			=  $CL -> reset_log_tables ;
 	$ResolveIps			=  $CL -> resolve_ips ;
 	$RsLogsConfigurationFile	=  $CL -> rslogs_configuration_file ;
 	$Servers			=  $CL -> servers ;
-	$SortBy				=  ( $CL -> IsSpecified ( 'sort_by' ) ) ?  $CL -> sort_by : null ;
-	$StringStoreTypeIds		=  $CL -> string_store_types ;
 	$Sync				=  $CL -> sync ;
 	$Update				=  $CL -> update ;
-	$Where				=  $CL -> Where ;
 		
 	$RsAdmin			=  new RsAdmin ( $ConfigurationFile ) ;
 	$RsLogs				=  IniFile::LoadFromfile ( $RsLogsConfigurationFile ) ;
@@ -1068,9 +884,6 @@ END;
 
 	$HadOption			=  false ;
 	$HadListOption			=  false ;
-
-	// Allows for '*' and '?' wildcards instead of mysql '%' and '_'
-	$Where				=  str_replace ( [ '*', '?' ], [ '%', '_' ], $Where ) ;
 
 	// Instanciate a string store object
 	$StringStore			=  new LogStringStore ( RsAdmin::TABLE_SERVER_STRING_STORE, $RsAdmin -> Database ) ;
@@ -1120,27 +933,6 @@ END;
 	else
 		$LogTypes	=  [ $LogType ] ;
 
-	// String store types that can restrict the searches with the -find_string option
-	$StringStoreTypes	=  [] ;
-
-	foreach  ( $StringStoreTypeIds  as  $typeids )
-	   {
-		// A '*' specification anywhere on the -string_store_types option argument list automatically selects all types
-		if  ( $typeids [0]  ==  '*'  ||  $typeids [1]  ==  '*' )
-		   {
-			$StringStoreTypes	=  false ;
-			break ;
-		    }
-		
-		if  ( ! is_numeric ( $typeids [0] ) )
-			error ( new CLException ( "String store type ids must be either integer values or the '*' sign. \"{typeids [0]}\" was specified." ) ) ;
-		
-		if  ( ! is_numeric ( $typeids [1] ) )
-			error ( new CLException ( "String store type ids must be either integer values or the '*' sign. \"{typeids [1]}\" was specified." ) ) ;
-
-		$StringStoreTypes	=  array_merge ( $StringStoreTypes, range ( $typeids [0], $typeids [1] ) ) ;
-	    }
-
 	// Load rslogs-specific configuration parameters
 	LoadConfigurationParameters ( $RsLogs ) ;
 
@@ -1151,28 +943,12 @@ END;
 
 	  ==================================================================================================*/
 	// -sync :
-	//	Equivalent to : -update -extract -resolve_ips -optimize_tables.
+	//	Equivalent to : -update -extract -resolve_ips.
 	if  ( $Sync ) 
 	   {
 		$Update			=  true ;
 		$Extract		=  true ;
 		$ResolveIps		=  true ;
-	    }
-
-	// -reset_log_tables :
-	//	Resets the server_logfiles, server_logfile_entries and server_string_store tables.
-	if  ( ! $HadOption  &&  $ResetLogTables )
-	   {
-		ResetLogTables ( ) ;
-		exit ( ) ;
-	    }
-
-	// -reset_log_data :
-	//	Resets the server_logfile_data table.
-	if  ( ! $HadOption  &&  $ResetLogData )
-	   {
-		ResetLogData ( ) ;
-		exit ( ) ;
 	    }
 
 	// -update :
@@ -1209,14 +985,6 @@ END;
 		$HadOption	=  true ;
 	    }
 
-	// -query_ips :
-	//	Displays a list of ip addresses that contacted the remote servers, together with a hit count.
-	if  ( ! $HadOption  &&  $QueryIps )
-	   {
-		RunQuery ( $QueryIpsData ) ;
-		$HadOption	=  true ;
-	    }
-	
 	// -update :
 	//	Updates the log files whose type has been specified by the -log_type parameter.
 	if  ( ! $HadOption  &&  $Update )
@@ -1267,7 +1035,6 @@ END;
 		$HadListOption	=  true ;
 	    }
 
-
 	// -list_string_store_statistics :
 	//	Lists statistics about string store tables.
 	if  ( ! $HadListOption  &&  $ListStringStoreStatistics )
@@ -1276,16 +1043,16 @@ END;
 		$HadListOption	=  true ;
 	    }
 
+	// -query_ips :
+	//	Queries the logs for the specified ips.
+	if  ( ! $HadListOption  &&  count ( $QueryIps ) ) 
+	   {
+		QueryIps ( $QueryIps ) ;
+		$HadListOption	=  true ;
+	    }
+
 	if  ( $HadListOption )
 		$HadOption	=  true ;
-
-	// -find_string :
-	//	Finds a string in the message store.
-	if  ( ! $HadOption  &&  $FindString )
-	   {
-		FindString ( $FindString ) ;
-		$HadOption	=  true ;
-	    }
 
 	// No option specified : display help
 	if  ( ! $HadOption ) 
