@@ -21,7 +21,8 @@
 	    [Version : 1.1]	[Date : 2016/01/13]     [Author : CV]
 		. Removed the ResetLog*() methods and parameters, as well as the FindString() function and
 		  the following parameters : -find_string, -limit, -sort_by, -where.
-		. Added the -query_ips, -query_date and -query_string parameters.
+		. Added the -query_ips, -query_urls, -query_domains_by_date, -query_urls_by_date, 
+		  -query_date and -query_string parameters.
 		. Added topics in the help definition.
 
 	 ***************************************************************************************************/
@@ -54,36 +55,57 @@
 	<usage>
 		Manipulates log data on remote servers.
 	</usage>
+
+	<topic name="check, integrity">
+		Integrity checking parameters.
+	</topic>
+
+	<topic name="config, configuraation">
+		Configuration-related parameters.
+	</topic>
+
+	<topic name="update">
+		Options related to local database update.
+	</topic>
+
+	<topic name="list">
+		Statistics about local database.
+	</topic>
+
+	<topic name="query">
+		Local database query options.
+	</topic>
+
 	
-	<flag name="check_extracted_data, ced">
+	<flag name="check_extracted_data, ced" topic="check">
 		Checks that extracted (and analyzed) data is in sync with log entries.
 	</flag>
 
-	<file name="configuration_file, cf" disposition="existing" default="thraktools://Data/rsadmin.ini">
+	<file name="configuration_file, cf" disposition="existing" default="thraktools://Data/rsadmin.ini" topic="config">
 		Hosted servers parameters file.
 	</file>
 	
-	<flag name="extract, e">
+	<flag name="extract, e" topic="update">
 		Extracts data from the captured log entries, having the type specified by the -log_type parameter.
 	</flag>
 	
-	<flag name="list_configured_servers, lcs">
+	<flag name="list_configured_servers, lcs" topic="list">
 		Lists the servers configured for this command.
 	</flag>
 	
-	<flag name="list_log_entry_statistics, lles">
+	<flag name="list_log_entry_statistics, lles" topic="list">
 		Lists log entry statistics by occurrences.
 	</flag>
 
-	<flag name="list_string_store_statistics, lsss, ls">
+	<flag name="list_string_store_statistics, lsss, ls" topic="list">
 		Lists statistics about string store tables.
 	</flag>
 
-	<flag name="list_table_information, lti">
+	<flag name="list_table_information, lti" topic="list">
 		Lists table information.
 	</flag>
 
-	<keyword name="log_type, logtype, lt" default="all">
+	<keyword name="log_type, logtype, lt" default="all" topic="update">
 		Specifies the type of logs to be processed.
 		
 		<case name="all" value="-1">
@@ -115,33 +137,47 @@
 		</case>		
 	</keyword>
 	
-	<flag name="optimize_tables, ot">
+	<flag name="optimize_tables, ot" topic="update">
 		Optimizes all the tables related to log entries.
 	</flag>
 
-	<ip-address name="query_ips, query_ip, qi" arguments="1..*">
-		Displays accesses performed by the specified ip(s).
+	<datetime name="query_domains_by_date, qdd" arguments="1..2" default="today" help-text="date/date range" topic="query">
+		Displays accesses performed during the specified date or range of dates.
+	</datetime>
+
+	<datetime name="query_urls_by_date, qud" arguments="1..2" default="today" help-text="date/date range" topic="query">
+		Displays accesses performed during the specified date or range of dates.
+		Same as -query_domains_by_date, except that it displays an url (if available) instead of a domain name.
+	</datetime>
+
+	<ip-address name="query_ips, query_ip, qi" arguments="1..*" topic="query">
+		Displays accesses performed by the specified ip(s) together with their domain name.
 	</ip-address>
 	
-	<flag name="resolve_ips, resolve_ip, ri">
+	<ip-address name="query_urls, query_url, qu" arguments="1..*" topic="query">
+		Displays accesses performed by the specified ip(s).
+		Same as -query_ips, except that it displays an url (if available) instead of a domain name.
+	</ip-address>
+	
+	<flag name="resolve_ips, resolve_ip, ri" topic="update">
 		Resolves ip addresses to domain names (for unresolved ip addresses), including whois data for both the
 		ip (if any) and its hoster.
 	</flag>
 	
-	<file name="rslogs_configuration_file, rcf" disposition="existing" default="thraktools://Data/rslogs.ini">
+	<file name="rslogs_configuration_file, rcf" disposition="existing" default="thraktools://Data/rslogs.ini" topic="config">
 		Rslogs parameters file.
 	</file>
 	
-	<string name="servers, server, s" default="*" arguments="0..*">
+	<string name="servers, server, s" default="*" arguments="0..*" topic="config">
 		Server name(s) on which http logs are to be retrieved.
 		Wildcard characters are authorized, and search is performed on every server alias.
 	</string>
 
-	<flag name="sync">
+	<flag name="sync" topic="update">
 		Equivalent to : -update -extract -resolve_ips -optimize_tables.
 	</flag>
 
-	<flag name="update, u">
+	<flag name="update, u" topic="update">
 		Updates the logs from the remote servers, having the type specified by the -log_type parameter.
 	</flag>
 </command>
@@ -149,13 +185,32 @@ END;
 
 	
 
+	/*==============================================================================================================
+	
+		Support functions.
+  
+	  ==============================================================================================================*/
+
+	// get_date_range -
+	//	Tries to normalize a date range if the time part was omitted.
+	function  get_date_range ( $cmddates )
+	   {
+		$dates		=  [ $cmddates [0] [ 'datetime' ] ] ;
+
+		if  ( count ( $cmddates )  ==  1 )
+			$dates []	=  $cmddates [0] [ 'date' ] . ' 23:59:59' ;
+		else if  ( $dates [1] [ 'time' ]  ==  '00:00:00' )
+			$dates []	=  $cmddates [1] [ 'date' ] . ' 23:59:59' ;
+
+		return ( $dates ) ;
+	    }
+
 
 	/*==================================================================================================
 
 		Data checking functions.
 
 	  ==================================================================================================*/
-
 
 	// CheckExtractedData -
 	//	Performs the following checks :
@@ -646,6 +701,97 @@ END;
 
 	  ==================================================================================================*/
 	
+	// QueryDomainsByDate -
+	//	Queries the logs for the specified date range.
+	function  QueryDomainsByDate ( $dates )
+	   {
+		global		$Database ;
+
+		$ip_store_type	=  LogStringStore::LOGSTORE_IP ;
+		$query		=  "
+					SELECT
+						server_logfile_entries. serle_date 	AS 'date',
+						servers. ser_name 			AS 'server',
+						server_domains. serd_domain 		AS 'domain',
+						server_logfiles. serl_path 		AS 'logfile',
+						server_string_store. value 		AS 'ip',
+						IF( server_resolved_ips. serri_domain_id = 0, 
+							computer_string_store. value,
+							domain_string_store. value ) AS 'ipdomain'
+					FROM server_logfile_data
+					LEFT JOIN server_logfile_entries ON
+						server_logfile_entries. serle_id = server_logfile_data. serld_parent_id
+					LEFT JOIN server_logfiles ON
+						server_logfiles. serl_id = server_logfile_entries. serle_logfile_id
+					LEFT JOIN server_domains ON
+						server_domains. serd_id = server_logfiles. serl_domain_id
+					LEFT JOIN servers ON
+						servers. ser_id = server_domains. serd_server_id
+					LEFT JOIN server_string_store ON
+						server_string_store. id = server_logfile_data. serld_string_store_id
+					LEFT JOIN server_resolved_ips ON
+						server_resolved_ips. serri_ip_id = server_string_store. id
+					LEFT JOIN server_string_store AS domain_string_store ON
+						domain_string_store. id = server_resolved_ips. serri_domain_id
+					LEFT JOIN server_string_store AS computer_string_store ON
+						computer_string_store. id = server_resolved_ips. serri_computer_name_id
+					WHERE
+						server_logfile_entries. serle_date BETWEEN '{$dates [0]}' AND '{$dates [1]}' AND
+						server_logfile_data. serld_string_store_id IN
+						   (
+							SELECT id
+							FROM server_string_store
+							WHERE
+								type = $ip_store_type
+						    )
+					ORDER BY 
+						server_logfile_entries. serle_date,
+						servers. ser_name,
+						server_domains. serd_domain,
+						server_string_store. value
+				   " ;
+
+		$Database -> SetQuery ( $query ) ;
+		$rows		=  $Database -> LoadRows ( ) ;
+		$data		=  [] ;
+
+		foreach  ( $rows  as  $row )
+		   {
+			$date		=  $row [ 'date' ] ;
+			$domain		=  $row [ 'domain' ] ;
+
+			if  ( strncmp ( $row [ 'logfile' ], '/server/www/', 12 ) )
+				$logfile	=  $row [ 'logfile' ] ;
+			else
+				$logfile	=  substr ( $row [ 'logfile' ], 12 ) ;
+
+			$ip		=  $row [ 'ip' ] ;
+			$ipdomain	=  $row [ 'ipdomain' ] ;
+
+			$data []	=
+			   [
+				'date'		=>  $date,
+				'domain'	=>  $domain,
+				'logfile'	=>  $logfile,
+				'ip'		=>  $ip,
+				'ipdomain'	=>  $ipdomain
+			    ] ;
+		    }
+
+		$report		=  new AsciiReport 
+		   (
+			[ 'member' => 'date'	, 'title' => 'Date'		],
+			[ 'member' => 'domain'	, 'title' => 'Domain'		],
+			[ 'member' => 'logfile'	, 'title' => 'Log file'		],
+			[ 'member' => 'ip'	, 'title' => 'Ip'		],
+			[ 'member' => 'ipdomain', 'title' => 'Ip domain'	]
+		    ) ;
+
+		echo $report -> Generate ( $data, true ) ;
+		echo $report -> Summary ( 'ip entry' ) ;
+	    }
+	
+
 	// QueryIps -
 	//	Queries the logs for the specified ips.
 	function  QueryIps ( $ips )
@@ -705,21 +851,228 @@ END;
 
 		$Database -> SetQuery ( $query ) ;
 		$rows		=  $Database -> LoadRows ( ) ;
+		$data		=  [] ;
+
+		foreach  ( $rows  as  $row )
+		   {
+			$date		=  $row [ 'date' ] ;
+			$domain		=  $row [ 'domain' ] ;
+
+			if  ( strncmp ( $row [ 'logfile' ], '/server/www/', 12 ) )
+				$logfile	=  $row [ 'logfile' ] ;
+			else
+				$logfile	=  substr ( $row [ 'logfile' ], 12 ) ;
+
+			$ip		=  $row [ 'ip' ] ;
+			$ipdomain	=  $row [ 'ipdomain' ] ;
+
+			$data []	=
+			   [
+				'date'		=>  $date,
+				'domain'	=>  $domain,
+				'logfile'	=>  $logfile,
+				'ip'		=>  $ip,
+				'ipdomain'	=>  $ipdomain
+			    ] ;
+		    }
+
 		$report		=  new AsciiReport 
 		   (
 			[ 'member' => 'date'	, 'title' => 'Date'		],
-			[ 'member' => 'server'	, 'title' => 'Server'		],
 			[ 'member' => 'domain'	, 'title' => 'Domain'		],
 			[ 'member' => 'logfile'	, 'title' => 'Log file'		],
 			[ 'member' => 'ip'	, 'title' => 'Ip'		],
 			[ 'member' => 'ipdomain', 'title' => 'Ip domain'	]
 		    ) ;
 
-		echo $report -> Generate ( $rows ) ;
+		echo $report -> Generate ( $data, true ) ;
 		echo $report -> Summary ( 'ip entry' ) ;
 	    }
 	
+
+	// QueryUrls -
+	//	Same as QueryIps, but display an url instead of a domain name.
+	function  QueryUrls ( $ips )
+	   {
+		global		$Database ;
+
+		$ip_list	=  [] ;
+
+		foreach  ( $ips  as  $ip )
+			$ip_list []	=  "'" . $ip [ 'ip-address' ] . "'" ;
+
+		$ip_string	=  implode ( ', ', $ip_list ) ;
+		$ip_store_type	=  LogStringStore::LOGSTORE_IP ;
+		$url_store_type	=  LogStringStore::LOGSTORE_HTTP_REQUEST_URL ;
+
+		$query		=  "
+					SELECT
+						server_logfile_entries. serle_date 	AS 'date',
+						servers. ser_name 			AS 'server',
+						server_domains. serd_domain 		AS 'domain',
+						server_logfiles. serl_path 		AS 'logfile',
+						server_string_store. value 		AS 'ip',
+						url_string_store. value 		AS 'url'
+					FROM server_logfile_data
+					LEFT JOIN server_logfile_entries ON
+						server_logfile_entries. serle_id = server_logfile_data. serld_parent_id
+					LEFT JOIN server_logfiles ON
+						server_logfiles. serl_id = server_logfile_entries. serle_logfile_id
+					LEFT JOIN server_domains ON
+						server_domains. serd_id = server_logfiles. serl_domain_id
+					LEFT JOIN servers ON
+						servers. ser_id = server_domains. serd_server_id
+					LEFT JOIN server_string_store ON
+						server_string_store. id = server_logfile_data. serld_string_store_id
+					LEFT JOIN server_logfile_data AS server_logfile_url_data ON
+						server_logfile_url_data. serld_parent_id = server_logfile_data. serld_parent_id AND
+						server_logfile_url_data. serld_data_type = $url_store_type
+					LEFT JOIN server_string_store AS url_string_store ON
+						server_logfile_url_data. serld_string_store_id = url_string_store. id
+					WHERE
+						server_logfile_data. serld_string_store_id IN
+						   (
+							SELECT id
+							FROM server_string_store
+							WHERE
+								type = $ip_store_type AND
+								value IN ( $ip_string )
+						    )
+					ORDER BY 
+						server_logfile_entries. serle_date,
+						servers. ser_name,
+						server_domains. serd_domain,
+						server_string_store. value
+				   " ;
+
+		$Database -> SetQuery ( $query ) ;
+		$rows		=  $Database -> LoadRows ( ) ;
+		$data		=  [] ;
+
+		foreach  ( $rows  as  $row )
+		   {
+			$date		=  $row [ 'date' ] ;
+			$domain		=  $row [ 'domain' ] ;
+
+			if  ( strncmp ( $row [ 'logfile' ], '/server/www/', 12 ) )
+				$logfile	=  $row [ 'logfile' ] ;
+			else
+				$logfile	=  substr ( $row [ 'logfile' ], 12 ) ;
+
+			$ip		=  $row [ 'ip' ] ;
+			$url		=  $row [ 'url' ] ;
+
+			$data []	=
+			   [
+				'date'		=>  $date,
+				'domain'	=>  $domain,
+				'logfile'	=>  $logfile,
+				'ip'		=>  $ip,
+				'url'		=>  $url
+			    ] ;
+		    }
+
+		$report		=  new AsciiReport 
+		   (
+			[ 'member' => 'date'	, 'title' => 'Date'		],
+			[ 'member' => 'domain'	, 'title' => 'Domain'		],
+			[ 'member' => 'logfile'	, 'title' => 'Log file'		],
+			[ 'member' => 'ip'	, 'title' => 'Ip'		],
+			[ 'member' => 'url'	, 'title' => 'Url'		]
+		    ) ;
+
+		echo $report -> Generate ( $data, true ) ;
+		echo $report -> Summary ( 'url' ) ;
+	    }
 	    
+	// QueryUrlsByDate -
+	//	Same as QueryIps, but display an url instead of a domain name.
+	function  QueryUrlsByDate ( $dates )
+	   {
+		global		$Database ;
+
+		$ip_store_type	=  LogStringStore::LOGSTORE_IP ;
+		$url_store_type	=  LogStringStore::LOGSTORE_HTTP_REQUEST_URL ;
+
+		$query		=  "
+					SELECT
+						server_logfile_entries. serle_date 	AS 'date',
+						servers. ser_name 			AS 'server',
+						server_domains. serd_domain 		AS 'domain',
+						server_logfiles. serl_path 		AS 'logfile',
+						server_string_store. value 		AS 'ip',
+						url_string_store. value 		AS 'url'
+					FROM server_logfile_data
+					LEFT JOIN server_logfile_entries ON
+						server_logfile_entries. serle_id = server_logfile_data. serld_parent_id
+					LEFT JOIN server_logfiles ON
+						server_logfiles. serl_id = server_logfile_entries. serle_logfile_id
+					LEFT JOIN server_domains ON
+						server_domains. serd_id = server_logfiles. serl_domain_id
+					LEFT JOIN servers ON
+						servers. ser_id = server_domains. serd_server_id
+					LEFT JOIN server_string_store ON
+						server_string_store. id = server_logfile_data. serld_string_store_id
+					LEFT JOIN server_logfile_data AS server_logfile_url_data ON
+						server_logfile_url_data. serld_parent_id = server_logfile_data. serld_parent_id AND
+						server_logfile_url_data. serld_data_type = $url_store_type
+					LEFT JOIN server_string_store AS url_string_store ON
+						server_logfile_url_data. serld_string_store_id = url_string_store. id
+					WHERE
+						server_logfile_entries. serle_date BETWEEN '{$dates [0]}' AND '{$dates [1]}' AND
+						server_logfile_data. serld_string_store_id IN
+						   (
+							SELECT id
+							FROM server_string_store
+							WHERE
+								type = $ip_store_type
+						    )
+					ORDER BY 
+						server_logfile_entries. serle_date,
+						servers. ser_name,
+						server_domains. serd_domain,
+						server_string_store. value
+				   " ;
+
+		$Database -> SetQuery ( $query ) ;
+		$rows		=  $Database -> LoadRows ( ) ;
+		$data		=  [] ;
+
+		foreach  ( $rows  as  $row )
+		   {
+			$date		=  $row [ 'date' ] ;
+			$domain		=  $row [ 'domain' ] ;
+
+			if  ( strncmp ( $row [ 'logfile' ], '/server/www/', 12 ) )
+				$logfile	=  $row [ 'logfile' ] ;
+			else
+				$logfile	=  substr ( $row [ 'logfile' ], 12 ) ;
+
+			$ip		=  $row [ 'ip' ] ;
+			$url		=  $row [ 'url' ] ;
+
+			$data []	=
+			   [
+				'date'		=>  $date,
+				'domain'	=>  $domain,
+				'logfile'	=>  $logfile,
+				'ip'		=>  $ip,
+				'url'		=>  $url
+			    ] ;
+		    }
+
+		$report		=  new AsciiReport 
+		   (
+			[ 'member' => 'date'	, 'title' => 'Date'		],
+			[ 'member' => 'domain'	, 'title' => 'Domain'		],
+			[ 'member' => 'logfile'	, 'title' => 'Log file'		],
+			[ 'member' => 'ip'	, 'title' => 'Ip'		],
+			[ 'member' => 'url'	, 'title' => 'Url'		]
+		    ) ;
+
+		echo $report -> Generate ( $data, true ) ;
+		echo $report -> Summary ( 'url' ) ;
+	    }
 
 	/*==================================================================================================
 
@@ -863,7 +1216,10 @@ END;
 	$ListTableInformation		=  $CL -> list_table_information ;
 	$LogType			=  ( integer ) $CL -> log_type ;
 	$OptimizeTables			=  $CL -> optimize_tables ;
+	$QueryDomainsByDate		=  $CL -> query_domains_by_date ;
+	$QueryUrlsByDate		=  $CL -> query_urls_by_date ;
 	$QueryIps			=  $CL -> query_ips ;
+	$QueryUrls			=  $CL -> query_urls ;
 	$ResolveIps			=  $CL -> resolve_ips ;
 	$RsLogsConfigurationFile	=  $CL -> rslogs_configuration_file ;
 	$Servers			=  $CL -> servers ;
@@ -1043,11 +1399,35 @@ END;
 		$HadListOption	=  true ;
 	    }
 
+	// -query_domains_by_date :
+	//	Queries the logs for the date or range of dates.
+	if  ( ! $HadListOption  &&  $CL -> IsSpecified ( 'query_domains_by_date' ) ) 
+	   {
+		QueryDomainsByDate ( get_date_range ( $QueryDomainsByDate ) ) ;
+		$HadListOption	=  true ;
+	    }
+
+	// -query_urls_by_date :
+	//	Queries the logs for the date or range of dates.
+	if  ( ! $HadListOption  &&  $CL -> IsSpecified ( 'query_urls_by_date' ) ) 
+	   {
+		QueryUrlsByDate ( get_date_range ( $QueryUrlsByDate ) ) ;
+		$HadListOption	=  true ;
+	    }
+
 	// -query_ips :
 	//	Queries the logs for the specified ips.
 	if  ( ! $HadListOption  &&  count ( $QueryIps ) ) 
 	   {
 		QueryIps ( $QueryIps ) ;
+		$HadListOption	=  true ;
+	    }
+
+	// -query_urls :
+	//	Queries the logs for the specified ips.
+	if  ( ! $HadListOption  &&  count ( $QueryUrls ) ) 
+	   {
+		QueryUrls ( $QueryUrls ) ;
 		$HadListOption	=  true ;
 	    }
 
