@@ -21,8 +21,8 @@
 	    [Version : 1.1]	[Date : 2016/01/13]     [Author : CV]
 		. Removed the ResetLog*() methods and parameters, as well as the FindString() function and
 		  the following parameters : -find_string, -limit, -sort_by, -where.
-		. Added the -query_ips, -query_urls, -query_domains_by_date, -query_urls_by_date, 
-		  -query_date and -query_string parameters.
+		. Added the following options : -query_domains_by_date, -query_urls_by_date, -query_ip_count,
+		  -query_ips, -query_urls 
 		. Added topics in the help definition.
 
 	 ***************************************************************************************************/
@@ -150,6 +150,10 @@
 		Same as -query_domains_by_date, except that it displays an url (if available) instead of a domain name.
 	</datetime>
 
+	<datetime name="query_ip_count, qic" arguments="1..2" default="today" help-text="date/date range" topic="query">
+		Display access count per ip for the specified date range.
+	</datetime>
+
 	<ip-address name="query_ips, query_ip, qi" arguments="1..*" topic="query">
 		Displays accesses performed by the specified ip(s) together with their domain name.
 	</ip-address>
@@ -174,7 +178,7 @@
 	</string>
 
 	<flag name="sync" topic="update">
-		Equivalent to : -update -extract -resolve_ips -optimize_tables.
+		Equivalent to : -update -extract -resolve_ips.
 	</flag>
 
 	<flag name="update, u" topic="update">
@@ -743,6 +747,17 @@ END;
 							FROM server_string_store
 							WHERE
 								type = $ip_store_type
+						    ) AND
+						server_logfile_data. serld_logfile_type <> 5 AND
+						server_logfile_data. serld_string_store_id NOT IN
+						   (
+							SELECT DISTINCT serld_string_store_id
+							FROM server_logfile_data 
+							LEFT JOIN server_logfile_entries ON
+								server_logfile_entries. serle_id = server_logfile_data. serld_parent_id
+							WHERE
+								serld_logfile_type = 5 AND
+		                                                server_logfile_entries. serle_date BETWEEN '{$dates [0]}' AND '{$dates [1]}'
 						    )
 					ORDER BY 
 						server_logfile_entries. serle_date,
@@ -787,7 +802,7 @@ END;
 			[ 'member' => 'ipdomain', 'title' => 'Ip domain'	]
 		    ) ;
 
-		echo $report -> Generate ( $data, true ) ;
+		$report -> Generate ( $data, true ) ;
 		echo $report -> Summary ( 'ip entry' ) ;
 	    }
 	
@@ -841,7 +856,7 @@ END;
 							WHERE
 								type = $ip_store_type AND
 								value IN ( $ip_string )
-						    )
+						    ) 
 					ORDER BY 
 						server_logfile_entries. serle_date,
 						servers. ser_name,
@@ -885,7 +900,7 @@ END;
 			[ 'member' => 'ipdomain', 'title' => 'Ip domain'	]
 		    ) ;
 
-		echo $report -> Generate ( $data, true ) ;
+		$report -> Generate ( $data, true ) ;
 		echo $report -> Summary ( 'ip entry' ) ;
 	    }
 	
@@ -981,7 +996,7 @@ END;
 			[ 'member' => 'url'	, 'title' => 'Url'		]
 		    ) ;
 
-		echo $report -> Generate ( $data, true ) ;
+		$report -> Generate ( $data, true ) ;
 		echo $report -> Summary ( 'url' ) ;
 	    }
 	    
@@ -1026,6 +1041,17 @@ END;
 							FROM server_string_store
 							WHERE
 								type = $ip_store_type
+						    ) AND
+						server_logfile_data. serld_logfile_type <> 5 AND
+						server_logfile_data. serld_string_store_id NOT IN
+						   (
+							SELECT DISTINCT serld_string_store_id
+							FROM server_logfile_data 
+							LEFT JOIN server_logfile_entries ON
+								server_logfile_entries. serle_id = server_logfile_data. serld_parent_id
+							WHERE
+								serld_logfile_type = 5 AND
+		                                                server_logfile_entries. serle_date BETWEEN '{$dates [0]}' AND '{$dates [1]}'
 						    )
 					ORDER BY 
 						server_logfile_entries. serle_date,
@@ -1070,9 +1096,78 @@ END;
 			[ 'member' => 'url'	, 'title' => 'Url'		]
 		    ) ;
 
-		echo $report -> Generate ( $data, true ) ;
+		$report -> Generate ( $data, true ) ;
 		echo $report -> Summary ( 'url' ) ;
 	    }
+
+	    
+	// QueryIpCount -
+	//	Query ip count for the specified date range.
+	function  QueryIpCount ( $dates )
+	   {
+		global		$Database ;
+
+		$ip_store_type	=  LogStringStore::LOGSTORE_IP ;
+		$url_store_type	=  LogStringStore::LOGSTORE_HTTP_REQUEST_URL ;
+
+		$query		=  "
+					SELECT date, ip, count
+					FROM
+					   (
+						SELECT
+							DATE( server_logfile_entries. serle_date ) AS 'date',
+							server_string_store. value AS 'ip',
+							server_string_store. id AS 'ip_id',
+							COUNT( server_string_store. value ) AS 'count'
+						FROM server_logfile_data
+						INNER JOIN server_logfile_entries ON
+							server_logfile_entries. serle_id = server_logfile_data. serld_parent_id
+						INNER JOIN server_string_store ON
+							server_string_store. id = server_logfile_data. serld_string_store_id
+						WHERE
+							server_logfile_data. serld_data_type = 1 AND
+							server_string_store. value NOT IN ( '127.0.0.1', '::1', 'unknown' ) AND
+							server_logfile_entries. serle_date BETWEEN '{$dates [0]}' AND '{$dates [1]}' 
+						GROUP BY
+							DATE( server_logfile_entries. serle_date ),
+							server_string_store. value
+						ORDER BY
+							COUNT( server_string_store. value ),
+							INET_ATON( server_string_store. value )
+					    ) AS Selection
+					WHERE 
+						NOT EXISTS
+						   (
+							SELECT seri_id
+							FROM server_iptables
+							WHERE
+								seri_source = ip
+							LIMIT 1
+ 						    ) AND
+						NOT EXISTS
+						   (
+							SELECT serld_id
+							FROM server_logfile_data
+							WHERE
+								serld_logfile_type = 5 AND
+								serld_string_store_id = ip_id
+							LIMIT 1
+						    )				   
+				    " ;
+
+		$Database -> SetQuery ( $query ) ;
+		$rows		=  $Database -> LoadRows ( ) ;
+		$report		=  new AsciiReport 
+		   (
+			[ 'member' => 'date'	, 'title' => 'Date'		],
+			[ 'member' => 'ip'	, 'title' => 'Ip'		],
+			[ 'member' => 'count'	, 'title' => 'Count'		]
+		    ) ;
+
+		$report -> Generate ( $rows, true ) ;
+		echo $report -> Summary ( 'entry' ) ;
+	    }
+
 
 	/*==================================================================================================
 
@@ -1218,6 +1313,7 @@ END;
 	$OptimizeTables			=  $CL -> optimize_tables ;
 	$QueryDomainsByDate		=  $CL -> query_domains_by_date ;
 	$QueryUrlsByDate		=  $CL -> query_urls_by_date ;
+	$QueryIpCount			=  $CL -> query_ip_count ;
 	$QueryIps			=  $CL -> query_ips ;
 	$QueryUrls			=  $CL -> query_urls ;
 	$ResolveIps			=  $CL -> resolve_ips ;
@@ -1412,6 +1508,14 @@ END;
 	if  ( ! $HadListOption  &&  $CL -> IsSpecified ( 'query_urls_by_date' ) ) 
 	   {
 		QueryUrlsByDate ( get_date_range ( $QueryUrlsByDate ) ) ;
+		$HadListOption	=  true ;
+	    }
+
+	// -query_ip_count :
+	//	Queries ip count for the specified date range.
+	if  ( ! $HadListOption  &&  $CL -> IsSpecified ( 'query_ip_count' ) ) 
+	   {
+		QueryIpCount ( get_date_range ( $QueryIpCount ) ) ;
 		$HadListOption	=  true ;
 	    }
 
