@@ -87,13 +87,13 @@ abstract class  RemoteLog		extends  Object
 		
 		// Create an entry in the "servers" table if needed
 		$this -> Server -> Database -> Execute ( "INSERT IGNORE INTO " . RsAdmin::TABLE_SERVERS . " ( ser_name ) VALUES ( '{$server -> Host}' )" ) ;
-		$this -> Server -> Database -> SetQuery ( "SELECT ser_id FROM " . RsAdmin::TABLE_SERVERS . " WHERE ser_name = '{$server -> Host}'" ) ;
+		$this -> Server -> Database -> SetSimpleQuery ( "SELECT ser_id FROM " . RsAdmin::TABLE_SERVERS . " WHERE ser_name = '{$server -> Host}'" ) ;
 		$server_id	=  ( integer ) $this -> Server -> Database -> LoadValue ( ) ;
 		
 		// Create an entry for the current domain
 		$this -> Server -> Database -> Execute ( "INSERT IGNORE INTO " . RsAdmin::TABLE_SERVER_DOMAINS . 
 								" ( serd_server_id, serd_domain ) VALUES ( $server_id, '$domain' )" ) ;
-		$this -> Server -> Database -> SetQuery ( "SELECT serd_id FROM " . RsAdmin::TABLE_SERVER_DOMAINS . 
+		$this -> Server -> Database -> SetSimpleQuery ( "SELECT serd_id FROM " . RsAdmin::TABLE_SERVER_DOMAINS . 
 								" WHERE serd_server_id = $server_id AND serd_domain = '$domain'" ) ;
 		$this -> DomainId	=  ( integer ) $this -> Server -> Database -> LoadValue ( ) ;
 
@@ -106,7 +106,7 @@ abstract class  RemoteLog		extends  Object
 		    ") ;
 
 		// Retrieve logfile id and last update
-		$this -> Server -> Database -> SetQuery 
+		$this -> Server -> Database -> SetSimpleQuery 
 		   ("
 			SELECT serl_id, serl_last_update, serl_last_line_number
 			FROM " . RsAdmin::TABLE_SERVER_LOGFILES . "

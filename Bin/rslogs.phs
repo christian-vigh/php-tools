@@ -766,7 +766,7 @@ END;
 						server_string_store. value
 				   " ;
 
-		$Database -> SetQuery ( $query ) ;
+		$Database -> SetSimpleQuery ( $query ) ;
 		$rows		=  $Database -> LoadRows ( ) ;
 		$data		=  [] ;
 
@@ -864,7 +864,7 @@ END;
 						server_string_store. value
 				   " ;
 
-		$Database -> SetQuery ( $query ) ;
+		$Database -> SetSimpleQuery ( $query ) ;
 		$rows		=  $Database -> LoadRows ( ) ;
 		$data		=  [] ;
 
@@ -960,7 +960,7 @@ END;
 						server_string_store. value
 				   " ;
 
-		$Database -> SetQuery ( $query ) ;
+		$Database -> SetSimpleQuery ( $query ) ;
 		$rows		=  $Database -> LoadRows ( ) ;
 		$data		=  [] ;
 
@@ -1060,7 +1060,7 @@ END;
 						server_string_store. value
 				   " ;
 
-		$Database -> SetQuery ( $query ) ;
+		$Database -> SetSimpleQuery ( $query ) ;
 		$rows		=  $Database -> LoadRows ( ) ;
 		$data		=  [] ;
 
@@ -1155,7 +1155,7 @@ END;
 						    )				   
 				    " ;
 
-		$Database -> SetQuery ( $query ) ;
+		$Database -> SetSimpleQuery ( $query ) ;
 		$rows		=  $Database -> LoadRows ( ) ;
 		$report		=  new AsciiReport 
 		   (

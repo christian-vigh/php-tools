@@ -91,7 +91,7 @@ abstract class  LocalLog	extends  Object
 						server_logfile_entries. serle_logfile_type = {$this -> LogType}
 				   " ;
 
-		$db -> SetQuery ( $query ) ;
+		$db -> SetSimpleQuery ( $query ) ;
 
 		$rows		=  $db -> LoadRows ( ) ;
 		$row_count	=  count ( $rows ) ;
@@ -124,7 +124,7 @@ abstract class  LocalLog	extends  Object
 						FROM $logfile_entries_string_store
 						WHERE 
 							id = {$row [ 'serle_message_id' ]}" ;
-			$db -> SetQuery ( $query ) ;
+			$db -> SetSimpleQuery ( $query ) ;
 			$line		=  $db -> LoadValue ( ) ;
 			$logfile_type	=  $row [ 'serle_logfile_type' ] ;
 
