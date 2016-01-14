@@ -717,12 +717,11 @@ class  RsAdmin			extends  Object
 	function  ResolveIps ( $past = false, $verbose = true, $prefix = "\t" )
 	   {
 		$string_store_table	=  self::TABLE_SERVER_STRING_STORE ;
-		$entries_table		=  self::TABLE_SERVER_LOGFILE_ENTRIES ;
 		$data_table		=  self::TABLE_SERVER_LOGFILE_DATA ;
 		$resolved_ips_table	=  self::TABLE_SERVER_RESOLVED_IPS ;
-		$ip_domain_associations	=  self::TABLE_SERVER_IP_DOMAIN_ASSOCIATIONS ;
 
 		output ( "Starting ip/domain resolution :" ) ;
+
 		$db		=  $this -> Database ;
 		$string_store	=  $this -> StringStore ;
 
