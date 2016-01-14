@@ -786,130 +786,82 @@ class  RsAdmin			extends  Object
 		    }
 
 		// Check domains that do not have an associated ip address
-		// The query below searches for all entries in the server_logfile_data table that have a type of "domain name" but
-		// no corresponding logfile entry data that have a type of "ip address"
+		echo ( "\tChecking that there is an ip address for each domain name : " ) ;
+
 		$query		=  "
-					SELECT serld_parent_id, serld_string_store_id, value
-					FROM $data_table
+					SELECT 
+						{$data_table}.*,
+						$string_store_table. value AS 'serld_domain_name',
+						IF( $resolved_ips_table. serri_ip_id IS NULL, 0, $resolved_ips_table. serri_ip_id ) AS 'serld_resolved_ip_id'
+					FROM {$data_table}
 					LEFT JOIN $string_store_table ON
-						$string_store_table. id = $data_table. serld_string_store_id
-					WHERE	
-						serld_data_type = " . LogStringStore::LOGSTORE_DOMAIN_NAME . " AND
-						serld_flags = 0 AND
-						value <> 'unknown' AND
-						NOT EXISTS 
+						$string_store_table. id = {$data_table}. serld_string_store_id
+					LEFT JOIN $resolved_ips_table ON
+						$resolved_ips_table. serri_domain_id = {$data_table}. serld_string_store_id
+					WHERE
+						{$data_table}. serld_data_type = " . LogStringStore::LOGSTORE_DOMAIN_NAME . " AND
+						$string_store_table. value  NOT IN ( 'unknown', '127.0.0.1', '::1') AND
+						NOT EXISTS
 						   (
-							SELECT {$data_table}_2. serld_parent_id
-							FROM $data_table AS {$data_table}_2
+							SELECT {$data_table}_2. serld_id
+							FROM {$data_table} AS {$data_table}_2
 							WHERE
-								{$data_table}_2. serld_parent_id = $data_table. serld_parent_id AND
+								{$data_table}_2. serld_parent_id = {$data_table}. serld_parent_id AND
 								{$data_table}_2. serld_data_type = " . LogStringStore::LOGSTORE_IP . "
-						    )
-					GROUP BY value
-				     " ;
+						    ) 
+					ORDER BY $string_store_table. value
+				   " ;
 		$db -> SetSimpleQuery ( $query ) ;
 		$rows		=  $db -> LoadRows ( )  ;
 		$row_count	=  ( $rows ) ?  count ( $rows ) : 0 ;
 
 		if  ( $row_count )
 		   {
-			output ( "\tChecking that domain names have an ip address in $row_count data records :" ) ;
-			$parents_to_ip	=  [] ;
+			output ( "$row_count domain entries to process" ) ;
+			echo ( "\t\t" ) ;
 
-			// Loop through parent ids
-			foreach ( $rows  as  $row )
+			$last_domain_id		=  0 ;
+			$last_resolved_ip_id	=  0 ;
+
+			// Loop through server_logfile_data rows that have a LOGSTORE_DOMAIN_NAME entry without LOGSTORE_IP
+			// Rows are sorted on the domain name, so reuse previous resolved ip id when needed
+			foreach  ( $rows  as  $row )
 			   {
-				$parent_id	=  $row [ 'serld_parent_id' ] ;
-				$ssid		=  $row [ 'serld_string_store_id' ] ;
-				$ssvalue	=  $row [ 'value' ] ;
-
-				// If the current domain is not in our cache, try to locate an entry in the data table that
-				// has a row for an ip address
-				if  ( ! isset ( $parents_to_ip [ $parent_id ] ) )
+				// Domain name change : resolve the ip
+				if  ( $row [ 'serld_string_store_id' ]  !=  $last_domain_id )
 				   {
-					$query		=  "
-								SELECT serld_string_store_id, value
-								FROM $data_table
-								LEFT JOIN $string_store_table ON
-									$string_store_table. id = $data_table. serld_string_store_id
-								WHERE
-									serld_data_type = " . LogStringStore::LOGSTORE_IP . " AND
-									serld_parent_id IN
-									   (
-										SELECT serld_parent_id
-										FROM $data_table
-										WHERE
-											serld_parent_id <> $parent_id AND
-											serld_string_store_id = $ssid AND
-											serld_data_type = " . LogStringStore::LOGSTORE_DOMAIN_NAME . "
-									    )
-								LIMIT 1
-							   " ; 
-					$db -> SetSimpleQuery ( $query ) ;
-					$ip_row		=  $db -> LoadRow ( ) ;
-
-					// Ip row found : insert a LOGTYPE_IP entry for it in this row
-					if  ( $ip_row )
-					   {
-						$domain_row	=
-						   [
-							'ssid'		=>  $ip_row [ 'serld_string_store_id' ],
-							'ip'		=>  $ip_row [ 'value' ],
-							'domain'	=>  $ssvalue
-						    ] ;
-
-						$parents_to_ip [ $parent_id ]		=  $domain_row ;
-					
-						$query	=  "
-								INSERT INTO $data_table
-								SET 
-									serld_string_store_id	=  {$domain_row [ 'ssid' ]},
-									serld_parent_id		=  $parent_id,
-									serld_data_type		=  " . LogStringStore::LOGSTORE_IP . "
-							   " ;
-						$db -> Execute ( $query ) ;
-						output ( "\t\tFound     [" . sprintf ( "%-39s", $domain_row [ 'ip' ] ) . "] {$domain_row [ 'domain']}" ) ;
-					    }
-					// Ip not found : try to get it from hostname
-					else
-					   {
-						$retrieved_ip	=  NetworkHelpers::GetHostByName ( $ssvalue ) ;
-
-						// Hostname ip retrieved ; insert a new LOGTYPE_IP record for this logfile entry
-						if  ( $retrieved_ip )
-						   {
-							$ip_id	=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP, $retrieved_ip ) ;
-							$query	=  "
-									INSERT INTO $data_table
+					$resolved_ip		=  gethostbyname ( $row [ 'serld_domain_name' ] ) ;
+					$resolved_ip_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP, $resolved_ip ) ;
+					$query			=  "
+									INSERT INTO $resolved_ips_table
 									SET 
-										serld_string_store_id	=  $ip_id,
-										serld_parent_id		=  $parent_id,
-										serld_data_type		=  " . LogStringStore::LOGSTORE_IP . "
-								   " ;
-							$db -> Execute ( $query ) ;
-							output ( "\t\tRetrieved [$retrieved_ip]" ) ;
-						    }
-						// Ip REALLY not found
-						else
-							output ( "\t\tUNKNOWN   $ssvalue" ) ;
-					     }
-					    
-				    }
-				// Parent id found in the cache ; simply insert a missing LOGSTORE_IP row
-				else
-				   {
-					$query	=  "
-							INSERT INTO $data_table
-							SET 
-								serld_string_store_id	=  {$parents_to_ip [ $parent_id ] [ 'ssid' ]},
-								serld_parent_id		=  $parent_id,
-								serld_data_type		=  " . LogStringStore::LOGSTORE_IP . "
-						   " ;
+										serri_ip_id	=  $resolved_ip_id,
+										serri_domain_id	=  {$row [ 'serld_string_store_id' ]}
+									" ;
 					$db -> Execute ( $query ) ;
-					output ( "\t\tCompleted [" . sprintf ( "%-39s", $domain_row [ 'ip' ] ) . "] {$domain_row [ 'domain']}" ) ;
+					$last_resolved_ip_id	=  $db -> GetLastInsertId ( ) ;
+					$last_domain_id		=  $row [ 'serld_string_store_id' ] ;
+					echo ( 'r' ) ;
 				    }
+
+				// Insert a LOGSTORE_IP entry in the server_logfile_data table for this domain entry
+				$query		=  "
+							INSERT INTO $data_table
+							SET
+								serld_parent_id		=  {$row [ 'serld_parent_id' ]},
+								serld_logfile_type	=  {$row [ 'serld_logfile_type' ]},
+								serld_data_type		=  " . LogStringStore::LOGSTORE_IP . ",
+								serld_string_store_id	=  $last_resolved_ip_id,
+								serld_flags		=  0
+						   " ;
+				$db -> Execute ( $query ) ;
+				echo ( '.' ) ;
 			    }
+
+			output ( "" ) ;
 		    }
+		else
+			output ( "ok" ) ;
 	    }
     } 
 
