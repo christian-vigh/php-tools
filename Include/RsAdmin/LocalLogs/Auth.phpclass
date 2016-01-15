@@ -39,8 +39,7 @@ class  LocalAuthLog	extends  LocalLog
 	const   AUTH_SSH_RECEIVED_DISCONNECT			=   5 ;
 	const   AUTH_SMTP_USING_MYSQL				=   6 ;
 	const   AUTH_SSH_ACCEPTED_PUBLIC_KEY			=   7 ;
-	const	AUTH_SSH_WRITE_FAILED_CONNECTION_RESET		=   8 ;
-	const   AUTH_SSH_READ_FAILED_CONNECTION_RESET		=   9 ;
+	const	AUTH_SSH_CONNECTION_RESET_BY_PEER		=   8 ;
 	const   AUTH_SU_SUCCESSFUL				=  10 ;
 	const   AUTH_SU_DEVICE					=  11 ;
 	const	AUTH_SSH_LISTENING				=  12 ;
@@ -184,20 +183,16 @@ class  LocalAuthLog	extends  LocalLog
 								    #imsx' ;
 	// Message of the form :
 	//	vps108493 sshd[16421]: fatal: Write failed: Connection reset by peer [preauth]
-	//	Constant : AUTH_SSH_WRITE_FAILED_CONNECTION_RESET
-	private static	$regex_ssh_write_failed_connection_reset=  '#	
+	//	Constant : AUTH_SSH_CONNECTION_RESET_BY_PEER
+	private static	$regex_ssh_connection_reset_by_peer	=  '#	
 									(?P<message>
-										fatal: \s+ Write \s+ failed: \s+
-										Connection \s+ reset \s+ by \s+ peer
-										.*
-									 )
-								    #imsx' ;
-	// Message of the form :
-	//	vps108493 sshd[17578]: fatal: Read from socket failed: Connection reset by peer [preauth]
-	//	Constant : AUTH_SSH_READ_FAILED_CONNECTION_RESET
-	private static	$regex_ssh_read_failed_connection_reset	=  '#	
-									(?P<message>
-										fatal: \s+ Read \s+ from \s+ socket \s+ failed: \s+
+										(
+											( fatal: \s+ Write \s+ failed: \s+ )
+											 |
+											( warning: \s+ can\'t \s+ get \s+ client \s+ address: \s+ )
+											 |
+											( fatal: \s+ Read \s+ from \s+ socket \s+ failed: \s+ )
+										 )
 										Connection \s+ reset \s+ by \s+ peer
 										.*
 									 )
@@ -859,17 +854,10 @@ class  LocalAuthLog	extends  LocalLog
 			    }
 			// Message of the form :
 			//	vps108493 sshd[16421]: fatal: Write failed: Connection reset by peer [preauth]
-			else if  ( preg_match ( self::$regex_ssh_write_failed_connection_reset, $message, $regex_match ) ) 
+			else if  ( preg_match ( self::$regex_ssh_connection_reset_by_peer, $message, $regex_match ) ) 
 			   {
 				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
-				$log_code		=  self::AUTH_SSH_WRITE_FAILED_CONNECTION_RESET ;
-			    }
-			// Message of the form :
-			//	vps108493 sshd[17578]: fatal: Read from socket failed: Connection reset by peer [preauth]
-			else if  ( preg_match ( self::$regex_ssh_read_failed_connection_reset, $message, $regex_match ) ) 
-			   {
-				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
-				$log_code		=  self::AUTH_SSH_READ_FAILED_CONNECTION_RESET ;
+				$log_code		=  self::AUTH_SSH_CONNECTION_RESET_BY_PEER ;
 			    }
 			// Message of the form :
 			//	vps108493 su[1844]: Successful su for mysql by root
