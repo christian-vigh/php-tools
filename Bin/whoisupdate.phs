@@ -245,6 +245,8 @@ END;
 				// Insert records into the whois_information_block_entries table
 				$status = $buffer -> Add
 				   ([
+					'columns' =>
+					   [
 						'whoibe_information_id'	=>  $id,
 						'whoibe_block_id'	=>  $block_id,
 						'whoibe_type'		=>  $entry -> Type,
@@ -252,6 +254,7 @@ END;
 						'whoibe_keyword_id'	=>  $keyword_id,
 						'whoibe_text_id'	=>  $text_id,
 						'whoibe_value_id'	=>  $value_id
+					    ]
 				     ]) ;
 			    }
 		    }

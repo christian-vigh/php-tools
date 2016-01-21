@@ -263,10 +263,13 @@ abstract class  RemoteLog		extends  Object
 				// Insert new log entry
 				$flush_status	=  $inserter -> Add
 				   ([
-					'serle_logfile_id'	=>  $server_logfile_id,
-					'serle_logfile_type'	=>  $this -> LogType,
-					'serle_date'		=>  date ( 'Y-m-d H:i:s', $timestamp ),
-					'serle_message_id'	=>  $message_id
+					'columns' =>
+					   [
+						'serle_logfile_id'	=>  $server_logfile_id,
+						'serle_logfile_type'	=>  $this -> LogType,
+						'serle_date'		=>  date ( 'Y-m-d H:i:s', $timestamp ),
+						'serle_message_id'	=>  $message_id
+					    ]
 				     ]) ;
 
 				if  ( $verbose )
