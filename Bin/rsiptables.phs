@@ -28,6 +28,9 @@
 	    [Version : 2.0.1]	[Date : 2015/11/29]	[Author : CV]
 		. Added the -list_configured_servers option.
 
+	    [Version : 2.0.2]	[Date : 2015/01/23]	[Author : CV]
+		. Added the -reason option.
+
 	 ***************************************************************************************************/
 	require ( "tools.phpinclude" ) ;
 
@@ -78,6 +81,10 @@
 		(ie, INPUT chain and DROP target).
 	</flag>
 	
+	<string name="reason, r">
+		Reason for blocking the specified ip(s). Must be specified together with the -block_ips option.
+	</string>
+
 	<string name="servers, server, s" default="*" arguments="0..*">
 		Server name(s) on which iptables management is to be operated.
 		Wildcard characters are authorized, and search is performed on every server alias.
@@ -89,6 +96,7 @@
 	
 </command>
 END;
+
 
 	/**************************************************************************************************************
 	 **************************************************************************************************************
@@ -108,12 +116,13 @@ END;
 	        Adds an iptables entry into the local database.
 	
 	  ==============================================================================================================*/
-	function  add_iptables_entry ( $host, $source, $chain = 'INPUT', $policy = 'ACCEPT', $target = 'DROP' )
+	function  add_iptables_entry ( $host, $source, $reason, $chain = 'INPUT', $policy = 'ACCEPT', $target = 'DROP' )
 	   {
 		global		$Database ;
 
 		$iptables	=  RsAdmin::TABLE_SERVER_IPTABLES ;
 		$server_table	=  RsAdmin::TABLE_SERVERS ;
+		$reason		=  $Database -> Escape ( $reason ) ;
 
 		$Database -> SetSimpleQuery ( "SELECT ser_id FROM $server_table WHERE ser_name = '$host'" ) ;
 		$host_id	=  $Database -> LoadValue ( ) ;
@@ -125,7 +134,8 @@ END;
 						seri_chain	=  '$chain',
 						seri_policy	=  '$policy',
 						seri_target	=  '$target',
-						seri_source	=  '$source'
+						seri_source	=  '$source',
+						seri_reason	=  '$reason'
 				   " ;
 		
 		$Database -> Execute ( $query ) ;
@@ -237,7 +247,8 @@ END;
 						$iptables. seri_chain		AS 'chain',
 						$iptables. seri_policy		AS 'policy',
 						$iptables. seri_target		AS 'target',
-						$iptables. seri_source		AS 'source'
+						$iptables. seri_source		AS 'source',
+						$iptables. seri_reason		AS 'reason'
 					FROM $iptables
 					LEFT JOIN $servers ON
 						$servers. ser_id = $iptables. seri_server_id
@@ -317,7 +328,7 @@ END;
 	  ==============================================================================================================*/
 	function  MergeBlockedIps ( $hosts )
 	   {
-		global		$RsAdmin, $IpTablesBackup ;
+		global		$RsAdmin, $IpTablesBackup, $Reason ;
 		
 		
 		$ips_per_host	=  [] ;
@@ -353,7 +364,7 @@ END;
 				   {
 					$missing_ips [ $host ] []	=  $global_ip ;
 
-					add_iptables_entry ( $host, $global_ip [ 'source' ],
+					add_iptables_entry ( $host, $global_ip [ 'source' ], $Reason,
 								$global_ip [ 'chain' ], $global_ip [ 'policy' ], $global_ip [ 'target' ] ) ;
 
 					$commands []	=  "iptables -A INPUT -s {$global_ip [ 'source' ]} -j DROP" ;
@@ -380,7 +391,7 @@ END;
 	  ==============================================================================================================*/
 	function  SetIpState ( $hosts, $ips, $block = true ) 
 	   {
-		global		$Database, $IpTablesBackup ;
+		global		$Database, $IpTablesBackup, $Reason ;
 
 		$iptables	=  RsAdmin::TABLE_SERVER_IPTABLES ;
 		$server_table	=  RsAdmin::TABLE_SERVERS ;
@@ -456,7 +467,7 @@ END;
 				foreach  ( $ip_list  as  $ip  )
 				   {
 					if  ( $block )
-						add_iptables_entry ( $host, $ip ) ;
+						add_iptables_entry ( $host, $ip, $Reason ) ;
 					else
 						delete_iptables_entry ( $host, $ip ) ;
 				    }
@@ -487,6 +498,7 @@ END;
 	$ListConfiguredServers	=  $CL -> list_configured_servers ;
 	$ListServers		=  $CL -> list_servers ;
 	$MergeBlockedIps	=  $CL -> merge_blocked_ips ;
+	$Reason			=  $CL -> reason ;
 	$UnblockIps		=  $CL -> unblock_ips ;
 	$Servers		=  $CL -> servers ;	
 	
@@ -506,6 +518,9 @@ END;
 	//	Blocks the specified ips.
 	if  ( ! $HadOption  &&  $CL -> IsSpecified ( 'block_ips' ) )
 	   {
+		if  ( ! $Reason )
+			error ( "The -reason parameter is mandatory for -block_ips" ) ;
+
 		SetIpState ( $ServerList, $BlockIps, true ) ;
 		$HadOption	=  true ;
 	    }

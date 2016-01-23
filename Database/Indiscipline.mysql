@@ -200,6 +200,8 @@ CREATE TABLE server_iptables
 								COMMENT 'Iptables rule target (eg, DROP)',
 	seri_source 			VARCHAR(39)		NOT NULL DEFAULT ''
 								COMMENT 'Iptables source (eg, an ip address)',
+	seri_reason 			VARCHAR(1024)		NOT NULL DEFAULT ''
+								COMMENT 'Reason for ip blocking',
 								
 	PRIMARY KEY 			( seri_id ),
 	KEY 				( seri_source ),
