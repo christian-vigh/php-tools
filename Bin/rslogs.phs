@@ -220,6 +220,23 @@ END;
 	    }
 
 
+	// get_logtype_name -
+	//	Returns a logfile type name corresponding to the specified constant.
+	function  get_logtype_name ( $value )
+	   {
+		switch  ( $value )
+		   {
+			case  RsAdmin::LOGTYPE_AUTH		:  return ( 'auth' ) ;
+			case  RsAdmin::LOGTYPE_HTTP		:  return ( 'http' ) ;
+			case  RsAdmin::LOGTYPE_HTTP_ERROR	:  return ( 'http error' ) ;
+			case  RsAdmin::LOGTYPE_HTTP_ERROR_404	:  return ( 'http err404' ) ;
+			case  RsAdmin::LOGTYPE_MAIL		:  return ( 'mail' ) ;
+			case  RsAdmin::LOGTYPE_SSH		:  return ( 'ssh' ) ;
+			default					:  return ( 'UNKNOWN' ) ;
+		    }
+	    }
+
+
 	// get_server_ids -
 	//	Retrieves the ids of the specified servers in the servers table.
 	function  get_server_ids  ( $servers )
@@ -1261,7 +1278,7 @@ END;
 		Extracts log data from the specified log types.
 
 	  ==================================================================================================*/
-	function  ExtractLogData  ( $logtypes )
+	function  ExtractLogData  ( $logtypes, $me = false )
 	   {
 		global		$Database, $RsAdmin ;
 
@@ -1291,12 +1308,31 @@ END;
 
 		// Display the list of retrieved ips
 		$iplist		=  implode ( ', ', $ip_ids ) ;
+		$today		=  date ( 'Y-m-d' ) ;
 		$query		=  "
 					SELECT
 						server_string_store. value  				AS 'ip',
 						servers. ser_name 					AS 'server',
 						server_domains. serd_domain 				AS 'domain',
+						server_logfile_data. serld_logfile_type 		AS 'logtype',
 						COUNT( server_string_store. value )			AS 'count',
+                                                COUNT( server_string_store. value )			AS 'today_count',
+						(
+							SELECT COUNT(*)
+							FROM server_logfile_data AS logdata
+							LEFT JOIN server_logfile_entries ON
+								server_logfile_entries. serle_id = logdata. serld_parent_id
+							LEFT JOIN server_logfiles ON
+								server_logfiles. serl_id = server_logfile_entries. serle_logfile_id
+							LEFT JOIN server_domains AS domain_data ON
+								domain_data. serd_id = server_logfiles. serl_domain_id
+							WHERE 
+								domain_data. serd_id = server_domains. serd_id AND
+								logdata. serld_string_store_id = server_string_store. id AND
+								logdata. serld_logfile_type = server_logfile_data. serld_logfile_type AND
+								DATE( server_logfile_entries. serle_date ) = '$today'
+
+						 )							AS  'today_count',
 						IF( EXISTS
 							(
 								SELECT serld_id 
@@ -1321,8 +1357,12 @@ END;
 					LEFT JOIN server_logfile_entries_string_store ON
 						server_logfile_entries_string_store. id = server_logfile_entries. serle_message_id
 					WHERE
-						server_string_store. type = " . LogStringStore::LOGSTORE_IP . " AND 
 						server_string_store. id IN ( $iplist ) 
+					GROUP BY
+						servers. ser_id,
+						server_domains. serd_id,
+						server_logfile_data. serld_logfile_type,
+						server_string_store. id
 					ORDER BY
 						servers. ser_name,
 						server_domains. serd_domain,
@@ -1331,15 +1371,32 @@ END;
 		$Database -> SetQuery ( $query ) ;
 		$rows		=  $Database -> LoadRows ( ) ;
 
-		$report		=  new AsciiReport 
-		  (
-			[ 'member' => 'ip'	, 'title' => 'Ip'				],
-			[ 'member' => 'server'	, 'title' => 'Server'				],
-			[ 'member' => 'domain'	, 'title' => 'Domain'				],
-			[ 'member' => 'count'	, 'title' => 'Count'				],
-			[ 'member' => 'me'	, 'title' => 'Me?'	, 'align' => 'center'	]
-		   ) ;
+		$report_columns	=  
+		  [
+			[ 'member' => 'ip'		, 'title' => 'Ip'							],
+			[ 'member' => 'server'		, 'title' => 'Server'							],
+			[ 'member' => 'domain'		, 'title' => 'Domain'							],
+			[ 'member' => 'logtype'		, 'title' => 'Log type'		, 'format' => 'get_logtype_name'	],
+			[ 'member' => 'count'		, 'title' => 'All time count'						],
+			[ 'member' => 'today_count'	, 'title' => 'Today\'s count'						],
+		   ] ;
 
+		if  ( $me ) 
+		   {
+			$report_columns []	=
+				[ 'member' => 'me'		, 'title' => 'Me?'		, 'align' => 'center'			] ;
+		    }
+		else
+		   {
+			$rows		=  array_filter 
+			   (
+				$rows,
+				function ( $value )
+				   { return ( $value [ 'me' ]  !=  '*' ) ; }
+			    ) ;
+		     }
+
+		$report		=  new AsciiReport ( $report_columns ) ;
 		echo $report -> Generate ( $rows ) ;
 		echo $report -> Summary ( 'ip' ) ;
 	    }
