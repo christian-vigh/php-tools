@@ -25,6 +25,11 @@
 		  -query_ips, -query_urls 
 		. Added topics in the help definition.
 
+	    [Version : 1.1.1]	[Date : 2016/01/22]	[Author : CV]
+		. Added the -trace_ip option.
+		. Changed all the options of type "query" to take into account the servers specified on the
+		  command line.
+
 	 ***************************************************************************************************/
 	require ( "tools.phpinclude" ) ;
 
@@ -181,6 +186,11 @@
 		Equivalent to : -update -extract -resolve_ips.
 	</flag>
 
+	<ip-address name="trace_ip, ti" topic="query">
+		Traces the various accesses from the specified ip address. Similar to the -query_ip option, but
+		displays the whole log message.
+	</ip-address>
+	
 	<flag name="update, u" topic="update">
 		Updates the logs from the remote servers, having the type specified by the -log_type parameter.
 	</flag>
@@ -207,6 +217,34 @@ END;
 			$dates []	=  $cmddates [1] [ 'date' ] . ' 23:59:59' ;
 
 		return ( $dates ) ;
+	    }
+
+
+	// get_server_ids -
+	//	Retrieves the ids of the specified servers in the servers table.
+	function  get_server_ids  ( $servers )
+	   {
+		global		$Database ;
+
+		if  ( ! is_array ( $servers ) ) 
+			$servers	=  [ $servers ] ;
+
+		$names		=  [] ;
+
+		foreach  ( $servers  as  $server )
+			$names []	=  "'" . $server . "'" ;
+
+		$query		=  "SELECT ser_id FROM servers WHERE ser_name IN ( " . implode ( ', ', $names ) . " )" ;
+		$Database -> SetQuery ( $query ) ;
+		$ids		=  $Database -> LoadValues ( ) ;
+
+		$id_count	=  count ( $ids ) ;
+		$server_count	=  count ( $servers ) ;
+
+		if  ( $id_count  !=  $server_count )
+			error ( "Could not find all the specified servers" ) ;
+
+		return ( $ids ) ;
 	    }
 
 
@@ -709,9 +747,10 @@ END;
 	//	Queries the logs for the specified date range.
 	function  QueryDomainsByDate ( $dates )
 	   {
-		global		$Database ;
+		global		$Database, $ServerList ;
 
 		$ip_store_type	=  LogStringStore::LOGSTORE_IP ;
+		$server_ids	=  implode ( ', ', get_server_ids ( $ServerList ) ) ;
 		$query		=  "
 					SELECT
 						server_logfile_entries. serle_date 	AS 'date',
@@ -740,6 +779,7 @@ END;
 					LEFT JOIN server_string_store AS computer_string_store ON
 						computer_string_store. id = server_resolved_ips. serri_computer_name_id
 					WHERE
+						servers. ser_id IN ( $server_ids ) AND
 						server_logfile_entries. serle_date BETWEEN '{$dates [0]}' AND '{$dates [1]}' AND
 						server_logfile_data. serld_string_store_id IN
 						   (
@@ -811,7 +851,7 @@ END;
 	//	Queries the logs for the specified ips.
 	function  QueryIps ( $ips )
 	   {
-		global		$Database ;
+		global		$Database, $ServerList ;
 
 		$ip_list	=  [] ;
 
@@ -820,6 +860,7 @@ END;
 
 		$ip_string	=  implode ( ', ', $ip_list ) ;
 		$ip_store_type	=  LogStringStore::LOGSTORE_IP ;
+		$server_ids	=  implode ( ', ', get_server_ids ( $ServerList ) ) ;
 
 		$query		=  "
 					SELECT
@@ -849,6 +890,7 @@ END;
 					LEFT JOIN server_string_store AS computer_string_store ON
 						computer_string_store. id = server_resolved_ips. serri_computer_name_id
 					WHERE
+						servers. ser_id IN ( $server_ids ) AND
 						server_logfile_data. serld_string_store_id IN
 						   (
 							SELECT id
@@ -909,7 +951,7 @@ END;
 	//	Same as QueryIps, but display an url instead of a domain name.
 	function  QueryUrls ( $ips )
 	   {
-		global		$Database ;
+		global		$Database, $ServerList ;
 
 		$ip_list	=  [] ;
 
@@ -919,6 +961,7 @@ END;
 		$ip_string	=  implode ( ', ', $ip_list ) ;
 		$ip_store_type	=  LogStringStore::LOGSTORE_IP ;
 		$url_store_type	=  LogStringStore::LOGSTORE_HTTP_REQUEST_URL ;
+		$server_ids	=  implode ( ', ', get_server_ids ( $ServerList ) ) ;
 
 		$query		=  "
 					SELECT
@@ -945,6 +988,7 @@ END;
 					LEFT JOIN server_string_store AS url_string_store ON
 						server_logfile_url_data. serld_string_store_id = url_string_store. id
 					WHERE
+						servers. ser_id IN ( $server_ids ) AND
 						server_logfile_data. serld_string_store_id IN
 						   (
 							SELECT id
@@ -1004,10 +1048,11 @@ END;
 	//	Same as QueryIps, but display an url instead of a domain name.
 	function  QueryUrlsByDate ( $dates )
 	   {
-		global		$Database ;
+		global		$Database, $ServerList ;
 
 		$ip_store_type	=  LogStringStore::LOGSTORE_IP ;
 		$url_store_type	=  LogStringStore::LOGSTORE_HTTP_REQUEST_URL ;
+		$server_ids	=  implode ( ', ', get_server_ids ( $ServerList ) ) ;
 
 		$query		=  "
 					SELECT
@@ -1034,6 +1079,7 @@ END;
 					LEFT JOIN server_string_store AS url_string_store ON
 						server_logfile_url_data. serld_string_store_id = url_string_store. id
 					WHERE
+						servers. ser_id IN ( $server_ids ) AND 
 						server_logfile_entries. serle_date BETWEEN '{$dates [0]}' AND '{$dates [1]}' AND
 						server_logfile_data. serld_string_store_id IN
 						   (
@@ -1105,10 +1151,11 @@ END;
 	//	Query ip count for the specified date range.
 	function  QueryIpCount ( $dates )
 	   {
-		global		$Database ;
+		global		$Database, $ServerList ;
 
 		$ip_store_type	=  LogStringStore::LOGSTORE_IP ;
 		$url_store_type	=  LogStringStore::LOGSTORE_HTTP_REQUEST_URL ;
+		$server_ids	=  implode ( ', ', get_server_ids ( $ServerList ) ) ;
 
 		$query		=  "
 					SELECT date, ip, count
@@ -1136,6 +1183,7 @@ END;
 							INET_ATON( server_string_store. value )
 					    ) AS Selection
 					WHERE 
+						servers. ser_id IN ( $server_ids ) AND
 						NOT EXISTS
 						   (
 							SELECT seri_id
@@ -1215,18 +1263,21 @@ END;
 	  ==================================================================================================*/
 	function  ExtractLogData  ( $logtypes )
 	   {
-		global		$RsAdmin ;
+		global		$Database, $RsAdmin ;
 
 
 		$global_new_records	=  0 ;
 
 		output ( "Analyzing new log entries :" ) ;
+		$ip_ids			=  [] ;
 
 		foreach  ( $logtypes  as  $logtype )
 		   {
 			$local_log		 =  $RsAdmin -> GetLocalLogInstance ( $logtype ) ;
 			$title			 =  $local_log -> Title ;
-			$new_records		 =  $local_log -> Extract ( ) ;
+			$server_ip_ids		 =  [] ;
+			$new_records		 =  $local_log -> Extract ( $server_ip_ids ) ;
+			$ip_ids			 =  array_merge ( $ip_ids, $server_ip_ids ) ;
 
 			$global_new_records	+=  $new_records ;
 			$logtype_new_records	 =  $new_records ;
@@ -1235,6 +1286,62 @@ END;
 		    }
 
 		output ( "---> " . number_format ( $global_new_records, 0, '.', ' ' ) . " entries extracted." ) ;
+
+		$ip_ids		=  array_unique ( $ip_ids ) ;
+
+		// Display the list of retrieved ips
+		$iplist		=  implode ( ', ', $ip_ids ) ;
+		$query		=  "
+					SELECT
+						server_string_store. value  				AS 'ip',
+						servers. ser_name 					AS 'server',
+						server_domains. serd_domain 				AS 'domain',
+						COUNT( server_string_store. value )			AS 'count',
+						IF( EXISTS
+							(
+								SELECT serld_id 
+								FROM server_logfile_data AS ssh_data
+								WHERE 
+									ssh_data. serld_string_store_id = server_string_store. id AND
+									ssh_data. serld_logfile_type = " . RsAdmin::LOGTYPE_SSH . " AND
+									server_string_store. type = " . LogStringStore::LOGSTORE_IP . "
+							 ), '*', ''
+						    ) 							AS 'me'
+					FROM server_string_store
+					LEFT JOIN server_logfile_data ON
+						server_logfile_data. serld_string_store_id = server_string_store. id
+					LEFT JOIN server_logfile_entries ON
+						server_logfile_entries. serle_id = server_logfile_data. serld_parent_id
+					LEFT JOIN server_logfiles ON
+						server_logfiles. serl_id = server_logfile_entries. serle_logfile_id
+					LEFT JOIN server_domains ON
+						server_domains. serd_id = server_logfiles. serl_domain_id
+					LEFT JOIN servers ON
+						servers. ser_id = server_domains. serd_server_id
+					LEFT JOIN server_logfile_entries_string_store ON
+						server_logfile_entries_string_store. id = server_logfile_entries. serle_message_id
+					WHERE
+						server_string_store. type = " . LogStringStore::LOGSTORE_IP . " AND 
+						server_string_store. id IN ( $iplist ) 
+					ORDER BY
+						servers. ser_name,
+						server_domains. serd_domain,
+						INET_ATON( server_string_store. value )
+				   " ;
+		$Database -> SetQuery ( $query ) ;
+		$rows		=  $Database -> LoadRows ( ) ;
+
+		$report		=  new AsciiReport 
+		  (
+			[ 'member' => 'ip'	, 'title' => 'Ip'				],
+			[ 'member' => 'server'	, 'title' => 'Server'				],
+			[ 'member' => 'domain'	, 'title' => 'Domain'				],
+			[ 'member' => 'count'	, 'title' => 'Count'				],
+			[ 'member' => 'me'	, 'title' => 'Me?'	, 'align' => 'center'	]
+		   ) ;
+
+		echo $report -> Generate ( $rows ) ;
+		echo $report -> Summary ( 'ip' ) ;
 	    }
 	
 	
@@ -1293,7 +1400,69 @@ END;
 		// Set the last update date for every log file 
 		$RsAdmin -> Database -> Execute ( "UPDATE " . RsAdmin::TABLE_SERVER_LOGFILES . " SET serl_last_update = NOW()" ) ;
 	    }
+
+
+	/*==============================================================================================================
 	
+	    TraceIp -
+	        Traces the various accesses from the specified ip address.
+	
+	  ==============================================================================================================*/
+	function  TraceIp ( $ip )
+	   {
+		global		$Database, $ServerList ;
+
+
+		$server_ids	=  implode ( ', ', get_server_ids ( $ServerList ) ) ;
+		$query		=  "
+					SELECT
+						server_string_store. value  				AS 'ip',
+						servers. ser_name 					AS 'server',
+						server_domains. serd_domain 				AS 'domain',
+						server_logfiles. serl_logfile_type 			AS 'logfile_type',
+						SUBSTRING_INDEX( server_logfiles. serl_path, '/', -1 )	AS 'logfile_name',
+						server_logfile_entries. serle_entry_type		AS 'entry_type',
+						server_logfile_entries. serle_date 			AS 'date',
+						server_logfile_entries_string_store. value 		AS 'message'
+					FROM server_string_store
+					LEFT JOIN server_logfile_data ON
+						server_logfile_data. serld_string_store_id = server_string_store. id
+					LEFT JOIN server_logfile_entries ON
+						server_logfile_entries. serle_id = server_logfile_data. serld_parent_id
+					LEFT JOIN server_logfiles ON
+						server_logfiles. serl_id = server_logfile_entries. serle_logfile_id
+					LEFT JOIN server_domains ON
+						server_domains. serd_id = server_logfiles. serl_domain_id
+					LEFT JOIN servers ON
+						servers. ser_id = server_domains. serd_server_id
+					LEFT JOIN server_logfile_entries_string_store ON
+						server_logfile_entries_string_store. id = server_logfile_entries. serle_message_id
+					WHERE
+						servers. ser_id IN ( $server_ids ) AND
+						server_string_store. type = 1 AND 
+						server_string_store. value = '{$ip [ 'ip-address' ]}'
+					ORDER BY
+						servers. ser_name,
+						server_domains. serd_domain,
+						server_logfile_entries. serle_date,
+						SUBSTRING_INDEX( server_logfiles. serl_path, '/', -1 )
+				   " ;
+		$Database -> SetQuery ( $query ) ;
+		$rows	=  $Database -> LoadRows ( ) ;
+
+		$report		=  new AsciiReport
+		   (
+			[ 'member' => 'server'		, 'title' => 'Server'		],
+			[ 'member' => 'domain'		, 'title' => 'Domain'		],
+			[ 'member' => 'logfile_name'	, 'title' => 'Logfile'		],
+			[ 'member' => 'date'		, 'title' => 'Date'		],
+			[ 'member' => 'message' 	, 'title' => 'Message', 'width' => 80, 'overflow' => 'wrap' ]
+		    ) ;
+
+		$report -> Generate ( $rows, true ) ;
+		echo $report -> Summary ( 'log entry' ) ;
+	    }
+
 	
 	/*==================================================================================================
 
@@ -1320,6 +1489,7 @@ END;
 	$RsLogsConfigurationFile	=  $CL -> rslogs_configuration_file ;
 	$Servers			=  $CL -> servers ;
 	$Sync				=  $CL -> sync ;
+	$TraceIp			=  $CL -> trace_ip ;
 	$Update				=  $CL -> update ;
 		
 	$RsAdmin			=  new RsAdmin ( $ConfigurationFile ) ;
@@ -1532,6 +1702,14 @@ END;
 	if  ( ! $HadListOption  &&  count ( $QueryUrls ) ) 
 	   {
 		QueryUrls ( $QueryUrls ) ;
+		$HadListOption	=  true ;
+	    }
+
+	// -trace_ip :
+	//	Traces the various accesses from the specified ip.
+	if  ( ! $HadListOption  &&  $TraceIp ) 
+	   {
+		TraceIp ( $TraceIp ) ;
 		$HadListOption	=  true ;
 	    }
 
