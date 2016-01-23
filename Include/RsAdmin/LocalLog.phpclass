@@ -67,7 +67,7 @@ abstract class  LocalLog	extends  Object
 	        Updates log file entries, then extracts information from the new log entries.
 	 
 	 *-------------------------------------------------------------------------------------------------------------*/
-	public function  Extract ( $buffer_size = 4096, $verbose = true, $prefix = "\t" )
+	public function  Extract ( &$ip_ids = [], $buffer_size = 4096, $verbose = true, $prefix = "\t" )
 	   {
 		$string_store			=  $this -> StringStore ;
 		$rsadmin			=  $this -> RsAdmin ;
@@ -154,7 +154,7 @@ abstract class  LocalLog	extends  Object
 			$updater_status		=  $entry_updater -> Add ( $update_row ) ;
 
 			if  ( $verbose  &&  $updater_status )
-				echo ( '{E}' ) ;
+				echo ( '{U}' ) ;
 
 			// Insert a row for each returned data entry
 			foreach  ( $parsed_data [ 'data' ]  as  $data_type => $string_store_id ) 
@@ -173,8 +173,11 @@ abstract class  LocalLog	extends  Object
 						    ]
 					     ]) ;
 
+					if  ( $data_type  ==  LogStringStore::LOGSTORE_IP )
+						$ip_ids	[]	=  ( integer ) $string_store_id ;
+
 					if  ( $verbose  &&  $inserter_status )
-						echo ( '{D}' ) ;
+						echo ( '{I}' ) ;
 				    }
 			    }
 
@@ -185,12 +188,14 @@ abstract class  LocalLog	extends  Object
 		$updater_status		=  $entry_updater -> Flush ( ) ;
 
 		if  ( $verbose  &&  $updater_status ) 
-			echo ( '{D}' ) ;
+			echo ( '{U}' ) ;
 
 		$inserter_status	=  $data_inserter -> Flush ( ) ;
 
 		if  ( $verbose  &&  $inserter_status ) 
-			echo ( '{L}' ) ;
+			echo ( '{I}' ) ;
+
+		$ip_ids		=  array_unique ( $ip_ids ) ;
 
 		return ( $row_count ) ;
 	    }
