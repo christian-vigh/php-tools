@@ -1342,7 +1342,15 @@ END;
 									ssh_data. serld_logfile_type = " . RsAdmin::LOGTYPE_SSH . " AND
 									server_string_store. type = " . LogStringStore::LOGSTORE_IP . "
 							 ), '*', ''
-						    ) 							AS 'me'
+						    )							AS 'me',
+						IF( EXISTS
+							(
+								SELECT seri_id 
+								FROM server_iptables 
+								WHERE
+									server_iptables. seri_source = server_string_store. value
+							 ), '*', ''
+						   )							AS 'blocked'
 					FROM server_string_store
 					LEFT JOIN server_logfile_data ON
 						server_logfile_data. serld_string_store_id = server_string_store. id
@@ -1379,7 +1387,7 @@ END;
 			[ 'member' => 'logtype'		, 'title' => 'Log type'		, 'format' => 'get_logtype_name'	],
 			[ 'member' => 'count'		, 'title' => 'All time count'						],
 			[ 'member' => 'today_count'	, 'title' => 'Today\'s count'						],
-		   ] ;
+			[ 'member' => 'blocked' ]	, 'title' => 'Blocked?'		, 'align' => 'center'			] ;
 
 		if  ( $me ) 
 		   {
