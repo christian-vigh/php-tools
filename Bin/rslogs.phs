@@ -1406,7 +1406,7 @@ END;
 		     }
 
 		$report		=  new AsciiReport ( $report_columns ) ;
-		echo $report -> Generate ( $rows ) ;
+		$report -> Generate ( $rows, true ) ;
 		echo $report -> Summary ( 'new ip' ) ;
 	    }
 	
