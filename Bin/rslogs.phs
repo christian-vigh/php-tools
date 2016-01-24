@@ -1387,7 +1387,8 @@ END;
 			[ 'member' => 'logtype'		, 'title' => 'Log type'		, 'format' => 'get_logtype_name'	],
 			[ 'member' => 'count'		, 'title' => 'All time count'						],
 			[ 'member' => 'today_count'	, 'title' => 'Today\'s count'						],
-			[ 'member' => 'blocked' ]	, 'title' => 'Blocked?'		, 'align' => 'center'			] ;
+			[ 'member' => 'blocked' 	, 'title' => 'Blocked?'		, 'align' => 'center'			]
+		   ] ;
 
 		if  ( $me ) 
 		   {
