@@ -1,5 +1,6 @@
 *.tss
 *.suo
+Tools.v12.suo
 /Data/
 /logs/
 /public/
