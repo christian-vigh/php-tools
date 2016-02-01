@@ -1316,7 +1316,6 @@ END;
 						server_domains. serd_domain 				AS 'domain',
 						server_logfile_data. serld_logfile_type 		AS 'logtype',
 						COUNT( server_string_store. value )			AS 'count',
-                                                COUNT( server_string_store. value )			AS 'today_count',
 						(
 							SELECT COUNT(*)
 							FROM server_logfile_data AS logdata
@@ -1365,7 +1364,9 @@ END;
 					LEFT JOIN server_logfile_entries_string_store ON
 						server_logfile_entries_string_store. id = server_logfile_entries. serle_message_id
 					WHERE
-						server_string_store. id IN ( $iplist ) 
+						server_string_store. id IN ( $iplist ) AND 
+						server_string_store. value NOT IN ( '::1', '127.0.0.1' ) AND
+						'today_count' > 0
 					GROUP BY
 						servers. ser_id,
 						server_domains. serd_id,
