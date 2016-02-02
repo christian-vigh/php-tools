@@ -1365,8 +1365,7 @@ END;
 						server_logfile_entries_string_store. id = server_logfile_entries. serle_message_id
 					WHERE
 						server_string_store. id IN ( $iplist ) AND 
-						server_string_store. value NOT IN ( '::1', '127.0.0.1' ) AND
-						'today_count' > 0
+						server_string_store. value NOT IN ( '::1', '127.0.0.1' ) 
 					GROUP BY
 						servers. ser_id,
 						server_domains. serd_id,
@@ -1395,6 +1394,13 @@ END;
 		   {
 			$report_columns []	=
 				[ 'member' => 'me'		, 'title' => 'Me?'		, 'align' => 'center'			] ;
+
+			$rows		=  array_filter 
+			   (
+				$rows,
+				function ( $value )
+				   { return ( $value [ 'today_count' ]  !=  0 ) ; }
+			    ) ;
 		    }
 		else
 		   {
@@ -1402,7 +1408,7 @@ END;
 			   (
 				$rows,
 				function ( $value )
-				   { return ( $value [ 'me' ]  !=  '*' ) ; }
+				   { return ( $value [ 'me' ]  !=  '*'  &&  $value [ 'today_count' ]  !=  0 ) ; }
 			    ) ;
 		     }
 
