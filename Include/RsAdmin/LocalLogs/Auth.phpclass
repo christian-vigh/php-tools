@@ -87,6 +87,9 @@ class  LocalAuthLog	extends  LocalLog
 	const	AUTH_SSH_EXITING				=  54 ;
 	const   AUTH_SASL_PASSWD2				=  55 ;
 	const	AUTH_SSH_RSA_DECRYPT_FAILED			=  56 ;
+	const	AUTH_PASSWD_USER_NOT_FOUND			=  57 ;
+	const	AUTH_PASSWD_CHANGED				=  58 ;
+	const	AUTH_PASSWD_USER_DELETED			=  59 ;
 
 
 	// Constructor -
@@ -757,6 +760,41 @@ class  LocalAuthLog	extends  LocalLog
 										.*
 									 )
 								    #imsx' ;
+	// Message of the form :
+	//	vps108493 passwd[6978]: pam_smbpass(passwd:chauthtok): Failed to find entry for user ftp
+	// Constant : AUTH_PASSWD_USER_NOT_FOUND
+	private static	$regex_passwd_user_not_found		=  '#	
+									(?P<message>
+										pam_smbpass 
+										.*?
+										Failed \s+ to \s+ find \s+ entry \s+ for \s+ user \s+ 
+										(?P<user> [^\s]+)
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps108493 passwd[7009]: pam_smbpass(passwd:chauthtok): password for (ftp/107) changed by (root/0)
+	// Constant : AUTH_PASSWD_CHANGED
+	private static	$regex_passwd_changed			=  '#	
+									(?P<message>
+										pam_smbpass 
+										.*?
+										password \s+ for \s+ \(
+										(?P<user> [^/]+)
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps108493 userdel[7400]: delete user 'ftp'
+	// Constant : AUTH_PASSWD_USER_DELETED
+	private static	$regex_passwd_user_deleted		=  '#	
+									(?P<message>
+										delete \s+ user \s+ \'
+										(?P<user> [^\']+)
+										.*
+									 )
+								    #imsx' ;
+
 
 
 	protected function  Parse ( $line, &$parsed_data, $string_store )
@@ -1305,6 +1343,30 @@ class  LocalAuthLog	extends  LocalLog
 			   {
 				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
 				$log_code		=  self::AUTH_SASL_PASSWD2 ;
+			    }
+			// Message of the form :
+			//	vps108493 passwd[6978]: pam_smbpass(passwd:chauthtok): Failed to find entry for user ftp
+			else if  ( preg_match ( self::$regex_passwd_user_not_found, $message, $regex_match ) ) 
+			   {
+				$user_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_USER_NAME			, $regex_match [ 'user' ] ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_PASSWD_USER_NOT_FOUND ;
+			    }
+			// Message of the form :
+			//	vps108493 passwd[7009]: pam_smbpass(passwd:chauthtok): password for (ftp/107) changed by (root/0)
+			else if  ( preg_match ( self::$regex_passwd_changed, $message, $regex_match ) ) 
+			   {
+				$user_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_USER_NAME			, $regex_match [ 'user' ] ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_PASSWD_CHANGED ;
+			    }
+			// Message of the form :
+			//	vps108493 userdel[7400]: delete user 'ftp'
+			else if  ( preg_match ( self::$regex_passwd_user_deleted, $message, $regex_match ) ) 
+			   {
+				$user_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_USER_NAME			, $regex_match [ 'user' ] ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_PASSWD_USER_DELETED ;
 			    }
 			else
 			   {
