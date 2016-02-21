@@ -87,7 +87,7 @@ END;
 		
 		
 		$formatter		=  new  FileSpecificationFormatter ( ) ;
-		$output_file		=  $formatter -> format ( $output ) ;
+		$output_file		=  Path::ToHost ( $formatter -> format ( $output ) ) ;
 		$output_fp		=  fopen ( $output_file, "a" ) ;
 		$files_processed	=  0 ;
 		$total_values		=  0 ;
