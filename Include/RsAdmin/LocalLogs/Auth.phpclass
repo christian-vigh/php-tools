@@ -90,6 +90,7 @@ class  LocalAuthLog	extends  LocalLog
 	const	AUTH_PASSWD_USER_NOT_FOUND			=  57 ;
 	const	AUTH_PASSWD_CHANGED				=  58 ;
 	const	AUTH_PASSWD_USER_DELETED			=  59 ;
+	const   AUTH_CORRUPTED_MAC				=  60 ;
 
 
 	// Constructor -
@@ -794,6 +795,16 @@ class  LocalAuthLog	extends  LocalLog
 										.*
 									 )
 								    #imsx' ;
+	// Message of the form :
+	//	vps169910 sshd[27893]: Corrupted MAC on input. [preauth]
+	// Constant : AUTH_CORRUPTED_MAC
+	private static	$regex_corrupted_mac		=  '#	
+									(?P<message>
+										Corrupted \s+ MAC \s+  on \s+ input
+										.*
+									 )
+								    #imsx' ;
+
 
 
 
@@ -1367,6 +1378,13 @@ class  LocalAuthLog	extends  LocalLog
 				$user_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_USER_NAME			, $regex_match [ 'user' ] ) ;
 				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
 				$log_code		=  self::AUTH_PASSWD_USER_DELETED ;
+			    }
+			// Message of the form :
+			//	vps169910 sshd[27893]: Corrupted MAC on input. [preauth]
+			else if  ( preg_match ( self::$regex_corrupted_mac, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_CORRUPTED_MAC ;
 			    }
 			else
 			   {
