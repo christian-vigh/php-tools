@@ -249,20 +249,6 @@ END;
 	$ServerList		=  $RsAdmin -> FindServers ( $Servers ) ;
 	$HadOption		=  false ;
 
-$server = $RsAdmin -> FindServer ( $ServerList [0] ) ;
-$server -> Connect ( false, true, true ) ;
-$fs	=  $server -> GetFileSystem ( ) ;
-
-dump ( $fs -> getcwd () ) ;
-$fs -> chdir ( '/zz' ) ;
-$rs	=  $fs -> opendir ( '/root' ) ;
-
-while ( $path = $fs -> readdir ( $rs ) )
-	output ( "PATH = $path" ) ;
-
-$fs -> closedir ( $rs ) ;
-
-exit ;
 	
 	/*==================================================================================================
 
