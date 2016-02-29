@@ -357,7 +357,7 @@ END;
 		foreach ( $ServerList  as  $host )
 		   {
 			$output		=  [] ;
-			execute_command ( $host, "iptables-save", $output ) ;
+			execute_command ( $host, "cat /etc/network/iptables.rules", $output ) ;
 			$ips		=  get_data_from_iptables_save ( $output ) ;
 
 			$query		=  "
@@ -541,7 +541,8 @@ END;
 			foreach  ( $rows  as  $row )
 				$commands []	=  "iptables -A {$row [ 'seri_chain' ]} -s {$row [ 'seri_source' ]} -j {$row [ 'seri_target' ]}" ;
 
-			execute_command ( $host, implode ( "\n", $commands ) ) ;
+			$commands	=  implode ( "\n", $commands ) . "\niptables-save >/etc/network/iptables.rules" ;
+			execute_command ( $host, $commands ) ;
 
 			if  ( $first )
 				$first	=  false ;
