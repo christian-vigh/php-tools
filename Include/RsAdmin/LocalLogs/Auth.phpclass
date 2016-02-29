@@ -353,12 +353,17 @@ class  LocalAuthLog	extends  LocalLog
 								    #imsx' ;
 	// Message of the form :
 	//	vps169910 sshd[768]: input_userauth_request: invalid user pi [preauth]
+	//	vps169910 sshd[29914]: pam_unix(sshd:auth): bad username [-]
 	//	Constant : AUTH_SSH_USERAUTH_INVALID_USER
 	private static	$regex_ssh_userauth_invalid_user	=  '#	
 									(?P<message>
-										input_userauth_request: \s+ Invalid \s+ user \s
+										( 
+											( input_userauth_request: \s+ Invalid \s+ user )
+											|
+											( pam_unix .*? bad \s+ username )
+										 )
+										\s+
 										(?P<user> .*? )
-										\s
 										.*
 									 )
 								    #imsx' ;
