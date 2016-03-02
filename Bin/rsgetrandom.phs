@@ -98,50 +98,57 @@ END;
 		   {
 			output ( "\tServer $host :" ) ;
 			
-			$server			=  $RsAdmin -> FindServer ( $host ) ;
-			$server -> Connect ( false, true, true ) ;
-			
-			$fs			=  $server -> GetFileSystem ( ) ;
-			$rs			=  $fs -> opendir ( $server_path ) ;
-			$host_files_processed	=  0 ;
-			$host_values		=  0 ;
-				
-			while  ( $path = $fs -> readdir ( $rs ) )
+			try 
 			   {
-				$server_file	=  "$server_path/$path" ;
-
-				if  ( $fs -> is_file ( $server_file ) )
-				   {
-					echo ( "\t\t$server_file..." ) ;
-				
-					$lines		=  $fs -> file ( $server_file ) ;
-					$count		=  0 ;
-					
-					foreach  ( $lines  as  $line )
-					   {
-						$line	=  trim ( $line ) ;
-						
-						if  ( preg_match ( '/^ \s* [+\-]? \d+ \s* $/imsx', $line ) )
-						   {
-							fputs ( $output_fp, "$line\n" ) ;
-							$count ++ ;
-						    }
-					    }
-					
-					output ( "$count values" ) ;
-					$total_values	+=  $count ;
-					$files_processed ++ ;
-					
-					$host_values	+=  $count ;
-					$host_files_processed ++ ;
-					
-					if  ( ! $keepfiles )
-						$fs -> unlink ( $server_file ) ;
-				    }
-			    }
+				$server			=  $RsAdmin -> FindServer ( $host ) ;
+				$server -> Connect ( false, true, true ) ;
 			
-			$fs -> closedir ( $rs ) ;
-			output ( "\tProcessed $host_values values in $host_files_processed files." ) ;
+				$fs			=  $server -> GetFileSystem ( ) ;
+				$rs			=  $fs -> opendir ( $server_path ) ;
+				$host_files_processed	=  0 ;
+				$host_values		=  0 ;
+				
+				while  ( $path = $fs -> readdir ( $rs ) )
+				   {
+					$server_file	=  "$server_path/$path" ;
+
+					if  ( $fs -> is_file ( $server_file ) )
+					   {
+						echo ( "\t\t$server_file..." ) ;
+				
+						$lines		=  $fs -> file ( $server_file ) ;
+						$count		=  0 ;
+					
+						foreach  ( $lines  as  $line )
+						   {
+							$line	=  trim ( $line ) ;
+						
+							if  ( preg_match ( '/^ \s* [+\-]? \d+ \s* $/imsx', $line ) )
+							   {
+								fputs ( $output_fp, "$line\n" ) ;
+								$count ++ ;
+							    }
+						    }
+					
+						output ( "$count values" ) ;
+						$total_values	+=  $count ;
+						$files_processed ++ ;
+					
+						$host_values	+=  $count ;
+						$host_files_processed ++ ;
+					
+						if  ( ! $keepfiles )
+							$fs -> unlink ( $server_file ) ;
+					    }
+				    }
+
+				$fs -> closedir ( $rs ) ;
+				output ( "\t\tProcessed $host_values values in $host_files_processed files." ) ;
+			    }
+			catch ( Exception  $e )
+			   {
+				output ( "\t\tCaught exception : " . $e -> getMessage ( ) ) ;
+			    }
 		    }
 		    
 		fclose ( $output_fp ) ;
