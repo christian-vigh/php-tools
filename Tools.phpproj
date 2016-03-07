@@ -38,6 +38,7 @@
     </Compile>
     <Compile Include="Bin\phpprof.phs" />
     <Compile Include="Bin\rsadmin.phs" />
+    <Compile Include="Bin\rscp.phs" />
     <Compile Include="Bin\rsgetrandom.phs" />
     <Compile Include="Bin\rswebprotect.phs" />
     <Compile Include="Bin\rswhm.phs" />

@@ -101,6 +101,7 @@ class  LocalHttpErrorLogBase	extends  LocalLog
 	const	HTTP_DEBUG_MESSAGE			=  21 ;
 	const	HTTP_CERTIFICATE_ISSUE			=  22 ;
 	const   HTTP_INVALID_CONTENT_LENGTH		=  23 ; 
+	const	HTTP_FILENAME_TOO_LONG			=  24 ;
 
 
 	// Constructor -
@@ -405,7 +406,16 @@ class  LocalHttpErrorLogBase	extends  LocalLog
 									     .*
 									 )
 								    #imsx' ;
-
+	// Message of the form :
+	//	[error] [client 137.226.113.7] (36)File name too long: access to /some_really_long_filename failed
+	// Constant : HTTP_FILENAME_TOO_LONG 
+	private static	$regex_filename_too_long		=  '#
+									(?P<message>
+										.* File \s+ name \s+ too \s+ long: \s+ access \s+ to \s+ 
+										(?P<file> [^\s]+)
+										.*
+									 )
+								    #imsx' ;
 
 	protected function  Parse ( $line, &$parsed_data, $string_store )
 	   {
@@ -643,6 +653,14 @@ class  LocalHttpErrorLogBase	extends  LocalLog
 			   {
 				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE, $regex_match [ 'message' ] ) ;
 				$log_error_code		=  self::HTTP_INVALID_CONTENT_LENGTH ;
+			    }
+			// Message of the form :
+			//	[error] [client 137.226.113.7] (36)File name too long: access to /some_really_long_filename failed
+			else if  ( preg_match ( self::$regex_filename_too_long, $message, $regex_match ) )
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE, $regex_match [ 'message' ] ) ;
+				$file_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_HTTP_REQUEST_FILE, $regex_match [ 'file' ] ) ;
+				$log_error_code		=  self::HTTP_FILENAME_TOO_LONG ;
 			    }
 			else
 			   {
