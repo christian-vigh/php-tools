@@ -1372,6 +1372,7 @@ END;
 						server_logfile_data. serld_logfile_type,
 						server_string_store. id
 					ORDER BY
+						server_logfile_data. serld_logfile_type,
 						servers. ser_name,
 						server_domains. serd_domain,
 						INET_ATON( server_string_store. value )
@@ -1381,10 +1382,10 @@ END;
 
 		$report_columns	=  
 		  [
+			[ 'member' => 'logtype'		, 'title' => 'Log type'		, 'format' => 'get_logtype_name'	],
 			[ 'member' => 'ip'		, 'title' => 'Ip'							],
 			[ 'member' => 'server'		, 'title' => 'Server'							],
 			[ 'member' => 'domain'		, 'title' => 'Domain'							],
-			[ 'member' => 'logtype'		, 'title' => 'Log type'		, 'format' => 'get_logtype_name'	],
 			[ 'member' => 'count'		, 'title' => 'All time count'						],
 			[ 'member' => 'today_count'	, 'title' => 'Today\'s count'						],
 			[ 'member' => 'blocked' 	, 'title' => 'Blocked?'		, 'align' => 'center'			]
