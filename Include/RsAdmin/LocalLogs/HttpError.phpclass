@@ -468,7 +468,7 @@ class  LocalHttpErrorLogBase	extends  LocalLog
 
 				if (  preg_match ( self::$regex_custom_error_404, $match [ 'message' ], $error_match ) )
 				   {
-					$url_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_HTTP_REQUEST_URL, $error_match [ 'url' ] ) ;
+					$url_id	=	  $string_store -> Insert ( LogStringStore::LOGSTORE_HTTP_REQUEST_URL, $error_match [ 'url' ] ) ;
 
 					if  ( isset ( $error_match [ 'referer' ] ) )
 						$referer_id	=  $string_store -> Insert ( LogStringStore::LOGSTORE_HTTP_REFERER, $error_match [ 'referer' ] ) ;
