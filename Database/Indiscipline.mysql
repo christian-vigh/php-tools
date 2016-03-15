@@ -52,6 +52,8 @@ CREATE TABLE  server_domains
 								COMMENT 'Hosting server id, in the servers table',
 	serd_domain 			VARCHAR(1024)		NOT NULL DEFAULT ''
 								COMMENT 'Domain name',
+	serd_www_path 			VARCHAR(1024)		NOT NULL DEFAULT ''
+								COMMENT 'Root for the www data',
 							
 	PRIMARY KEY 			( serd_id ),
 	UNIQUE KEY 			( serd_server_id, serd_domain(128) ) 
