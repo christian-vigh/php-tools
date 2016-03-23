@@ -140,7 +140,7 @@ END;
 		$host_id	=  $Database -> LoadValue ( ) ;
 
 		$query		=  "
-					INSERT INTO $iptables
+					INSERT IGNORE INTO $iptables
 					SET
 						seri_server_id	=  $host_id,
 						seri_chain	=  '$chain',

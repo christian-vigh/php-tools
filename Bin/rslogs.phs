@@ -65,7 +65,7 @@
 		Integrity checking parameters.
 	</topic>
 
-	<topic name="config, configuraation">
+	<topic name="config, configuration">
 		Configuration-related parameters.
 	</topic>
 
@@ -81,7 +81,10 @@
 		Local database query options.
 	</topic>
 
-	
+	<topic name="error404, err404, e404, banned">
+		Options related to catching error 404 http requests.
+	</topic>
+
 	<flag name="check_extracted_data, ced" topic="check">
 		Checks that extracted (and analyzed) data is in sync with log entries.
 	</flag>

@@ -845,7 +845,7 @@ class  RsAdmin			extends  Object
 
 				// Insert a LOGSTORE_IP entry in the server_logfile_data table for this domain entry
 				$query		=  "
-							INSERT INTO $data_table
+							INSERT IGNORE INTO $data_table
 							SET
 								serld_parent_id		=  {$row [ 'serld_parent_id' ]},
 								serld_logfile_type	=  {$row [ 'serld_logfile_type' ]},
