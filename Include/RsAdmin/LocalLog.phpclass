@@ -149,7 +149,8 @@ abstract class  LocalLog	extends  Object
 			    ] ;
 
 			if  ( isset ( $parsed_data [ 'pid' ] ) )
-				$update_row [ 'columns' ] [ 'serle_process_id' ]	=  $parsed_data [ 'pid' ] ;
+				$update_row [ 'columns' ] [ 'serle_process_id' ]	=  ( is_numeric ( $parsed_data [ 'pid' ] ) ) ?  
+												$parsed_data [ 'pid' ] : 0 ;
 
 			$updater_status		=  $entry_updater -> Add ( $update_row ) ;
 
