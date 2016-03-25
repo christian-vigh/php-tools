@@ -183,15 +183,27 @@ END;
 				$exclusion_path		=  "$root$exclusion" ;
 
 				if  ( ! strncmp ( $current_path, $exclusion_path, strlen ( $exclusion_path ) ) )
+				   {
+					//output ( "EXCLUDED1 : $current_path") ;
 					return ( true ) ;
+				    }
 
 				if  ( String::Matches ( $path_without_root, $exclusion_path ) )
+				   {
+					//output ( "EXCLUDED2 : $path_without_root") ;
 					return ( true ) ;
+				    }
 			    }
 			else if  ( strpos ( $current_path, $exclusion )  !==  false ) 
+			   {
+				//output ( "EXCLUDED3 : $current_path") ;
 				return ( true ) ;
+			    }
 			else if  ( String::Matches ( $path_without_root, $exclusion ) )
+			   {
+				//output ( "EXCLUDED4 : $path_without_root") ;
 				return ( true ) ;
+			    }
 		    }
 
 		return ( false ) ;
@@ -291,6 +303,7 @@ END;
 		sort ( $array ) ;
 
 		$csv	=   tocsv ( $array ) ;
+		file_put_contents ('ll', print_r ( $csv, true ) );	
 
 		if  ( $Verbose )
 			output ( 'done' ) ;
