@@ -72,12 +72,37 @@
 	</file>
 	
 	<string name="servers, server, s" default="*" arguments="0..*">
-		Server name(s) on which collected random data is to be retrieved.
+		Server name(s) on which the update is to be performed.
 		Wildcard characters are authorized, and search is performed on every server alias.
 	</string>
 	
 </command>
 END;
+
+
+	/*==================================================================================================
+
+	    CheckExclusions - 
+		Checks that all regular expressions defined in the error-redirect.list.php are correct.
+
+	  ==================================================================================================*/
+	function  CheckExclusions ( $file ) 
+	   {
+		$contents	=  preg_replace ( '/<\?php.*?\?>/imsx', '', file_get_contents ( $file ) ) ;
+		$lines		=  explode ( "\n", $contents ) ;
+
+		foreach  ( $lines  as  $line )
+		   {
+			if  ( preg_match ( '/^re:\s*(?P<re> .*)/imsx', $line, $match ) )
+			   {
+				$re	=  trim ( $match [ 're' ] ) ;
+				$status =  preg_match ( $re, 'something' ) ;
+
+				if  ( $status  ===  false )
+					error ( "Invalid regular expression '$re' in file \"" . basename ( $file ) . "\"." ) ;
+			    }
+		    }
+	    }
 
 
 	/*==================================================================================================
@@ -89,7 +114,7 @@ END;
 	function  LoadSettings ( )
 	   {
 		global		$WebprotectConfigurationFile ;
-		global		$LocalRoot, $ApacheRootFiles, $DomainRootFiles, $IgnoredServers ;
+		global		$LocalRoot, $ApacheRootFiles, $DomainRootFiles, $IgnoredServers, $ExclusionFile ;
 		
 		$configuration	=  IniFile::LoadFromFile ( $WebprotectConfigurationFile ) ;
 		
@@ -102,11 +127,11 @@ END;
 			if  ( is_dir ( $value ) )
 				$LocalRoot	=  $value ;
 			else
-				warning ( "The value \"$value\" specified for the  \"LocalRoot\" key in the [Settings] section of configuration file " .
+				error ( "The value \"$value\" specified for the  \"LocalRoot\" key in the [Settings] section of configuration file " .
 					"\"$WebprotectConfigurationFile\" does not specify a valid directory" ) ;
 		    }
 		else
-			warning ( "Missing or empty key \"LocalRoot\" in the [Settings] section of configuration file " .
+			error ( "Missing or empty key \"LocalRoot\" in the [Settings] section of configuration file " .
 				"\"$WebprotectConfigurationFile\"" ) ;
 		
 		// [Settings] section, IgnoreServers key :
@@ -115,6 +140,21 @@ END;
 		
 		if  ( $value )
 			$IgnoredServers	=  string::ExplodeAndTrim ( ' ', $value ) ;
+
+		// [Settings] section, ExclusionFile key :
+		//	Name of the url exclusion file
+		$value	=  $configuration -> GetKey ( 'Settings', 'ExclusionFile' ) ;
+
+		if  ( ! $value )
+			error ( "Missing or empty key \"ExclusionFile\" in the [Settings] section of configuration file " .
+				"\"$WebprotectConfigurationFile\"" ) ;
+
+		$real_path	=  Path::RealPath ( $LocalRoot . '\\' . $value ) ;
+
+		if  ( ! file_exists ( $real_path ) )
+			error ( "Unable to find exclusions file \"$value\"." ) ;
+
+		$ExclusionFile	=  $real_path ;
 		
 		// [RootFiles] section :
 		//	All keys listed in this section are filenames to be copied to the remote Apache root.
@@ -126,7 +166,7 @@ END;
 			if  ( ! $value )
 				$value	=  $key ;
 			
-			$real_path	=  $LocalRoot . '\\' . $value ;
+			$real_path	=  Path::RealPath ( $LocalRoot . '\\' . $value ) ;
 			
 			if  ( ! file_exists ( $real_path ) )
 				error ( "Unable to find root file \"$value\"." ) ;
@@ -144,7 +184,7 @@ END;
 			if  ( ! $value )
 				$value	=  $key ;
 			
-			$real_path	=  $LocalRoot . '\\' . $value ;
+			$real_path	=  Path::RealPath ( $LocalRoot . '\\' . $value ) ;
 			
 			if  ( ! file_exists ( $real_path ) )
 				error ( "Unable to find root file \"$value\"." ) ;
@@ -413,6 +453,7 @@ END;
 	$RsAdmin			=  new RsAdmin ( $ConfigurationFile ) ;
 	$ServerList			=  $RsAdmin -> FindServers ( $Servers ) ;
 	$HadOption			=  false ;
+	$ExclusionFile			=  false ;
 	
 	// Webprotect settings
 	$LocalRoot			=  false ;
@@ -427,7 +468,8 @@ END;
 
 	  ==================================================================================================*/
 	LoadSettings ( ) ;
-	
+	CheckExclusions ( $ExclusionFile ) ;
+
 	// -update option :
 	//	Updates the files referenced in the rswebprotect.ini file.
 	if  ( ! $HadOption  &&  $Update )
