@@ -92,6 +92,7 @@ class  LocalMailLog	extends  LocalLog
 	const	MAIL_MYSQL_QUERY_ERROR				=  61 ;
 	const	MAIL_SMTP_ILLEGAL_ADDRESS_SYNTAX		=  62 ;
 	const   MAIL_IMAPD_SSL_INAPPROPRIATE_FALLBACK		=  63 ;
+	const   MAIL_IMAPD_SSL_UNSUPPORTED_PROTOCOL		=  64 ;
 
 	// Constructor -
 	//	Builds the log object
@@ -945,6 +946,17 @@ class  LocalMailLog	extends  LocalLog
 										.*
 									)
 								    #imsx' ;
+	// Message of the form :
+	//	vps169910 imapd-ssl: couriertls: accept: error:14076102:SSL routines:SSL23_GET_CLIENT_HELLO:unsupported protocol
+	// Constant : MAIL_IMAPD_SSL_UNSUPPORTED_PROTOCOL
+	private static	$regex_imapd_ssl_unsupported_protocol	=  '#
+									(?P<message>
+										couriertls: \s+ 
+										( (accept) | (connect) ): 
+										\s+ error: .* unsupported \s+ protocol 
+										.*
+									)
+								    #imsx' ;
 
 
 	protected function  Parse ( $line, &$parsed_data, $string_store )
@@ -1552,6 +1564,13 @@ class  LocalMailLog	extends  LocalLog
 			   {
 				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $regex_match [ 'message' ] ) ;
 				$log_code		=  self::MAIL_IMAPD_SSL_INAPPROPRIATE_FALLBACK ;
+			    }
+			// Message of the form :
+			//	vps169910 imapd-ssl: couriertls: accept: error:14076102:SSL routines:SSL23_GET_CLIENT_HELLO:unsupported protocol
+			else if  ( preg_match ( self::$regex_imapd_ssl_unsupported_protocol, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $regex_match [ 'message' ] ) ;
+				$log_code		=  self::MAIL_IMAPD_SSL_UNSUPPORTED_PROTOCOL ;
 			    }
 			// Informational messages
 			else if  ( preg_match ( self::$regex_informational_warning, $message, $regex_match ) ) 
