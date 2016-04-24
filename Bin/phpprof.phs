@@ -60,7 +60,7 @@
 	</file>
 
 	<unnamed>
-		<command-line value-text="command [args...]" disposition="existing" ext=".php,.phs,.phpscript">
+		<command-line value-text="command [args...]" disposition="existing" ext=".php,.phs,.phpscript,.phs5">
 			Command to be executed, followed by its optional arguments.
 		</command-line>
 	</unnamed>
