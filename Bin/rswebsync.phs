@@ -17,6 +17,24 @@
 
 	    [Version : 1.0.1]	[Date : 2015/11/29]     [Author : CV]
 		. Added the -list_configured_servers option.
+
+	    [Version : 1.0.2]	[Date : 2016/05/13]     [Author : CV]
+		. Fixed the conversion of file/directory permissions in the rswebsync.ini file, which were not properly
+		  converted to octal
+		. A chown command was issued after each new file was transferred through an ssh2_scp_send() call. 
+		  However, the libssh2 library does not allow you to intersperse scp and ssh calls, so the following 
+		  sequence :
+
+			send file1 with scp
+			execute chown
+			send file2 with scp 
+
+		  resulted in the following error :
+
+			ssh2_scp_send(): Failure creating remote file: Would block starting up channel
+
+		  Either a bug or an indigent documentation of the libssh2 library, the Synchronize() function has been
+		  changed to perform all the chown commands after all the file transfers have been completed.
 	
 	 **************************************************************************************************************/
 	require ( "tools.phpinclude" ) ;
@@ -303,7 +321,6 @@ END;
 		sort ( $array ) ;
 
 		$csv	=   tocsv ( $array ) ;
-		file_put_contents ('ll', print_r ( $csv, true ) );	
 
 		if  ( $Verbose )
 			output ( 'done' ) ;
@@ -517,10 +534,10 @@ END;
 		// [Settings] section, DirectoryPermissions and FilePermissions keys -
 		//	Permissions to be used when creating/updating directories & files.
 		//	Permission mode validity is not checked since it can be any expression accepted by the chmod command.
-		$Settings [ 'directory-permissions' ]	=  $iniconf -> GetKey ( 'Settings', 
-			[ 'DirectoryPermissions', 'DirPermissions', 'DirPerms', 'DirPerm', 'DirectoryPermission' ], '700' ) ;
-		$Settings [ 'file-permissions' ]	=  $iniconf -> GetKey ( 'Settings', 
-			[ 'FilePermissions', 'FilePerms', 'FilePerm', 'FilePermission' ], '600' ) ;
+		$Settings [ 'directory-permissions' ]	=  octdec ( $iniconf -> GetKey ( 'Settings', 
+			[ 'DirectoryPermissions', 'DirPermissions', 'DirPerms', 'DirPerm', 'DirectoryPermission' ], '700' ) ) ;
+		$Settings [ 'file-permissions' ]	=  octdec ( $iniconf -> GetKey ( 'Settings', 
+			[ 'FilePermissions', 'FilePerms', 'FilePerm', 'FilePermission' ], '600' ) ) ;
 
 		// Get exclusions, if any (at the [Settings] section level, they can be shared by every domain section)
 		$Settings [ 'exclusions' ]		=  get_exclusions ( $iniconf, $inifile, 'Settings', 'Exclusions' ) ;
@@ -584,12 +601,12 @@ END;
 			$new_domain [ 'user' ]		=  $iniconf -> GetKey ( $domain_name, 'User' , $Settings [ 'user'  ] ) ;
 			$new_domain [ 'group' ]		=  $iniconf -> GetKey ( $domain_name, 'Group', $Settings [ 'group' ] ) ;
 
-			$new_domain [ 'directory-permissions' ]	=  $iniconf -> GetKey ( $domain_name, 
+			$new_domain [ 'directory-permissions' ]	=  octdec ( $iniconf -> GetKey ( $domain_name, 
 				[ 'DirectoryPermissions', 'DirPermissions', 'DirPerms', 'DirPerm', 'DirectoryPermission' ],
-				$Settings [ 'directory-permissions' ] ) ;
-			$new_domain [ 'file-permissions' ]	=  $iniconf -> GetKey ( $domain_name, 
+				decoct ( $Settings [ 'directory-permissions' ] ) ) ) ;
+			$new_domain [ 'file-permissions' ]	=  octdec ( $iniconf -> GetKey ( $domain_name, 
 				[ 'FilePermissions', 'FilePerms', 'FilePerm', 'FilePermission' ], 
-				$Settings [ 'file-permissions' ] ) ;
+				decoct ( $Settings [ 'file-permissions' ] ) ) ) ;
 
 			// Server entry
 			$value	=  $iniconf -> GetKey ( $domain_name, 'Server' ) ;
@@ -825,6 +842,7 @@ END;
 		$remote_path	=  $domain_entry [ 'remote-path' ] ;
 		$local_path	=  $domain_entry [ 'local-path' ] ;
 		$fs		=  $domain_entry [ 'server' ] -> GetFileSystem ( ) ;
+		$chown		=  [] ;
 
 		foreach  ( $diff  as  $diff_entry ) 
 		   {
@@ -849,8 +867,8 @@ END;
 
 					$permissions		=  ( $diff_entry [ 'local' ] [ 'mode' ]  &  S_IFDIR ) ? 
 									$domain_entry [ 'directory-permissions' ] : $domain_entry [ 'file-permissions' ] ;
-					$fs -> chmod ( $remote_name, $permissions ) ;
-					$domain_entry [ 'server' ] -> Execute ( "chown {$domain_entry [ 'user' ]}:{$domain_entry [ 'group' ]} $remote_name" ) ;
+					$fs -> chmod ( $new_remote_name, $permissions ) ;
+					$chown []	=  "chown {$domain_entry [ 'user' ]}:{$domain_entry [ 'group' ]} $new_remote_name" ;
 					break ;
 
 				case	'mtime' :
@@ -858,7 +876,7 @@ END;
 					   {
 						output ( "newer    : " . $diff_entry [ 'local' ] [ 'path' ] ) ;
 						$fs -> send ( $local_name, $remote_name ) ;
-						$fs -> chmod ( $remote_name, $diff_entry [ 'remote' ] [ 'mode' ] ) ;
+						$fs -> chmod ( $new_remote_name, $diff_entry [ 'remote' ] [ 'mode' ] ) ;
 					    }
 
 					break ;
@@ -880,6 +898,13 @@ END;
 				default :
 					error ( $diff_entry [ 'local' ] [ 'path' ] . ": operation '$operation' ignored" ) ;
 			    }
+		    }
+
+		if  ( count ( $chown ) )
+		   {
+			$change_owner_commands	=  implode ( ";\n", $chown ) ;
+			output ( "Changing owner for new files :\n$change_owner_commands" ) ;
+			$domain_entry [ 'server' ] -> Execute ( $change_owner_commands ) ;
 		    }
 	    }
 
