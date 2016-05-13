@@ -1,0 +1,72 @@
+<?php
+	/**************************************************************************************************************
+	
+	    NAME
+	        pdftotext.phs
+	
+	    DESCRIPTION
+	        Extracts text contents from pdf files.
+	
+	    AUTHOR
+	        Christian Vigh, 05/2016.
+	
+	    HISTORY
+	        [Version : 1.0]		[Date : 2016-05-12]     [Author : CV]
+	                Initial version.
+	
+	 **************************************************************************************************************/
+	require ( "tools.phpinclude" ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Types\String ;
+	use  Thrak\IO\Path ;
+	use  Thrak\Processors\PdfToText ;
+	
+
+	/*==================================================================================================
+
+		Command line parameters.
+
+	  ==================================================================================================*/
+	$Definitions	= <<<END
+<command allow-files="true" min-files="1">
+	<usage>
+		Extracts text from pdf file(s).
+	</usage>
+
+	<flag name="debug, d">
+		Outputs debug information.
+	</flag>
+</command>
+END;
+
+	/*==============================================================================================================
+
+	    extract_text -
+		Extracts text from the specified file.
+
+	  ==============================================================================================================*/
+	function  extract_text ( $file )
+	   {
+		$pdf	=  new PdfToText ( $file ) ;
+		
+		return ( $pdf -> Text ) ;
+	    }
+
+
+	/*==================================================================================================
+
+		Global constants and variables.
+
+	  ==================================================================================================*/
+	$CL 			=  new  CLParser ( $Definitions ) ;
+	$Debug			=  $CL -> Debug ;
+	$Files			=  $CL -> Files ;
+
+	PdfToText::$DEBUG	=  $Debug ;
+
+	foreach ( $Files  as  $file )
+	   {
+		$text	=  extract_text ( $file ) ;
+		output ( $text ) ;
+	    }
