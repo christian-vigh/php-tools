@@ -1,0 +1,124 @@
+/***************************************************************************************************
+
+    NAME
+	phpclsses.mysql
+
+    DESCRIPTION
+	Defines the tables used by the pcquery script for querying phpclasses.org website.
+
+    AUTHOR
+	Christian Vigh, 05/2016.
+
+    HISTORY
+    [Version : 1.0]	[Date : 2016/05/14]	[Author : CV]
+	Initial version.
+
+  ***************************************************************************************************/
+
+USE  indiscipline ;
+
+/*==============================================================================================================
+
+    pco_authors table -
+        Holds the list of authors whose class info has been retrieved.
+
+  ==============================================================================================================*/
+DROP TABLE IF EXISTS  pco_authors ;
+CREATE TABLE  pco_authors
+   (
+	aut_id			INT UNSIGNED		NOT NULL AUTO_INCREMENT
+							COMMENT 'Unique id for this author entry',
+	aut_origin		TINYINT			NOT NULL DEFAULT 0
+							COMMENT 'Site origin : 0 = phpclasses.org, 1 = jsclasses.org',	
+	aut_pco_id		INT UNSIGNED		NOT NULL DEFAULT 0
+							COMMENT 'Author id, on the phpclasses.org site',
+	aut_name		VARCHAR(128)		NOT NULL DEFAULT ''
+							COMMENT 'Author name',
+	aut_alias		VARCHAR(32)		NOT NULL DEFAULT ''
+							COMMENT 'Author abbrevation',
+	aut_initials		CHAR(6)			NOT NULL DEFAULT ''
+							COMMENT 'Author initials',
+	aut_link		VARCHAR(1024)		NOT NULL DEFAULT ''
+							COMMENT 'Link to author classes',
+
+	PRIMARY KEY		( aut_id ),
+	KEY			( aut_origin, aut_pco_id ),
+	KEY			( aut_origin, aut_name )
+    )  ENGINE = MyISAM CHARSET latin1 COMMENT 'List of phpclasses.org authors' ;
+    
+    
+/*==============================================================================================================
+
+    pco_classes table -
+        Holds the list of author classes.
+
+  ==============================================================================================================*/
+DROP TABLE IF EXISTS  pco_classes ;
+CREATE TABLE  pco_classes
+   (
+	cla_id				INT UNSIGNED		NOT NULL AUTO_INCREMENT 
+								COMMENT 'Unique id for this entry',
+	cla_author_id			INT UNSIGNED		NOT NULL DEFAULT 0
+								COMMENT 'Id of the author, in the pco_authors table',
+	cla_name			VARCHAR(128)		NOT NULL DEFAULT ''
+								COMMENT 'Class name',
+	cla_package_name		VARCHAR(128)		NOT NULL DEFAULT ''
+								COMMENT 'Package name (used in zipfile generation)',
+	cla_class_link			VARCHAR(1024)		NOT NULL DEFAULT ''
+								COMMENT 'Full link to the package home page (using description)',
+	cla_package_link		VARCHAR(1024)		NOT NULL DEFAULT ''
+								COMMENT 'Short link to the package home page (using package name)',
+	cla_description			VARCHAR(512)		NOT NULL DEFAULT ''
+								COMMENT 'Class description',
+	cla_version			CHAR(20)		NOT NULL DEFAULT ''
+								COMMENT 'Class current version',
+	cla_date			DATE			NOT NULL DEFAULT '0000-00-00'
+								COMMENT 'Date of last class information retrieval',
+	cla_last_update			DATE			NOT NULL DEFAULT '0000-00-00'
+								COMMENT 'Last update of this class on phpclasses.org',
+	cla_deleted			TINYINT			NOT NULL DEFAULT 0
+								COMMENT '1 when the class does not appear any more in the remote repository',
+
+	PRIMARY KEY			( cla_id ),
+	KEY				( cla_author_id ),
+	UNIQUE KEY			( cla_package_name )
+    )  ENGINE = MyISAM CHARSET latin1 COMMENT 'List of author classes' ;
+    
+
+/*==============================================================================================================
+
+    pco_classes_history table -
+        Holds the list of author classes history.
+
+  ==============================================================================================================*/
+DROP TABLE IF EXISTS  pco_classes_history ;
+CREATE TABLE  pco_classes_history
+   (
+	clah_id				INT UNSIGNED		NOT NULL AUTO_INCREMENT 
+								COMMENT 'Unique id for this entry',
+	clah_author_id			INT UNSIGNED		NOT NULL DEFAULT 0
+								COMMENT 'Id of the author, in the pco_authors table',
+	clah_class_id			INT UNSIGNED		NOT NULL DEFAULT 0
+								COMMENT 'Id of the class, in the pco_classes table',
+	clah_date			DATE			NOT NULL DEFAULT '0000-00-00'
+								COMMENT 'Date of this history entry',
+	clah_last_update		DATE			NOT NULL DEFAULT '0000-00-00'
+								COMMENT 'Last update for this class on phpclasses.org',
+	clah_total_downloads		INT UNSIGNED		NOT NULL DEFAULT 0
+								COMMENT 'Total downloads for this class',
+	clah_week_downloads		INT UNSIGNED		NOT NULL DEFAULT 0
+								COMMENT 'Total downloads for this class and this week',
+	clah_total_rankings		INT UNSIGNED		NOT NULL DEFAULT 0
+								COMMENT 'Total download rankings for this class',
+	clah_week_rankings		INT UNSIGNED		NOT NULL DEFAULT 0
+								COMMENT 'Total downloads rankings for this class and this week',
+	clah_ratings			INT UNSIGNED		NOT NULL DEFAULT 0
+								COMMENT 'User ratings for this class',
+	clah_version			CHAR(20)		NOT NULL DEFAULT ''
+								COMMENT 'Current version for this class',
+
+	PRIMARY KEY			( clah_id ),
+	UNIQUE KEY			( clah_author_id, clah_class_id, clah_date ),
+	KEY				( clah_author_id, clah_date ) 
+    )  ENGINE = MyISAM CHARSET latin1 COMMENT 'History of author classes' ;
+    

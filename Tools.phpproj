@@ -24,6 +24,8 @@
   <ItemGroup>
     <Compile Include="Bin\dmp.phs" />
     <Compile Include="Bin\httperror.phs" />
+    <Compile Include="Bin\pcoquery.phs" />
+    <Compile Include="Bin\pdftotext.phs" />
     <Compile Include="Bin\rangedist.phs" />
     <Compile Include="Bin\resizegallery.phs" />
     <Compile Include="Bin\restorepoint.phs" />
@@ -38,7 +40,6 @@
     </Compile>
     <Compile Include="Bin\phpprof.phs" />
     <Compile Include="Bin\rsadmin.phs" />
-    <Compile Include="Bin\rscp.phs" />
     <Compile Include="Bin\rsgetrandom.phs" />
     <Compile Include="Bin\rswebprotect.phs" />
     <Compile Include="Bin\rswhm.phs" />
@@ -579,8 +580,7 @@
       <SubType>Content</SubType>
     </Content>
     <Content Include="Bin\wamp.phs" />
-    <Content Include="Database\ovh.mysql" />
-    <Content Include="Database\whm.mysql" />
+    <Content Include="Database\phpclasses.mysql" />
     <Content Include="Data\BannedUrls.txt" />
     <Content Include="Data\bingtr.cache" />
     <Content Include="Data\bingtr.ini" />

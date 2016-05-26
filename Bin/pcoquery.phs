@@ -1,0 +1,782 @@
+<?php
+
+	/**************************************************************************************************************
+	
+	    NAME
+	        pcoquery.phs
+	
+	    DESCRIPTION
+	        A script to query phpclasses.org about a particular author.
+	
+	    AUTHOR
+	        Christian Vigh, 05/2016.
+	
+	    HISTORY
+	        [Version : 1.0]		[Date : 2016-05-14]     [Author : CV]
+	                Initial version.
+	
+	 **************************************************************************************************************/
+	require ( "tools.phpinclude" ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Types\String ;
+	use  Thrak\IO\Path ;
+	use  Thrak\IO\AsciiReport ;
+
+	/*==================================================================================================
+
+		Command line parameters.
+
+	  ==================================================================================================*/
+	$Definitions = <<<END
+<command allow-files="false">
+
+	<usage>
+		Query class activity on phpclasses/jsclasses.org.
+	</usage>
+
+	<string name="author, a" default="cv">
+		Id, name, alias or initials of the author to be queried.
+	</string>
+
+	<string name="define_author, da" arguments="2..4" value-text="id name [initials [alias]]">
+		Adds a new author to the local database. "id" is the author id on the phpclasses.org or
+		jsclasses.org website (depending on whether the -jsclasses flag has been specified or not).
+	</string>
+
+	<flag name="jsclasses, js, j">
+		Use jsclasses.org instead of phpclasses.org.
+	</flag>
+
+	<flag name="list_authors, la">
+		Lists the authors defined in the local database.
+	</flag>
+
+	<flag name="list_classes, lc">
+		List classes defined by the specified author.
+	</flag>
+
+	<flag name="list_class_statistics, lcs">
+		Lists class statistics collected for the specified author.
+	</flag>
+
+	<flag name="update, u">
+		Forces data update for the current day.
+	</flag>
+
+	<exclusions name="define_author" with="author, list_authors, list_classes, list_class_statistics, update"/>
+</command>
+END;
+
+
+	/*==================================================================================================
+
+		Utility functions.
+
+	  ==================================================================================================*/
+
+	// clean_string -
+	//	Removes html tags from the specified string.
+	function  clean_string ( $value )
+	   {
+		return ( trim ( strip_tags ( $value ) ) ) ;
+	    }
+
+
+	// clean_integer -
+	//	Returns a formatted integer with optional thousands separators as a true integer.
+	function  clean_integer ( $value )
+	   {
+		$value	=  str_replace ( [ ' ', ',' ], '', clean_string ( $value ) ) ;
+
+		if  ( is_numeric ( $value ) )
+			return ( ( integer ) $value ) ;
+		else
+			return ( 0 ) ;
+	    }
+
+
+	// ensure_updated :
+	//	Ensures that the class history for the specified author has entries for the current day.
+	function  ensure_updated ( )
+	   {
+		global		$Database, $AuthorData ;
+
+
+		$today		=  date ( 'Y-m-d' ) ;
+		$query		=  "SELECT MIN(clah_id) FROM pco_classes_history WHERE clah_author_id = {$AuthorData [ 'aut_id' ]} AND clah_date = '$today'" ;
+		$Database -> SetQuery ( $query ) ;
+		$value		=  $Database -> LoadValue ( ) ;
+
+		if  ( ! $value ) 
+			UpdateData ( ) ;
+	    }
+
+
+	// get_absolute_url -
+	//	Returns the absolute url of a path within phpclasses.org or jsclasses.org
+	function  get_absolute_url ( $path )
+	   {
+		global		$PhpClassesSite ;
+
+		if  ( $path [0]  !=  '/' )
+			$path	=  "/$path" ;
+
+		if  ( $PhpClassesSite )
+			$site	=  PHPCLASSES_ORG ;
+		else
+			$site	=  JSCLASSES_ORG ;
+
+		return ( "$site$path" ) ;
+	    }
+
+
+	// get_author_data -
+	//	Retrieves author data from the local database.
+	function  get_author_data ( )
+	   {
+		global		$Database, $Author, $PhpClassesSite ;
+
+		$escaped_author	=  $Database -> Escape ( $Author ) ;
+		$query		=  "
+					SELECT *
+					FROM pco_authors 
+					WHERE
+						aut_origin = $PhpClassesSite AND
+						(
+							aut_pco_id	=  '$escaped_author'  OR
+							aut_name	=  '$escaped_author'  OR
+							aut_alias	=  '$escaped_author'  OR
+							aut_initials	=  '$escaped_author' 
+						 )
+				   " ;
+		$Database -> SetQuery ( $query ) ;
+		$row		=  $Database -> LoadRow ( ) ;
+
+		return ( $row ) ;
+	    }
+
+
+	// get_author_url -
+	//	Returns the url for a given author id.
+	function  get_author_url ( $id )
+	   {
+		return ( get_absolute_url ( AUTHOR_PATH . '/' . $id ) ) ;
+	    }
+
+
+	// get_site_name -
+	//	Returns the site name, depending on the specified site type.
+	function  get_site_name ( $type )
+	   {
+		if  ( $type )
+			return ( 'phpclasses.org' ) ;
+		else
+			return ( 'jsclasses.org' ) ;
+	    }
+
+
+	// get_url_contents -
+	//	Returns the html contents for the specified url.
+	function  get_url_contents ( $url )
+	   {
+		$contents	=  file_get_contents ( $url ) ;
+		$contents	=  str_replace ( "\0", '', $contents ) ;
+
+		return ( $contents ) ;
+	    }
+
+
+	// extract_author_information -
+	//	Extracts author information for the specified url.
+	function  extract_author_information ( $url, $check_only = false )
+	   {
+		static $author_re	=  '#
+						<td \s+ class=[\'"] nblu \s+ tabcontent 
+						.*?
+						<a \s+ href=[\'"] (?P<classlink> [^\'"]+)
+						.*?
+						<span [^>]+ > (?P<title> .*?) </span>
+						.*?
+						<td \s+ class=[\'"]framed [^>]+ > (?P<description> .*?) </td>
+					    #imsx' ;
+
+		$contents =  get_url_contents ( $url ) ;
+
+		if  ( ! preg_match_all ( $author_re, $contents, $matches ) )
+		   {
+			if  ( $check_only )
+				return ( false ) ;
+
+			error ( "Unable to find author information in url :\n\t$url" ) ;
+		    }
+		else if  ( $check_only ) 
+			return ( true ) ;
+
+		$result		=  [] ;
+		$count		=  count ( $matches [ 'classlink' ] ) ;
+
+		for  ( $i = 0 ; $i  <  $count ; $i ++ )
+		   {
+			$link			=  get_absolute_url ( $matches [ 'classlink' ] [$i] ) ;
+			$name			=  strip_tags ( $matches [ 'title' ] [$i] ) ;
+			$description		=  strip_tags ( $matches [ 'description' ] [$i] ) ;
+
+			$result [ $name ]	=  
+			   [ 
+				'name'		=>  $name, 
+				'description'	=>  $description, 
+				'link'		=>  $link,
+				'info'		=>  extract_class_information ( $link )
+			    ] ;
+		    }
+
+		return ( $result ) ;
+	    }
+
+
+	// extract_class_information -
+	//	Extracts class information from the specified url.
+	function  extract_class_information ( $url )
+	    {
+		// Regex for packages that have been approved
+		static	$class_re	=  '#
+						<td \s+ class=[\'"]cd [^>]+ > \s*
+							<a [^>]+ > (?P<lastupdate> .*?) </a>
+						.*? </td> \s*
+
+						<td .*? </td> \s*
+
+						<td [^>]+ >
+							(?P<ratings> .*?)
+						</td> \s*
+
+						<td .*? </td> \s*
+
+						<td [^>]+ > \s* .*? Total: .*? <span [^>]+ >
+								(?P<totaldownloads> [^<]+)
+							</span>
+							
+							(
+								.*? This \s+ week: .*? <span [^>]+ >
+									(?P<weekdownloads> [^<]+)
+							 )?
+
+						.*? </td> \s*
+
+						<td .*? </td> \s*
+
+						<td [^>]+ > \s* .*? All \s+ time: .*? <span [^>]+ >
+								(?P<totalrankings> [^<]+)
+							</span>
+
+							(
+								.*? This \s+ week: .*? <span [^>]+ >
+									(?P<weekrankings> [^<]+)
+							 )?
+						
+						.*?
+
+						<a .*? Use \s+ this \s+ as \s+ short \s+ URL: \s* (?P<packageurl> [^\'"]+) [^>]+> \s*
+							(?P<package> .*?)
+						</a>
+
+						(?P<version> .*?)
+
+						</td>
+					    #imsx' ;
+
+		// Regex for packages that have been approved, with no user download for this week
+		// pcre did not handle correctly the fact that the "this week (downloads)" construct could be optional,
+		// hence a second version of this regex 
+		static	$class_re_2	=  '#
+						<td \s+ class=[\'"]cd [^>]+ > \s*
+							<a [^>]+ > (?P<lastupdate> .*?) </a>
+						.*? </td> \s*
+
+						<td .*? </td> \s*
+
+						<td [^>]+ >
+							(?P<ratings> .*?)
+						</td> \s*
+
+						<td .*? </td> \s*
+
+						<td [^>]+ > \s* .*? Total: .*? <span [^>]+ >
+								(?P<totaldownloads> [^<]+)
+							</span>
+							
+						.*? </td> \s*
+
+						<td .*? </td> \s*
+
+						<td [^>]+ > \s* .*? All \s+ time: .*? <span [^>]+ >
+								(?P<totalrankings> [^<]+)
+							</span>
+
+							(
+								.*? This \s+ week: .*? <span [^>]+ >
+									(?P<weekrankings> [^<]+)
+							 )?
+						
+						.*?
+
+						<a .*? Use \s+ this \s+ as \s+ short \s+ URL: \s* (?P<packageurl> [^\'"]+) [^>]+> \s*
+							(?P<package> .*?)
+						</a>
+
+						(?P<version> .*?)
+
+						</td>
+					    #imsx' ;
+
+		// Regex for packages that are not yet approved
+		static	$simplified_re	=  '#
+						<td \s+ class=[\'"]cd [^>]+ > \s*
+							<a [^>]+ > (?P<lastupdate> .*?) </a>
+						.*? </td> \s*
+
+						.*?
+
+						<a .*? Use \s+ this \s+ as \s+ short \s+ URL: \s* (?P<packageurl> [^\'"]+) [^>]+> \s*
+							(?P<package> .*?)
+						</a>
+
+						(?P<version> .*?)
+
+						</td>
+					    #imsx' ;
+
+		$contents	=  get_url_contents ( $url ) ;
+
+		// Try to capture the information for this class
+		if  ( ! preg_match ( $class_re, $contents, $matches ) )
+		   {
+			if  ( ! preg_match ( $class_re_2, $contents, $matches ) )
+			   {
+				if  ( ! preg_match ( $simplified_re, $contents, $matches ) ) 
+					error ( "Unable to find class information in url :\n\t$url" ) ;
+			    }
+		    }
+
+		// Build the result data
+		$result		=  
+		   [
+			'last-update'		=>  strtotime ( clean_string ( $matches [ 'lastupdate' ] ) ),
+			'package'		=>  clean_string ( $matches [ 'package' ] ),
+			'package-url'		=>  clean_string ( $matches [ 'packageurl' ] ),
+			'version'		=>  clean_string ( $matches [ 'version' ] ),
+			'ratings'		=>  0,
+			'total-downloads'	=>  0,
+			'week-downloads'	=>  0,
+			'total-rankings'	=>  0,
+			'week-rankings'		=>  0
+		    ] ;
+
+		// If the class has been approved, then we can catch additional information
+		if  ( isset ( $matches [ 'ratings' ] ) ) 
+		   {
+			$result [ 'ratings'         ]	=  clean_integer ( $matches [ 'ratings'        ] ) ;
+			$result [ 'total-downloads' ]	=  clean_integer ( $matches [ 'totaldownloads' ] ) ;
+			$result [ 'week-downloads'  ]	=  ( isset ( $matches [ 'weekdownloads' ] ) ) ?  clean_integer ( $matches [ 'weekdownloads'  ] ) : 0 ;
+			$result [ 'total-rankings'  ]	=  clean_integer ( $matches [ 'totalrankings'  ] ) ;
+			$result [ 'week-rankings'   ]	=  clean_integer ( $matches [ 'weekrankings'   ] ) ;
+		    }
+
+		return ( $result ) ;
+	     }
+
+
+	/*==================================================================================================
+
+		Command-line options handling functions.
+
+	  ==================================================================================================*/
+
+	// DefineAuthor - 
+	//	Adds a new author in the local database
+	function  DefineAuthor ( $def )
+	   {
+		global		$Database, $PhpClassesSite, $SiteName ;
+
+		// Check author id
+		$id	=  $def [0] ;
+
+		if  ( ! is_numeric ( $id ) )
+			error ( "The first argument of the -define_author parameter must be an integer author id on phpclasses/jsclasses.org." ) ;
+
+		// Get author name and extract individual parts
+		$name		=  trim ( preg_replace ( '/\s+/', ' ', $def [1] ) ) ;
+
+		if  ( ! $name )
+			error ( "The second argument of the -define_author parmeter must be the author name" ) ;
+
+		$nameparts	=  explode ( ' ', $name ) ;
+
+		// If not provided, build the initials from the author name
+		if  ( isset ( $def [2] ) )
+			$initials	=  $def [2] ;
+		else
+		   {
+			$initials	=  '' ;
+
+			foreach  ( $nameparts  as  $part )
+				$initials	.=  strtolower ( $part [0] ) ;
+		    }
+
+		// If not provided, build the alias from the author's lastname
+		if  ( isset ( $def [3] ) )
+			$alias		=  $def [3] ;
+		else
+			$alias		=  strtolower ( $nameparts [ count ( $nameparts ) - 1 ] ) ;
+
+		// Build the author's homepage url 
+		$url		=  get_author_url ( $id ) ;
+
+		// Check that the author exists on the php/jsclasses site
+		$status		=  extract_author_information ( $url, true ) ;
+
+		if  ( ! $status )
+			error ( "\"$id\" is not a valid author id." ) ;
+
+		// Check that no author with the same id, name, initials or alias exists in the database
+		$escaped_name		=  $Database -> Escape ( $name ) ;
+		$escaped_initials	=  $Database -> Escape ( $initials ) ;
+		$escaped_alias		=  $Database -> Escape ( $alias ) ;
+		$query			=  "
+						SELECT *
+						FROM pco_authors
+						WHERE
+							aut_origin = $PhpClassesSite AND
+							(
+								aut_pco_id	=  $id  OR
+								aut_name	=  '$escaped_name'  OR
+								(
+									'$escaped_alias'  <>  ''  AND
+									aut_alias	=  '$escaped_alias'
+								 )  OR
+								(
+									'$escaped_initials'  <>  ''  AND
+									aut_initials	=  '$escaped_initials'
+								 )
+							 )
+					    " ;
+
+		$Database -> SetQuery ( $query ) ;
+		$row		=  $Database -> LoadRow ( ) ;
+
+		// Insert the author into the local database if it does not already exist
+		if  ( $row )
+		   {
+			$message	=  "
+						An author with the same id, name, alias or initials already exists :
+						. row id   : {$row [ 'aut_id' ]}
+						. site id  : {$row [ 'aut_pco_id' ]}
+						. name     : {$row [ 'aut_name' ]}
+						. alias    : {$row [ 'aut_alias']}
+						. initials : {$row [ 'aut_initials' ]}
+						. url      : {$row [ 'aut_link' ]}
+					   " ;
+			error ( $message ) ;
+		    }
+
+		$query		=  "
+					INSERT INTO pco_authors
+					SET
+						aut_origin		=  $PhpClassesSite,
+						aut_pco_id		=  $id,
+						aut_name		=  '$escaped_name',
+						aut_alias		=  '$escaped_alias', 
+						aut_initials		=  '$escaped_initials',
+						aut_link		=  '$url' 
+				   " ;
+
+		$Database -> Execute ( $query ) ;
+		output ( "Created author \"$name\" with id $id (initials : $initials, alias : $alias) for site $SiteName." ) ;
+	    }
+
+
+	// ListAuthors -
+	//	Lists author information.
+	function  ListAuthors ( )
+	   {
+		global	 $Database ;
+
+		
+		$query		=  "
+					SELECT
+						pco_authors. *,
+						(
+							SELECT COUNT(*)
+							FROM pco_classes 
+							WHERE
+								cla_author_id = aut_id
+						 ) AS aut_classes
+					FROM pco_authors
+					ORDER BY
+						aut_origin, aut_id
+				   " ;
+
+		$Database -> SetQuery ( $query ) ;
+		$rows	=  $Database -> LoadRows ( ) ;
+		$data	=  [] ;
+
+		foreach  ( $rows  as  $row )
+		   {
+			$row [ 'aut_origin' ]	=  get_site_name ( $row [ 'aut_origin' ] ) ;
+			$data []		=  $row ;
+		    }
+
+		$report		=  new AsciiReport 
+		   (
+			[ 'member' => 'aut_origin'	, 'title' => 'Site'					],
+			[ 'member' => 'aut_pco_id'	, 'title' => 'Id'		, 'align' => 'right'	],
+			[ 'member' => 'aut_name'	, 'title' => 'Name'					],
+			[ 'member' => 'aut_initials'	, 'title' => 'Initials'					],
+			[ 'member' => 'aut_alias'	, 'title' => 'Alias'					],
+			[ 'member' => 'aut_classes'	, 'title' => '#Classes'		, 'align' => 'right'	],
+			[ 'member' => 'aut_link'	, 'title' => 'Url'					]
+		    ) ;
+
+		echo $report -> Generate ( $data ) ;
+		echo $report -> Summary ( 'user' ) ;
+	    }
+
+
+	// UpdateData -
+	//	Forces data retrieval and update for the current author.
+	function  UpdateData ( )
+	   {
+		global		$Database, $PhpClassesSite, $AuthorData, $SiteName ;
+
+		$data		=  extract_author_information ( $AuthorData [ 'aut_link' ] ) ;
+		$author_id	=  $AuthorData [ 'aut_id' ] ;
+		$today	=  date ( 'Y-m-d' ) ;
+
+		echo ( "Updating local database for $SiteName, author {$AuthorData [ 'aut_name' ]} ($today)..." ) ;
+		flush ( ) ;
+		
+		// First, mark all the classes for this author as "deleted"
+		$Database -> Execute ( "UPDATE pco_classes SET cla_deleted = 1, cla_date = NOW() WHERE cla_author_id = $author_id" ) ;
+
+		// Delete all history entries belonging to the current day
+		$Database -> Execute ( "DELETE FROM pco_classes_history WHERE clah_author_id = $author_id AND clah_date = '$today'" ) ;
+
+		// Loop through all retrieved class information
+		foreach  ( $data  as  $class )
+		   {
+			$name			=  $Database -> Escape ( $class [ 'name' ] ) ;
+			$description		=  $Database -> Escape ( $class [ 'description' ] ) ;
+			$link			=  $Database -> Escape ( $class [ 'link' ] ) ;
+			$last_update		=  date ( 'Y-m-d', $class [ 'info' ] [ 'last-update' ] ) ;
+			$package		=  $Database -> Escape ( $class [ 'info' ] [ 'package' ] ) ;
+			$package_url		=  $Database -> Escape ( $class [ 'info' ] [ 'package-url' ] ) ;
+			$version		=  $Database -> Escape ( $class [ 'info' ] [ 'version' ] ) ;
+			$ratings		=  $Database -> Escape ( $class [ 'info' ] [ 'ratings' ] ) ;
+			$total_downloads	=  $Database -> Escape ( $class [ 'info' ] [ 'total-downloads' ] ) ;
+			$week_downloads		=  $Database -> Escape ( $class [ 'info' ] [ 'week-downloads' ] ) ;
+			$total_rankings		=  $Database -> Escape ( $class [ 'info' ] [ 'total-rankings' ] ) ;
+			$week_rankings		=  $Database -> Escape ( $class [ 'info' ] [ 'week-rankings' ] ) ;
+
+			// Update existing class information or create it
+			$query		=  "
+						INSERT INTO pco_classes 
+							( cla_author_id, cla_name, cla_package_name, cla_class_link, cla_package_link, cla_description,
+							  cla_version, cla_date, cla_last_update, cla_deleted )
+							VALUES
+							   (
+								$author_id, '$name', '$package', '$link', '$package_url', '$description',
+								'$version', '$today', '$last_update', 0
+							    )
+						ON DUPLICATE KEY UPDATE
+							cla_author_id		=  $author_id,
+							cla_name		=  '$name',
+							cla_package_name	=  '$package',
+							cla_class_link		=  '$link',
+							cla_package_link	=  '$package_url',
+							cla_description		=  '$description',
+							cla_version		=  '$version',
+							cla_date		=  '$today',
+							cla_last_update		=  '$last_update',
+							cla_deleted		=  0
+					   " ;
+			$Database -> Execute ( $query ) ;
+
+			// Get the id of this package, which may have been either inserted or updated
+			$Database -> SetQuery ( "SELECT cla_id FROM pco_classes WHERE cla_package_name = '$package'" ) ;
+			$class_id	=  $Database -> LoadValue ( ) ;
+
+			// Now add a history entry for this class
+			$query		=  "
+						INSERT INTO pco_classes_history
+						SET
+							clah_author_id			=  $author_id,
+							clah_class_id			=  $class_id,
+							clah_date			=  '$today',
+							clah_last_update		=  '$last_update',
+							clah_total_downloads		=  $total_downloads,
+							clah_week_downloads		=  $week_downloads,
+							clah_total_rankings		=  $total_rankings,
+							clah_week_rankings		=  $week_rankings,
+							clah_ratings			=  $ratings,
+							clah_version			=  '$version'
+					   " ;
+			$Database -> Execute ( $query ) ;
+		    }
+
+		output ( count ( $data) . " classes updated or inserted." ) ;
+	    }
+
+
+	// ListClasses -
+	//	Lists class information for the current day.
+	function  ListClasses ( )
+	   {
+		global		$Database, $AuthorData ;
+
+		ensure_updated ( ) ;
+		$Database -> SetQuery ( "SELECT * FROM pco_classes WHERE cla_author_id = {$AuthorData [ 'aut_id' ]} AND cla_deleted = 0 ORDER BY cla_package_name" ) ;
+		$rows		=  $Database -> LoadRows ( ) ;
+
+		$report		=  new AsciiReport
+		   (
+			[ 'member' => 'cla_package_name', 'title' => 'Package'							],
+			[ 'member' => 'cla_name'	, 'title' => 'Name'							],
+			[ 'member' => 'cla_version'	, 'title' => 'Version'		, 'align' => 'right'			],
+			[ 'member' => 'cla_last_update'	, 'title' => 'Updated'							],
+			[ 'member' => 'cla_description'	, 'title' => 'Description'	, 'width' => 40, 'overflow' => 'wrap'	],
+			[ 'member' => 'cla_package_link', 'title' => 'Url'							]
+		    ) ;
+
+		echo $report -> Generate ( $rows ) ;
+		echo $report -> Summary ( 'class' ) ;
+	    }
+
+
+	// ListClassStatistics -
+	//	Lists statistics for the classes of the specified author and the current day.
+	function  ListClassStatistics ( )
+	   {
+		global		$Database, $AuthorData ;
+
+		ensure_updated ( ) ;
+		$today			=  date ( 'Y-m-d' ) ;
+		$author_id		=  $AuthorData [ 'aut_id' ] ;
+		$query			=  "
+						SELECT *
+						FROM pco_classes
+						LEFT JOIN pco_classes_history ON
+							pco_classes_history. clah_class_id = pco_classes. cla_id AND
+							pco_classes_history. clah_date = '$today' 
+						LEFT JOIN pco_authors ON
+							pco_authors. aut_id = pco_classes. cla_author_id
+						WHERE
+							pco_authors. aut_id		= $author_id  AND
+							pco_classes. cla_deleted	= 0
+						ORDER BY 
+							pco_classes. cla_package_name,
+							pco_classes_history. clah_last_update
+					   " ;
+		$Database -> SetQuery ( $query ) ;
+		$rows			=  $Database -> LoadRows ( ) ;
+		$total_downloads	=  0 ;
+		$week_downloads		=  0 ;
+
+		foreach  ( $rows  as  &$row )
+		   {
+			$total_downloads	+=  $row [ 'clah_total_downloads' ] ;
+			$week_downloads		+=  $row [ 'clah_week_downloads' ] ;
+
+			$row [ 'clah_ratings' ]			=  number_format ( $row [ 'clah_ratings'		], 0, '.', ' ' ) ;
+			$row [ 'clah_total_downloads' ]		=  number_format ( $row [ 'clah_total_downloads'	], 0, '.', ' ' ) ;
+			$row [ 'clah_week_downloads' ]		=  number_format ( $row [ 'clah_week_downloads'		], 0, '.', ' ' ) ;
+			$row [ 'clah_total_rankings' ]		=  number_format ( $row [ 'clah_total_rankings'		], 0, '.', ' ' ) ;
+			$row [ 'clah_week_rankings' ]		=  number_format ( $row [ 'clah_week_rankings'		], 0, '.', ' ' ) ;
+		    }
+
+		$report			=  new  AsciiReport 
+		   (
+			[ 'member' => 'cla_package_name', 'title' => 'Package' ],
+			[ 'member' => 'clah_ratings', 'title' => 'Ratings', 'align' => 'right' ],
+			[ 'member' => 'clah_total_downloads', 'title' => 'Downloads', 'align' => 'right' ],
+			[ 'member' => 'clah_week_downloads', 'title' => 'Week', 'align' => 'right' ],
+			[ 'member' => 'clah_total_rankings', 'title' => 'Rankings', 'align' => 'right' ],
+			[ 'member' => 'clah_week_rankings', 'title' => 'Week', 'align' => 'right' ]
+		    ) ;
+
+		echo $report -> Generate ( $rows ) ;
+		echo $report -> Summary ( 'class', '', " (total downloads : $total_downloads, this week : $week_downloads)" ) ;
+	    }
+
+
+	/*==================================================================================================
+
+		Global constants and variables.
+
+	  ==================================================================================================*/
+	define ( 'PHPCLASSES_ORG'		,  'http://www.phpclasses.org' ) ;
+	define ( 'JSCLASSES_ORG'		,  'http://www.jsclasses.org' ) ;
+	define ( 'AUTHOR_PATH'			,  'browse/author' ) ;
+
+	$CL 				=  new  CLParser ( $Definitions ) ;
+	$Author				=  $CL -> author ;
+	$DefineAuthor			=  $CL -> define_author ;
+	$ListAuthors			=  $CL -> list_authors ;
+	$ListClasses			=  $CL -> list_classes ;
+	$ListClassStatistics		=  $CL -> list_class_statistics ;
+	$Update				=  $CL -> update ;
+
+	$PhpClassesSite			=  ( $CL -> jsclasses ) ?  0 : 1 ;
+	$SiteName			=  get_site_name ( $PhpClassesSite ) ; 
+	$AuthorData			=  get_author_data ( ) ;
+	$HadOption			=  false ;
+	$HadUpdate			=  false ;
+
+
+	// -define_author :
+	//	Defines an author with an id, name and optional initials & alias
+	if  ( count ( $DefineAuthor ) )
+	   {
+		DefineAuthor ( $DefineAuthor ) ;
+		exit ;
+	    }
+
+	// Check that the specified author exists in the local database
+	if  ( ! $AuthorData )
+		error ( "Local database does not contain any author that could be identified by \"$Author\"" ) ;
+
+	// -update :
+	//	Forces data update for the current day.
+	if  ( ! $HadOption  &&  $Update )
+	   {
+		UpdateData ( ) ;
+		$HadUpdate	=  true ;
+	    }
+
+	// -list_authors :
+	//	Lists the authors defined in the database.
+	if  ( ! $HadOption  &&  $ListAuthors )
+	   {
+		ListAuthors ( ) ;
+		$HadOption	=  true ;
+	    }
+
+	// list_classes -
+	//	Lists the classes defined for the specified author.
+	if  ( ! $HadOption  &&  $ListClasses )
+	   {
+		ListClasses ( ) ;
+		$HadOption	=  true ;
+	    }
+
+	// list_class_statistics -
+	//	Lists statistics for the classes defined for the specified author.
+	if  ( ! $HadOption  &&  $ListClassStatistics )
+	   {
+		ListClassStatistics ( ) ;
+		$HadOption	=  true ;
+	    }
+
+	// Display help if no option provided
+	if  ( ! $HadOption  &&  !  $HadUpdate )
+		$CL -> DisplayHelp ( ) ;
