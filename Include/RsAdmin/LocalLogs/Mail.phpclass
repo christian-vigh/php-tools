@@ -335,15 +335,22 @@ class  LocalMailLog	extends  LocalLog
 								    #imsx' ;
 	// Message of the form :
 	//	vps108493 postfix/smtpd[22116]: warning: unknown[65.210.36.70]: SASL LOGIN authentication failed: no mechanism available
+	//	vps169910 postfix/smtpd[3511]: warning: SASL authentication failure: Couldn't find mech NTLM
+	//	vps169910 postfix/smtpd[3511]: warning: unknown[5.255.82.199]: SASL NTLM authentication failed: no mechanism available
 	//	Constant : MAIL_SMTP_LOGIN_AUTHENTICATION_FAILED
 	private static  $regex_smtp_login_authentication_failed	=  '#
 									(?P<message>
 										warning: \s+ 
-										(?P<domain> [^\[]+)
-										\[
-										(?P<ip> [^\]]+)
-										\] : \s+
-										SASL \s+ LOGIN \s+ authentication \s+ failed
+										(
+											(
+												(?P<domain> [^\[]+)
+												\[
+												(?P<ip> [^\]]+)
+												\] : \s+
+												SASL \s+ \w+ \s+ authentication \s+ failed
+											 ) |
+											(SASL \s+ authentication \s+ failure)
+										)
 										.*
 									)
 								    #imsx' ;
