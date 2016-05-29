@@ -33,6 +33,11 @@
 	    [Version : 1.0.4]	[Date : 2015/12/28]	[Author : CV]
 		. Added the possibility to stop services and applications before backup begins.
 
+	    [Version : 1.0.5]	[Date : 2016/05/29]	[Author : CV]
+		. Removed the /B switch from the ROBOCOPY command-line : on Windows 10, it requires the
+		  current user to have the BACKUP access right, which seems impossible to grant on a regular
+		  user with Windows 10 Home edition. Shit.
+
 	 ***************************************************************************************************/
 	require ( "tools.phpinclude" ) ;
 
@@ -1545,7 +1550,7 @@ END;
 		//	Turns off logging of job header.
 		// /NP -
 		//	Turns off copy progress indicator.
-		$BackupOptions			=  "/E /B /R:0 /XJ /COPY:D /XX /NDL /NJH /NP" ;
+		$BackupOptions			=  "/E /R:0 /XJ /COPY:D /XX /NDL /NJH /NP" ;
 
 		// Regex for locating robocopy's file information
 		static $re_file			=  '#
