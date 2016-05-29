@@ -14,7 +14,10 @@
 	    HISTORY
 	        [Version : 1.0]		[Date : 2016-05-14]     [Author : CV]
 	                Initial version.
-	
+
+	        [Version : 1.0.1]	[Date : 2016-05-29]     [Author : CV]
+			Added the -list_downloads_by option.
+
 	 **************************************************************************************************************/
 	require ( "tools.phpinclude" ) ;
 
@@ -59,6 +62,10 @@
 	<flag name="list_class_statistics, lcs">
 		Lists class statistics collected for the specified author.
 	</flag>
+
+	<string name="list_downloads, ld" default="7 days" arguments="1..2" value-text="count [days|weeks|months|years]">
+		Shows number of downloads for the last "count" days, weeks, months or years. The default is 7 days.
+	</string>
 
 	<flag name="update, u">
 		Forces data update for the current day.
@@ -162,6 +169,55 @@ END;
 	function  get_author_url ( $id )
 	   {
 		return ( get_absolute_url ( AUTHOR_PATH . '/' . $id ) ) ;
+	    }
+
+
+	// get_download_parameter -
+	//	Parses the value of parameters such as -list_downloads, which can be specified as days, weeks, months or years.
+	//	For convenience reasons, "7 days" can also be specified as "7d", "7 d", "d7" or "d 7".
+	function  get_download_parameter ( $pname, $pvalue )
+	   {
+		$pvalue		=  implode ( '', $pvalue ) ;
+
+		if  ( preg_match ( '/^[a-z]+$/i', $pvalue ) ) 
+			$match		=  [ 'count' => "7", 'unit' => $pvalue  ] ;
+		else if  ( preg_match ( '/^\d+$/', $pvalue ) )
+			$match		=  [ 'count' => $pvalue, 'unit' => 'days' ] ;
+		else if  ( ! preg_match ( '/^ (?P<count> \d+) \s* (?P<unit> [a-z]+) $/ix', $pvalue, $match ) )
+		   {
+			if  ( ! preg_match ( '/^ (?P<unit> [a-z]+) \s* (?P<count> \d+) $/ix', $pvalue, $match ) )
+				error ( "Invalid value for parameter $pname" ) ;
+		    }
+
+		$count		=  ( integer ) $match [ 'count' ] ;
+		$unit		=  strtolower ( $match [ 'unit' ] ) ;
+
+		if  ( $count  <  1  ||  $count  >  15 )
+			error ( "Value \"$count\" is out of range for the $pname parameter." ) ;
+
+		switch ( $unit )
+		   {
+			case  'days' : case  'day' : case  'd' :
+				$unit	=  'd' ;
+				break ;
+
+			case  'weeks' : case  'week' : case  'w' :
+				$unit	=  'w' ;
+				break ;
+
+			case  'months' : case  'month' : case  'm' :
+				$unit	=  'm' ;
+				break ;
+
+			case  'years' : case  'year' : case  'y' :
+				$unit	=  'y' ;
+				break ;
+
+			default :
+				error ( "Invalid unit \"$unit\"" ) ;
+		    }
+
+		return ( [ 'count' => $count, 'unit' => $unit ] ) ;
 	    }
 
 
@@ -709,6 +765,155 @@ END;
 	    }
 
 
+	// ListDownloads -
+	//	Lists download statistics for all the classes of the specified author.
+	function  get_download_statistics_per_day ( $count )
+	   {
+		global		$Database, $AuthorData ;
+
+
+		$author_id		=  $AuthorData [ 'aut_id' ] ;
+		$query			=  "
+						SELECT 
+							pco_classes. cla_package_name			AS 'package',
+							pco_classes_history. clah_date			AS 'date',
+							pco_classes_history. clah_total_downloads	AS 'downloads' 
+						FROM pco_classes
+						LEFT JOIN pco_classes_history ON
+							pco_classes_history. clah_class_id = pco_classes. cla_id
+						LEFT JOIN pco_authors ON
+							pco_authors. aut_id = pco_classes. cla_author_id
+						WHERE
+							pco_authors. aut_id			= $author_id  AND
+							pco_classes. cla_deleted		= 0 AND
+							pco_classes_history. clah_date BETWEEN DATE_ADD( CURDATE(), INTERVAL -$count DAY ) AND CURDATE()
+						ORDER BY 
+							pco_classes. cla_package_name,
+							pco_classes_history. clah_date DESC
+					   " ;
+
+		$Database -> SetQuery ( $query ) ;
+		$rows			=  $Database -> LoadRows ( ) ;
+		$statistics		=  [] ;
+
+		for  ( $i = 0, $row_count = count ( $rows ) ; $i  <  $row_count ; $i ++ )
+		   {
+			$row	=  $rows [$i] ;
+
+			if  ( ! isset ( $statistics [ $row [ 'package' ] ] ) )
+				$statistics [ $row [ 'package' ] ] [ 'Total' ]	=  ( integer ) $row [ 'downloads' ] ;
+			else if  ( $i + 1  <  $row_count  &&  $rows [ $i + 1 ] [ 'package' ]  ==  $row [ 'package' ] )
+				$statistics [ $row [ 'package' ] ] [ $row [ 'date' ] ]	=  $row [ 'downloads' ] - $rows [ $i + 1 ] [ 'downloads' ] ;
+			else
+				$statistics [ $row [ 'package' ] ] [ $row [ 'date' ] ]	=  ( integer ) $row [ 'downloads' ] ;
+		    }
+
+		return ( $statistics ) ;
+	    }
+
+
+	function  get_grouped_download_statistics ( $count, $grouping )
+	   {
+		global		$Database, $AuthorData ;
+
+
+		$author_id		=  $AuthorData [ 'aut_id' ] ;
+		$query			=  "
+						SELECT 
+                                                       pco_classes. cla_package_name			AS 'package',
+                                                        MIN(pco_classes_history. clah_date)             AS 'date',
+                                                        MIN(pco_classes_history. clah_total_downloads)  AS 'downloads',
+							MAX(pco_classes_history. clah_total_downloads)	AS 'total'
+ 						FROM pco_classes
+						LEFT JOIN pco_classes_history ON
+							pco_classes_history. clah_class_id = pco_classes. cla_id
+						LEFT JOIN pco_authors ON
+							pco_authors. aut_id = pco_classes. cla_author_id
+						WHERE
+							pco_authors. aut_id			= $author_id  AND
+							pco_classes. cla_deleted		= 0 AND
+							pco_classes_history. clah_date BETWEEN DATE_ADD( CURDATE(), INTERVAL -$count $grouping ) AND CURDATE()
+						GROUP BY
+							pco_classes. cla_package_name, 
+							$grouping( pco_classes_history. clah_date )
+ 						ORDER BY 
+							pco_classes. cla_package_name,
+							MIN( pco_classes_history. clah_date ) DESC
+					   " ;
+
+		$Database -> SetQuery ( $query ) ;
+		$rows			=  $Database -> LoadRows ( ) ;
+		$statistics		=  [] ;
+
+		for  ( $i = 0, $row_count = count ( $rows ) ; $i  <  $row_count ; $i ++ )
+		   {
+			$row	=  $rows [$i] ;
+
+			if  ( ! isset ( $statistics [ $row [ 'package' ] ] ) )
+				$statistics [ $row [ 'package' ] ] [ 'Total' ]	=  ( integer ) $row [ 'total' ] ;
+			else if  ( $i + 1  <  $row_count  &&  $rows [ $i + 1 ] [ 'package' ]  ==  $row [ 'package' ] )
+				$statistics [ $row [ 'package' ] ] [ $row [ 'date' ] ]	=  $row [ 'downloads' ] - $rows [ $i + 1 ] [ 'downloads' ] ;
+			else
+				$statistics [ $row [ 'package' ] ] [ $row [ 'date' ] ]	=  ( integer ) $row [ 'downloads' ] ;
+		    }
+
+		return ( $statistics ) ;
+	    }
+
+
+	function  ListDownloads ( )
+	   {
+		global		$ListDownloads ;
+
+
+		ensure_updated ( ) ;
+		$count			=  $ListDownloads [ 'count' ] ;
+		$unit			=  $ListDownloads [ 'unit' ] ;
+
+		switch  ( $unit )
+		   {
+			case	'd' :
+				$statistics		=  get_download_statistics_per_day ( $count ) ;
+				break ;
+
+			case	'w' :
+				$statistics		=  get_grouped_download_statistics ( $count, 'WEEK' ) ;
+				break ;
+
+			case	'm' :
+				$statistics		=  get_grouped_download_statistics ( $count, 'MONTH' ) ;
+				break ;
+
+			case	'y' :
+				$statistics		=  get_grouped_download_statistics ( $count, 'YEAR' ) ;
+				break ;
+		    }
+
+		$report_columns	[0]	=  [ 'member' => 'package', 'title' => 'Package' ] ;
+		$data_columns		=  [] ;
+		reset ( $statistics ) ;
+
+		foreach  ( next ( $statistics )  as  $statistic_title => $junk )
+			$report_columns []	=  [ 'member' => $statistic_title, 'align' => 'right' ] ;
+
+		reset ( $statistics ) ;
+
+		foreach  ( $statistics  as  $package => $statistic )
+		   {
+			$column		=  [ 'package' => $package ] ;
+
+			foreach  ( $statistic  as  $statistic_name => $statistic_value ) 
+				$column [ $statistic_name ]	=  $statistic_value ;
+
+			$data_columns []	=  $column ;
+		    }
+
+		$report		=  new  AsciiReport ( $report_columns ) ;
+		echo $report -> Generate ( $data_columns ) ;
+		echo $report -> Summary ( 'class' ) ;
+	    }
+
+
 	/*==================================================================================================
 
 		Global constants and variables.
@@ -724,6 +929,7 @@ END;
 	$ListAuthors			=  $CL -> list_authors ;
 	$ListClasses			=  $CL -> list_classes ;
 	$ListClassStatistics		=  $CL -> list_class_statistics ;
+	$ListDownloads			=  ( $CL -> IsSpecified ( 'list_downloads' ) ) ?  get_download_parameter ( '-list_downloads', $CL -> list_downloads ) : false ;
 	$Update				=  $CL -> update ;
 
 	$PhpClassesSite			=  ( $CL -> jsclasses ) ?  0 : 1 ;
@@ -774,6 +980,14 @@ END;
 	if  ( ! $HadOption  &&  $ListClassStatistics )
 	   {
 		ListClassStatistics ( ) ;
+		$HadOption	=  true ;
+	    }
+
+	// list_downloads -
+	//	Lists the download statistics for the classes of the specified author.
+	if  ( ! $HadOption  &&  $ListDownloads )
+	   {
+		ListDownloads ( ) ;
 		$HadOption	=  true ;
 	    }
 
