@@ -1,0 +1,111 @@
+<?php
+	/**************************************************************************************************************
+	
+	    NAME
+	        pdftester.phs
+	
+	    DESCRIPTION
+	        A small utility to compare the results of the thrak and phpclasses.org PdfToText class versions.
+	
+	    AUTHOR
+	        Christian Vigh, 06/2016.
+	
+	    HISTORY
+	        [Version : 1.0]		[Date : 2016-06-01]     [Author : CV]
+	                Initial version.
+	
+	 **************************************************************************************************************/
+	require ( "tools.phpinclude" ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Types\String ;
+	use  Thrak\IO\Path ;
+	use  Thrak\IO\AsciiReport ;
+	use  Thrak\Processors\PdfToText as ThrakPdfToText ;
+
+	require ( 'E:/PHP/phpclasses.org/PdfToText/PdfToText.phpclass' ) ;
+
+	$Definitions	= <<<END
+<command>
+	<usage>
+		Runs the PdfToText class on the specified file and compares the results of the thrak and phpclasses.org versions.
+	</usage>
+
+	<flag name="debug, d">
+		Enables debug mode.
+	</flag>
+
+	<flag name="verbose, v">
+		Enables debug mode with extra verbose information.
+	</flag>
+
+	<unnamed>
+		<file arguments="1..*" glob="true">
+			Pdf file(s) to be processed.
+		</file>
+	</unnamed>
+</command>
+END;
+
+	$CL			=  new CLParser ( $Definitions ) ;
+	$verbose		=  $CL -> verbose ;
+	$debug			=  ( $verbose ) ?  100 : $CL -> debug ;
+	$filenames		=  $CL -> UnnamedParameters [0] -> Values ;
+	$single			=  ( count ( $filenames )  ==  1 ) ;
+	ThrakPdfToText::$DEBUG	=  $debug ;
+
+	// Process filenames specified on the command line
+	foreach  ( $filenames  as  $filename )
+	   {
+		$name			=  pathinfo ( $filename, PATHINFO_FILENAME ) ;
+		$debug_output		=  "$name.debug.lst" ;
+		ob_start ( ) ;
+
+		// Generate the Thrak version
+		$thrak_pdf		=  new ThrakPdfToText ( $filename ) ;
+		$thrak_output		=  "$name.thrak.txt" ;
+		file_put_contents ( $thrak_output, $thrak_pdf -> Text ) ;
+
+		// Then the phpclasses.org version
+		$phpclasses_pdf		=  new PdfToText ( $filename ) ;
+		$phpclasses_output	=  "$name.phpclasses.txt" ;
+		file_put_contents ( $phpclasses_output, $phpclasses_pdf -> Text ) ;
+
+		// Generate the differences file
+		$diff_output		=  "$name.diff.lst" ;
+		$output			=  null ;
+		exec ( "diff $thrak_output $phpclasses_output", $output ) ;
+		$output_string		=  trim ( implode ( "\n", $output ) ) ;
+		file_put_contents ( $diff_output, $output_string ) ;
+
+		// Get debug information (if any)
+		$debug_data		=  ob_get_clean ( ) ;
+		file_put_contents ( $debug_output, $debug_data ) ;
+
+		// Output some information ; differences will be printed if only one file has been specified
+		if  ( $single ) 
+		   {
+			output ( $debug_data ) ;
+			output ( "\nComparison results :" ) ;
+			output ( "~~~~~~~~~~~~~~~~~~" ) ;
+			output ( $output_string ) ;
+		    }
+		else
+		    {
+			if  ( $output_string )
+				$diff_count		=  substr_count ( $output_string, "\n" ) + 1 ;
+			else 
+				$diff_count		=  0 ;
+
+			if  ( $diff_count )
+				$diff_text	=  " ($diff_count lines)" ;
+			else
+				$diff_text	=  ' (no difference)' ;
+
+			output ( "$filename ->" ) ;
+			output ( "\tThrak version      : $thrak_output" ) ;
+			output ( "\tPhpclasses version : $phpclasses_output" ) ;
+			output ( "\tDiff output        : $diff_output$diff_text" ) ;
+			output ( "\tDebug output       : $debug_output" ) ;
+		     }
+	    }

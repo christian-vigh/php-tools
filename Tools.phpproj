@@ -565,6 +565,8 @@
     <Content Include="Benchmark\MySQL\Select random record\randomtest.phs" />
     <Content Include="Bin\guts.phs" />
     <Content Include="Bin\myip.phs" />
+    <Content Include="Bin\pcomerge.phs" />
+    <Content Include="Bin\pdftester.phs" />
     <Content Include="Bin\px.phs" />
     <Content Include="Bin\drives.phs" />
     <Content Include="Bin\iecache.phs" />
