@@ -34,6 +34,7 @@ class  LocalHttpErrorLogBase	extends  LocalLog
 	const   HTTP_SEVERITY_CRITICAL		=  5 ;
 	const   HTTP_SEVERITY_ALERT		=  6 ;
 	const   HTTP_SEVERITY_DEBUG		=  7 ;
+	const   HTTP_SEVERITY_USER_AGENT	=  8 ;
 
 
 	// Association between Http severities and their title in the Apache log files
@@ -47,7 +48,8 @@ class  LocalHttpErrorLogBase	extends  LocalLog
 		'unknown'	=>  self::HTTP_SEVERITY_CUSTOM_UNKNOWN,
 		'crit'		=>  self::HTTP_SEVERITY_CRITICAL,
 		'debug'		=>  self::HTTP_SEVERITY_DEBUG,
-		'alert'		=>  self::HTTP_SEVERITY_ALERT
+		'alert'		=>  self::HTTP_SEVERITY_ALERT,
+		'useragent'	=>  self::HTTP_SEVERITY_USER_AGENT
 	    ] ;
 
 	// Php messages severity - note that there is no distinction in Apache error logs between a core, user or
