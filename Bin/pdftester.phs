@@ -74,7 +74,7 @@ END;
 		// Generate the differences file
 		$diff_output		=  "$name.diff.lst" ;
 		$output			=  null ;
-		exec ( "diff $thrak_output $phpclasses_output", $output ) ;
+		exec ( "diff \"$thrak_output\" \"$phpclasses_output\"", $output ) ;
 		$output_string		=  trim ( implode ( "\n", $output ) ) ;
 		file_put_contents ( $diff_output, $output_string ) ;
 
