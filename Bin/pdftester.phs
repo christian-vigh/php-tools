@@ -108,4 +108,12 @@ END;
 			output ( "\tDiff output        : $diff_output$diff_text" ) ;
 			output ( "\tDebug output       : $debug_output" ) ;
 		     }
+
+		// Extract images from the Thrak version
+		for  ( $i = 0, $count = count ( $thrak_pdf -> Images ) ; $i  <  $count ; $i ++ )
+		   {
+			$image_output	=  "$name.images." . ( $i + 1 ) . ".jpg" ;
+			$image		=  $thrak_pdf -> Images [$i] ;
+			$image -> SaveAs ( $image_output ) ;
+		    }
 	    }
