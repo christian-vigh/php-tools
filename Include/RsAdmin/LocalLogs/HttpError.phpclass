@@ -254,8 +254,11 @@ class  LocalHttpErrorLogBase	extends  LocalLog
 	// Constant : HTTP_INVALID_METHOD
 	private static	$regex_http_invalid_method		=  '#
 									(?P<message>
-										Invalid \s+ method \s+ in \s+ request \s+
-										(?P<url> [^\s]+)
+										Invalid \s+ method \s+ in \s+ request 
+										(
+											\s+
+											(?P<url> [^\s]*)
+										 )?
 										.*
 									 )
 								    #imsx' ;
@@ -576,7 +579,9 @@ class  LocalHttpErrorLogBase	extends  LocalLog
 			else if  ( preg_match ( self::$regex_http_invalid_method, $message, $regex_match ) )
 			   {
 				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE, $regex_match [ 'message' ] ) ;
-				$url_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_HTTP_REQUEST_URL, $regex_match [ 'url' ] ) ;
+
+				if  ( isset ( $regex_match [ 'url' ] ) )
+					$url_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_HTTP_REQUEST_URL, $regex_match [ 'url' ] ) ;
 
 				$log_error_code		=  self::HTTP_INVALID_METHOD ;
 			    }
