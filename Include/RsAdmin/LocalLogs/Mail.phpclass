@@ -94,6 +94,7 @@ class  LocalMailLog	extends  LocalLog
 	const   MAIL_IMAPD_SSL_INAPPROPRIATE_FALLBACK		=  63 ;
 	const   MAIL_IMAPD_SSL_UNSUPPORTED_PROTOCOL		=  64 ;
 	const	MAIL_SMTP_CONNECTION_REFUSED			=  65 ;
+	const	MAIL_SSL_BAD_CERTIFICATE			=  66 ;
 
 
 	// Constructor -
@@ -982,6 +983,19 @@ class  LocalMailLog	extends  LocalLog
 										.*
 									)
 								    #imsx' ;
+	// Message of the form :
+	//	vps169910 imapd-ssl: couriertls: accept: error:14094412:SSL routines:SSL3_READ_BYTES:sslv3 alert bad certificate
+	// Constant : MAIL_SSL_BAD_CERTIFICATE
+	private static	$regex_ssl_bad_certificate		=  '#
+									(?P<message>
+										.*
+										accept: \s+ error: 
+										.*
+										alert \s+ bad \s+ certificate
+										.*
+									)
+								    #imsx' ;
+
 
 
 	protected function  Parse ( $line, &$parsed_data, $string_store )
@@ -1607,6 +1621,13 @@ class  LocalMailLog	extends  LocalLog
 				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP			, $regex_match [ 'ip' ] ) ;
 				$domain_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_DOMAIN_NAME		, $regex_match [ 'host' ] ) ;
 				$log_code		=  self::MAIL_SMTP_CONNECTION_REFUSED ;
+			    }
+			// Message of the form :
+			//	vps169910 imapd-ssl: couriertls: accept: error:14094412:SSL routines:SSL3_READ_BYTES:sslv3 alert bad certificate
+			else if  ( preg_match ( self::$regex_ssl_bad_certificate, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $regex_match [ 'message' ] ) ;
+				$log_code		=  self::MAIL_SSL_BAD_CERTIFICATE ;
 			    }
 			// Informational messages
 			else if  ( preg_match ( self::$regex_informational_warning, $message, $regex_match ) ) 
