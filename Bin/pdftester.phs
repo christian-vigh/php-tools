@@ -31,9 +31,17 @@
 		Runs the PdfToText class on the specified file and compares the results of the thrak and phpclasses.org versions.
 	</usage>
 
+	<string name="block_separator, bs" default="">
+		String used to separate chunks of text specified as an array.
+	</string>
+
 	<flag name="debug, d">
 		Enables debug mode.
 	</flag>
+
+	<string name="separator, s" default= " ">
+		String used to separate groups of character when the offset between them exceeds 1000 thousands of text unit.
+	</string>
 
 	<flag name="verbose, v">
 		Enables debug mode with extra verbose information.
@@ -52,6 +60,8 @@ END;
 	$debug			=  ( $verbose ) ?  100 : $CL -> debug ;
 	$filenames		=  $CL -> UnnamedParameters [0] -> Values ;
 	$single			=  ( count ( $filenames )  ==  1 ) ;
+	$block_separator	=  $CL -> block_separator ;
+	$separator		=  $CL -> separator ;
 	ThrakPdfToText::$DEBUG	=  $debug ;
 
 	// Process filenames specified on the command line
@@ -62,8 +72,11 @@ END;
 		ob_start ( ) ;
 
 		// Generate the Thrak version
-		$thrak_pdf		=  new ThrakPdfToText ( $filename ) ;
-		$thrak_output		=  "$name.thrak.txt" ;
+		$thrak_pdf			=  new ThrakPdfToText ( ) ;
+		$thrak_pdf -> BlockSeparator	=  $block_separator ;
+		$thrak_pdf -> Separator		=  $separator ;
+		$thrak_pdf -> Load ( $filename ) ;
+		$thrak_output			=  "$name.thrak.txt" ;
 		file_put_contents ( $thrak_output, $thrak_pdf -> Text ) ;
 
 		// Then the phpclasses.org version
