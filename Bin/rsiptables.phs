@@ -510,9 +510,8 @@ END;
 		$iptables	=  RsAdmin::TABLE_SERVER_IPTABLES ;
 		$server_table	=  RsAdmin::TABLE_SERVERS ;
 		$empty_tables	=  get_empty_iptables_rules ( ) ;
-		$first		=  true ;
 
-		echo ( "Resetting remote iptables from local database : " ) ;
+		output ( "Resetting remote iptables from local database : " ) ;
 
 		// Loop through specified servers
 		foreach ( $ServerList  as  $host )
@@ -530,10 +529,13 @@ END;
 
 			$Database -> SetSimpleQuery ( $query ) ;
 			$rows		=  $Database -> LoadRows ( ) ;
+			echo ( "\t$host (" . count ( $rows ) . " rows)..." ) ;
 
 			// Reset iptables
 			$command	=  "iptables-restore <<END\n$empty_tables\nEND\n" ;
 			execute_command ( $host, $command ) ;
+			execute_command ( $host, $command ) ;
+			echo ( " remote tables reset..." ) ;
 
 			// Build the list of commands to block ips defined in the local database
 			$commands	=  [] ;
@@ -541,18 +543,11 @@ END;
 			foreach  ( $rows  as  $row )
 				$commands []	=  "iptables -A {$row [ 'seri_chain' ]} -s {$row [ 'seri_source' ]} -j {$row [ 'seri_target' ]}" ;
 
+			echo ( " adding blocked ips..." ) ;
 			$commands	=  implode ( "\n", $commands ) . "\niptables-save >/etc/network/iptables.rules" ;
 			execute_command ( $host, $commands ) ;
-
-			if  ( $first )
-				$first	=  false ;
-			else
-				echo ( ', ' ) ;
-
-			echo ( $host ) ;
+			output ( " ok" ) ;
 		    }
-
-		output ( '' ) ;
 	    }
 
 
