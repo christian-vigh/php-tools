@@ -95,6 +95,7 @@ class  LocalMailLog	extends  LocalLog
 	const   MAIL_IMAPD_SSL_UNSUPPORTED_PROTOCOL		=  64 ;
 	const	MAIL_SMTP_CONNECTION_REFUSED			=  65 ;
 	const	MAIL_SSL_BAD_CERTIFICATE			=  66 ;
+	const   MAIL_SMTP_NO_ROUTE_TO_HOST			=  67 ;
 
 
 	// Constructor -
@@ -995,7 +996,22 @@ class  LocalMailLog	extends  LocalLog
 										.*
 									)
 								    #imsx' ;
-
+	// Message of the form :
+	//	vps169912 postfix/smtp[4049]: connect to smtp-in.orange.fr[193.252.22.65]:25: No route to host
+	// Const : MAIL_SMTP_NO_ROUTE_TO_HOST
+	private static	$regex_smtp_no_route_to_host		=  '#
+									(?P<message>
+										.*
+										connect \s+ to \s+ (?P<host> [^\[]+ )  
+										\[
+										(?P<ip> [^\]]+ )
+										\]
+										: 
+										(?P<port> \d+)
+										: \s+ no \s+ route \s+ to \s+ host
+										.*
+									)
+								    #imsx' ;
 
 
 	protected function  Parse ( $line, &$parsed_data, $string_store )
@@ -1628,6 +1644,16 @@ class  LocalMailLog	extends  LocalLog
 			   {
 				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $regex_match [ 'message' ] ) ;
 				$log_code		=  self::MAIL_SSL_BAD_CERTIFICATE ;
+			    }
+			// Message of the form :
+			//	vps169912 postfix/smtp[4049]: connect to smtp-in.orange.fr[193.252.22.65]:25: No route to host
+			// Const : MAIL_SMTP_NO_ROUTE_TO_HOST
+			else if  ( preg_match ( self::$regex_smtp_no_route_to_host, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $regex_match [ 'message' ] ) ;
+				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP			, $regex_match [ 'ip' ] ) ;
+				$domain_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_DOMAIN_NAME		, $regex_match [ 'host' ] ) ;
+				$log_code		=  self::MAIL_SMTP_NO_ROUTE_TO_HOST ;
 			    }
 			// Informational messages
 			else if  ( preg_match ( self::$regex_informational_warning, $message, $regex_match ) ) 
