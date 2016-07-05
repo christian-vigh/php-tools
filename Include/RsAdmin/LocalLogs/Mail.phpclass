@@ -781,20 +781,17 @@ class  LocalMailLog	extends  LocalLog
 									)
 								    #imsx' ;
 	// Message of the form :
-	//	vps169910 postfix/smtpd[12541]: improper command pipelining after MAIL from
-        //	unknown[211.230.221.216]: RCPT TO: <qwertyq848@yahoo.com>\r\n
-	//	Constant : MAIL_SMTP_IMPROPER_COMMAND_PIPELINING
+	//	vps169910 postfix/smtpd[12541]: improper command pipelining after MAIL from unknown[211.230.221.216]: RCPT TO: <qwertyq848@yahoo.com>
+	// or :
+	//	vps108494 postfix/smtpd[15084]: improper command pipelining after EHLO from 61-216-2-15.HINET-IP.hinet.net[61.216.2.15]: \1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1
+	// Constant : MAIL_SMTP_IMPROPER_COMMAND_PIPELINING
 	private static	$regex_smtp_improper_command_pipelining	=  '#
 									(?P<message>
-										improper \s+ command \s+ pipelining \s+ after \s+ MAIL \s+ from \s+ 
+										improper \s+ command \s+ pipelining \s+ after \s+ (?P<command> [^ ]+) \s+ from \s+ 
 										(?P<sender> [^\[]+ )
 										\[
 										(?P<ip> [^\]]+)
 										\]
-										: \s+ RCPT \s+ TO: \s+ 
-										\<
-											(?P<recipient> [^>]+)
-										\>
 										.*
 									)
 								    #imsx' ;
@@ -1509,8 +1506,8 @@ class  LocalMailLog	extends  LocalLog
 			   {
 				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE		, $match [ 'message' ] ) ;
 				$sender_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_SMTP_SENDER	, $regex_match [ 'sender' ] ) ;
-				$recipient_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_SMTP_RECIPIENT	, $regex_match [ 'recipient' ] ) ;
 				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP		, $regex_match [ 'ip' ] ) ;
+				$smtp_command_id	=  $string_store -> Insert ( LogStringStore::LOGSTORE_SMTP_COMMAND	, $regex_match [ 'command' ] ) ;
 				$log_code		=  self::MAIL_SMTP_IMPROPER_COMMAND_PIPELINING ;
 			    }
 			// Message of the form :
