@@ -96,6 +96,7 @@ class  LocalMailLog	extends  LocalLog
 	const	MAIL_SMTP_CONNECTION_REFUSED			=  65 ;
 	const	MAIL_SSL_BAD_CERTIFICATE			=  66 ;
 	const   MAIL_SMTP_NO_ROUTE_TO_HOST			=  67 ;
+	const	MAIL_SMTP_CONNECTION_TIMED_OUT			=  68 ; 
 
 
 	// Constructor -
@@ -684,7 +685,7 @@ class  LocalMailLog	extends  LocalLog
 								    #imsx' ;
 	// Message of the form :	
 	//	vps169912 pop3d-ssl: couriertls: accept: Connection timed out
-	//	Constant : MAIL_POP3_SSL_CONNECTION_TIMED_OUT
+	// Constant : MAIL_POP3_SSL_CONNECTION_TIMED_OUT
 	private static	$regex_pop3_ssl_connection_timed_out	=  '#
 									(?P<message>
 										couriertls: \s+ accept: \s+
@@ -1009,6 +1010,23 @@ class  LocalMailLog	extends  LocalLog
 										.*
 									)
 								    #imsx' ;
+	// Message of the form :
+	//	vps169910 postfix/smtp[9323]: connect to smtp-in.orange.fr[193.252.22.65]:25: Connection timed out
+	// Constant : MAIL_SMTP_CONNECTION_TIMED_OUT
+	private static	$regex_smtp_connection_timed_out	=  '#
+									(?P<message>
+										.*
+										connect \s+ to \s+ (?P<host> [^\[]+ )  
+										\[
+										(?P<ip> [^\]]+ )
+										\]
+										: 
+										(?P<port> \d+)
+										: \s+ Connection \s+timed \s+ out
+										.*
+									)
+								    #imsx' ;
+
 
 
 	protected function  Parse ( $line, &$parsed_data, $string_store )
@@ -1644,13 +1662,21 @@ class  LocalMailLog	extends  LocalLog
 			    }
 			// Message of the form :
 			//	vps169912 postfix/smtp[4049]: connect to smtp-in.orange.fr[193.252.22.65]:25: No route to host
-			// Const : MAIL_SMTP_NO_ROUTE_TO_HOST
 			else if  ( preg_match ( self::$regex_smtp_no_route_to_host, $message, $regex_match ) ) 
 			   {
 				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $regex_match [ 'message' ] ) ;
 				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP			, $regex_match [ 'ip' ] ) ;
 				$domain_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_DOMAIN_NAME		, $regex_match [ 'host' ] ) ;
 				$log_code		=  self::MAIL_SMTP_NO_ROUTE_TO_HOST ;
+			    }
+			// Message of the form :
+			//	vps169910 postfix/smtp[9323]: connect to smtp-in.orange.fr[193.252.22.65]:25: Connection timed out
+			else if  ( preg_match ( self::$regex_smtp_connection_timed_out, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $regex_match [ 'message' ] ) ;
+				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP			, $regex_match [ 'ip' ] ) ;
+				$domain_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_DOMAIN_NAME		, $regex_match [ 'host' ] ) ;
+				$log_code		=  self::MAIL_SMTP_CONNECTION_TIMED_OUT ;
 			    }
 			// Informational messages
 			else if  ( preg_match ( self::$regex_informational_warning, $message, $regex_match ) ) 
