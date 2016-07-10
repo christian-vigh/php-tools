@@ -97,6 +97,7 @@ class  LocalMailLog	extends  LocalLog
 	const	MAIL_SSL_BAD_CERTIFICATE			=  66 ;
 	const   MAIL_SMTP_NO_ROUTE_TO_HOST			=  67 ;
 	const	MAIL_SMTP_CONNECTION_TIMED_OUT			=  68 ; 
+	const   MAIL_IMAP_HANDSHAKE_FAILURE			=  69 ;
 
 
 	// Constructor -
@@ -1026,7 +1027,17 @@ class  LocalMailLog	extends  LocalLog
 										.*
 									)
 								    #imsx' ;
-
+	// Message of the form :
+	//	vps169910 imapd: couriertls: read: error:140940E5:SSL routines:SSL3_READ_BYTES:ssl handshake failure
+        // Constant : MAIL_IMAP_HANDSHAKE_FAILURE
+	private static	$regex_imap_handshake_failure	=  '#
+									(?P<message>
+										.*
+										read: \s+ error: .*
+										handshake \s+ failure
+										.*
+									)
+								    #imsx' ;
 
 
 	protected function  Parse ( $line, &$parsed_data, $string_store )
@@ -1677,6 +1688,13 @@ class  LocalMailLog	extends  LocalLog
 				$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP			, $regex_match [ 'ip' ] ) ;
 				$domain_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_DOMAIN_NAME		, $regex_match [ 'host' ] ) ;
 				$log_code		=  self::MAIL_SMTP_CONNECTION_TIMED_OUT ;
+			    }
+			// Message of the form :
+			//	vps169910 imapd: couriertls: read: error:140940E5:SSL routines:SSL3_READ_BYTES:ssl handshake failure
+			else if  ( preg_match ( self::$regex_imap_handshake_failure, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $regex_match [ 'message' ] ) ;
+				$log_code		=  self::MAIL_IMAP_HANDSHAKE_FAILURE ;
 			    }
 			// Informational messages
 			else if  ( preg_match ( self::$regex_informational_warning, $message, $regex_match ) ) 
