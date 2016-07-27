@@ -39,6 +39,10 @@
 		Enables debug mode.
 	</flag>
 
+	<flag name="extract_images, xi, x">
+		Extracts images from the pdf file.
+	</flag>
+
 	<string name="separator, s" default= " ">
 		String used to separate groups of character when the offset between them exceeds 1000 thousands of text unit.
 	</string>
@@ -58,6 +62,7 @@ END;
 	$CL			=  new CLParser ( $Definitions ) ;
 	$verbose		=  $CL -> verbose ;
 	$debug			=  ( $verbose ) ?  100 : $CL -> debug ;
+	$extract_images		=  $CL -> extract_images ;
 	$filenames		=  $CL -> UnnamedParameters [0] -> Values ;
 	$single			=  ( count ( $filenames )  ==  1 ) ;
 	$block_separator	=  $CL -> block_separator ;
@@ -75,6 +80,10 @@ END;
 		$thrak_pdf			=  new ThrakPdfToText ( ) ;
 		$thrak_pdf -> BlockSeparator	=  $block_separator ;
 		$thrak_pdf -> Separator		=  $separator ;
+
+		if  ( $extract_images ) 
+			$thrak_pdf -> Options	=  ThrakPdfToText::PDFOPT_DECODE_IMAGE_DATA ;
+
 		$thrak_pdf -> Load ( $filename ) ;
 		$thrak_output			=  "$name.thrak.txt" ;
 		file_put_contents ( $thrak_output, $thrak_pdf -> Text ) ;
