@@ -91,6 +91,8 @@ class  LocalAuthLog	extends  LocalLog
 	const	AUTH_PASSWD_CHANGED				=  58 ;
 	const	AUTH_PASSWD_USER_DELETED			=  59 ;
 	const   AUTH_CORRUPTED_MAC				=  60 ;
+	const   AUTH_SSH_PADDING_ERROR				=  61 ;
+	const	AUTH_SSH_PACKET_CORRUPT				=  62 ;
 
 
 	// Constructor -
@@ -810,6 +812,24 @@ class  LocalAuthLog	extends  LocalLog
 									 )
 								    #imsx' ;
 
+	// Message of the form :
+	//	vps169910 sshd[29429]: padding error: need 8 block 16 mod 8 [preauth]
+	// Constant : AUTH_SSH_PADDING_ERROR 
+	private static	$regex_padding_error		=  '#	
+									(?P<message>
+										padding \s+ error
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps169910 sshd[29429]: Disconnecting: Packet corrupt [preauth]
+	// Constant : AUTH_SSH_PACKET_CORRUPT
+	private static	$regex_packet_corrupt		=  '#	
+									(?P<message>
+										Disconnecting \s* : \s+ Packet \s+ corrupt
+										.*
+									 )
+								    #imsx' ;
 
 
 
@@ -1390,6 +1410,20 @@ class  LocalAuthLog	extends  LocalLog
 			   {
 				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
 				$log_code		=  self::AUTH_CORRUPTED_MAC ;
+			    }
+			// Message of the form :
+			//	vps169910 sshd[29429]: padding error: need 8 block 16 mod 8 [preauth]
+			else if  ( preg_match ( self::$regex_padding_error, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SSH_PADDING_ERROR ;
+			    }
+			// Message of the form :
+			//	vps169910 sshd[29429]: Disconnecting: Packet corrupt [preauth]
+			else if  ( preg_match ( self::$regex_packet_corrupt, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SSH_PACKET_CORRUPT ;
 			    }
 			else
 			   {
