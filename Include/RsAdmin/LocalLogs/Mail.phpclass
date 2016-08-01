@@ -98,6 +98,7 @@ class  LocalMailLog	extends  LocalLog
 	const   MAIL_SMTP_NO_ROUTE_TO_HOST			=  67 ;
 	const	MAIL_SMTP_CONNECTION_TIMED_OUT			=  68 ; 
 	const   MAIL_IMAP_HANDSHAKE_FAILURE			=  69 ;
+	const	MAIL_POP3_DECRYPTION_FAILED			=  70 ;
 
 
 	// Constructor -
@@ -1038,6 +1039,16 @@ class  LocalMailLog	extends  LocalLog
 										.*
 									)
 								    #imsx' ;
+	// Message of the form :
+	//	vps169910 pop3d-ssl: couriertls: read: error:1408F119:SSL routines:SSL3_GET_RECORD:decryption failed or bad record mac
+	// Constant : MAIL_POP3_DECRYPTION_FAILED
+	private static	$regex_pop3_decryption_failed	=  '#
+									(?P<message>
+										.*
+										decryption \s+ failed \s+ or \s+ bad \s+ record \s+ mac
+										.*
+									)
+								    #imsx' ;
 
 
 	protected function  Parse ( $line, &$parsed_data, $string_store )
@@ -1701,6 +1712,13 @@ class  LocalMailLog	extends  LocalLog
 			   {
 				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $regex_match [ 'message' ] ) ;
 				$log_code		=  self::MAIL_INFORMATIONAL_WARNING ;
+			    }
+			// Message of the form :
+			//	vps169910 pop3d-ssl: couriertls: read: error:1408F119:SSL routines:SSL3_GET_RECORD:decryption failed or bad record mac
+			else if  ( preg_match ( self::$regex_pop3_decryption_failed, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $regex_match [ 'message' ] ) ;
+				$log_code		=  self::MAIL_POP3_DECRYPTION_FAILED ;
 			    }
 			// Other unhandled messages : warn the developer
 			else
