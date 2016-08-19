@@ -49,6 +49,10 @@
 		Specifying this parameter will cause the text leading instructions to be ignored.
 	</flag>
 
+	<flag name="remove_hyphens, rh">
+		Joins back hyphenated words.
+	</flag>
+
 	<string name="separator, s" default= " ">
 		String used to separate groups of character when the offset between them exceeds 1000 thousands of text unit.
 	</string>
@@ -74,6 +78,7 @@ END;
 	$single			=  ( count ( $filenames )  ==  1 ) ;
 	$block_separator	=  $CL -> block_separator ;
 	$ignore_text_leading	=  $CL -> ignore_text_leading ;
+	$remove_hyphens		=  $CL -> remove_hyphens ;
 	$separator		=  $CL -> separator ;
 	ThrakPdfToText::$DEBUG	=  $debug ;
 
@@ -95,6 +100,9 @@ END;
 
 		if  ( $ignore_text_leading )
 			$thrak_pdf -> Options	|=  ThrakPdfToText::PDFOPT_IGNORE_TEXT_LEADING ;
+
+		if  ( $remove_hyphens )
+			$thrak_pdf -> Options	|=  ThrakPdfToText::PDFOPT_NO_HYPHENATED_WORDS ;
 
 		$thrak_pdf -> Load ( $filename ) ;
 		$thrak_output			=  "$name.thrak.txt" ;
