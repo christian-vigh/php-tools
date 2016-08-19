@@ -104,6 +104,7 @@ class  LocalHttpErrorLogBase	extends  LocalLog
 	const	HTTP_CERTIFICATE_ISSUE			=  22 ;
 	const   HTTP_INVALID_CONTENT_LENGTH		=  23 ; 
 	const	HTTP_FILENAME_TOO_LONG			=  24 ;
+	const	HTTP_HTACCESS_ERROR			=  25 ;
 
 
 	// Constructor -
@@ -421,6 +422,16 @@ class  LocalHttpErrorLogBase	extends  LocalLog
 										.*
 									 )
 								    #imsx' ;
+	// Message of the form :
+	//	[alert] [client 2.1.33.230] /server/www/www.pdftotext.eu/site/scripts/.htaccess: order takes one
+        //	argument, 'allow,deny', 'deny,allow', or 'mutual-failure', referer: http://www.pdftotext.eu/demo.php
+	// Constant : HTTP_HTACCESS_ERROR
+	private static	$regex_htaccess_error		=  '#
+									(?P<message>
+										(?P<file> / [^:]+) : \s+
+										order \s+ takes \s+ one \s+ argument
+									 )
+								    #imsx' ;
 
 	protected function  Parse ( $line, &$parsed_data, $string_store )
 	   {
@@ -668,6 +679,15 @@ class  LocalHttpErrorLogBase	extends  LocalLog
 				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE, $regex_match [ 'message' ] ) ;
 				$file_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_HTTP_REQUEST_FILE, $regex_match [ 'file' ] ) ;
 				$log_error_code		=  self::HTTP_FILENAME_TOO_LONG ;
+			    }
+			// Message of the form :
+			//	[alert] [client 2.1.33.230] /server/www/www.pdftotext.eu/site/scripts/.htaccess: order takes one
+			//	argument, 'allow,deny', 'deny,allow', or 'mutual-failure', referer: http://www.pdftotext.eu/demo.php
+			else if  ( preg_match ( self::$regex_htaccess_error, $message, $regex_match ) )
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE, $regex_match [ 'message' ] ) ;
+				$file_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_HTTP_REQUEST_FILE, $regex_match [ 'file' ] ) ;
+				$log_error_code		=  self::HTTP_HTACCESS_ERROR ;
 			    }
 			else
 			   {
