@@ -35,6 +35,9 @@
 
 		  Either a bug or an indigent documentation of the libssh2 library, the Synchronize() function has been
 		  changed to perform all the chown commands after all the file transfers have been completed.
+
+	    [Version : 1.0.3]	[Date : 2016/08/21]     [Author : CV]
+		. Changed the chown commands issued after file transfer to use quoted filenames.
 	
 	 **************************************************************************************************************/
 	require ( "tools.phpinclude" ) ;
@@ -868,7 +871,7 @@ END;
 					$permissions		=  ( $diff_entry [ 'local' ] [ 'mode' ]  &  S_IFDIR ) ? 
 									$domain_entry [ 'directory-permissions' ] : $domain_entry [ 'file-permissions' ] ;
 					$fs -> chmod ( $new_remote_name, $permissions ) ;
-					$chown []	=  "chown {$domain_entry [ 'user' ]}:{$domain_entry [ 'group' ]} $new_remote_name" ;
+					$chown []	=  "chown {$domain_entry [ 'user' ]}:{$domain_entry [ 'group' ]} \"$new_remote_name\"" ;
 					break ;
 
 				case	'mtime' :
