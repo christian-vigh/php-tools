@@ -49,12 +49,20 @@
 		Specifying this parameter will cause the text leading instructions to be ignored.
 	</flag>
 
+	<string name="owner_password, op">
+		Owner password.
+	</string>
+
 	<flag name="remove_hyphens, rh">
 		Joins back hyphenated words.
 	</flag>
 
 	<string name="separator, s" default= " ">
 		String used to separate groups of character when the offset between them exceeds 1000 thousands of text unit.
+	</string>
+
+	<string name="user_password, up">
+		User password.
 	</string>
 
 	<flag name="verbose, v">
@@ -80,6 +88,8 @@ END;
 	$ignore_text_leading	=  $CL -> ignore_text_leading ;
 	$remove_hyphens		=  $CL -> remove_hyphens ;
 	$separator		=  $CL -> separator ;
+	$user_password		=  ( $CL -> user_password ) ?  $CL -> user_password : false ;
+	$owner_password		=  ( $CL -> owner_password ) ?  $CL -> owner_password : false ;
 	ThrakPdfToText::$DEBUG	=  $debug ;
 
 
@@ -88,6 +98,7 @@ END;
 	   {
 		$name			=  pathinfo ( $filename, PATHINFO_FILENAME ) ;
 		$debug_output		=  "$name.debug.lst" ;
+		$csv_output		=  "$name.csv" ;
 		ob_start ( ) ;
 
 		// Generate the Thrak version
@@ -104,12 +115,12 @@ END;
 		if  ( $remove_hyphens )
 			$thrak_pdf -> Options	|=  ThrakPdfToText::PDFOPT_NO_HYPHENATED_WORDS ;
 
-		$thrak_pdf -> Load ( $filename ) ;
+		$thrak_pdf -> Load ( $filename, $user_password, $owner_password ) ;
 		$thrak_output			=  "$name.thrak.txt" ;
 		file_put_contents ( $thrak_output, $thrak_pdf -> Text ) ;
 
 		// Then the phpclasses.org version
-		$phpclasses_pdf		=  new PdfToText ( $filename ) ;
+		$phpclasses_pdf		=  new PdfToText ( $filename, $user_password, $owner_password ) ;
 		$phpclasses_output	=  "$name.phpclasses.txt" ;
 		file_put_contents ( $phpclasses_output, $phpclasses_pdf -> Text ) ;
 
@@ -123,6 +134,27 @@ END;
 		// Get debug information (if any)
 		$debug_data		=  ob_get_clean ( ) ;
 		file_put_contents ( $debug_output, $debug_data ) ;
+
+		// Generate a .CSV file containing text object ids, initial size and optimized size
+		$re		=  '/
+					- \s+ TEXT \s+ \# (?P<object> \d+) 
+					.*?
+					size \s+ = \s+ (?P<initial> \d+)
+					.*?
+					new \s+ size \s+ = \s+ (?P<final> \d+)
+				    /imsx' ;
+		
+		if  ( preg_match_all ( $re, $debug_data, $matches ) )
+		   {
+			$fp	=  fopen ( $csv_output, "w" ) ;
+
+			for  ( $i = 0, $count = count ( $matches [ 'object' ] ) ; $i  <  $count ; $i ++ )
+				fprintf ( $fp, "{$matches [ 'object' ] [$i]};{$matches [ 'initial' ] [$i]};{$matches [ 'final' ] [$i]}\n" ) ;
+
+			fclose ( $fp ) ;
+		    }
+		else
+			file_put_contents ( $csv_output, '' ) ;
 
 		// Output some information ; differences will be printed if only one file has been specified
 		if  ( $single ) 
