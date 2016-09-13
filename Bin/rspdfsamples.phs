@@ -1,0 +1,378 @@
+<?php
+/**************************************************************************************************************
+
+    NAME
+        rspdfsamples.php
+
+    DESCRIPTION
+        Retrieves the new Pdf samples from the pdftotext site.
+
+    AUTHOR
+        Christian Vigh, 09/2016.
+
+    HISTORY
+        [Version : 1.0]		[Date : 2016-09-09]     [Author : CV]
+                Initial version.
+
+ **************************************************************************************************************/
+	require ( "tools.phpinclude" ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Types\String ;
+	use  Thrak\IO\Path ;
+	use  Thrak\IO\AsciiReport ;
+	use  Thrak\IO\Console ;
+	use  Thrak\Processors\IniFile ;
+
+	require ( "RsAdmin.phpclass" ) ;
+
+
+	/*==================================================================================================
+
+		Command line parameters.
+
+	  ==================================================================================================*/
+	$Definitions = <<<END
+<command allow-files="false">
+
+	<usage>
+		Retrieves recent PDF sample files from www.pdftotext.eu.
+	</usage>
+	
+	<file name="configuration_file, cf" disposition="existing" default="thraktools://Data/rspdfsamples.ini">
+		Parameters file for web synchronization.
+	</file>
+
+	<flag name="list, l">
+		Lists information about new remote files.
+	</flag>
+
+	<file name="server_configuration_file, scf" disposition="existing" default="thraktools://Data/rsadmin.ini">
+		Hosted servers parameters file.
+	</file>
+	
+	<flag name="update, u">
+		Updates the local directory with the new samples found on the remote server.
+	</flag>
+</command>
+END;
+
+
+	/*==================================================================================================
+
+	    get_local_path -
+		Returns the full path of the specified file, ensuring that it is unique in the specified
+		directory, otherwise appends a sequence number between two sharps.
+
+	  ==================================================================================================*/
+	function  get_local_path ( $local_dir, $name )
+	   {
+		$local_file	=  "$local_dir/$name" ;
+		$sequence	=  0 ;
+
+		while ( file_exists ( $local_file ) ) 
+		   {
+			$sequence ++ ;
+			$local_file	=  "$local_dir/" . preg_replace ( '/\.pdf$/', " #$sequence#.pdf", $name ) ;
+			output ( $local_file ) ;
+		    }  
+
+		return ( $local_file ) ;
+	    }
+
+
+	/*==================================================================================================
+
+	    retrieve_new_samples -
+		Returns a list of new samples from the remote server, by comparing the list of remote and
+		local files.
+
+	  ==================================================================================================*/
+	function  retrieve_new_samples ( ) 
+	   {
+		global	$Server, $LocalPath, $RemotePath, $Domain ;
+
+
+		// Make sure a connection has been established to the remote server and get a file system object
+		if  ( ! $Server -> IsConnected ( ) )
+			$Server -> Connect ( false, true, true ) ;
+
+		$fs	=  $Server -> GetFileSystem ( ) ;
+		$remote_list	=  [] ;
+
+		// Read remote directory contents
+		$rs	=  $fs -> opendir ( $RemotePath ) ;
+
+		while  ( ( $file = $fs -> readdir ( $rs ) ) )
+		   {
+			if  ( $fs -> is_dir ( $file )  ||  ! String::EndsWith ( $file, ".pdf" ) )
+				continue ;
+
+			$name		=  preg_replace ( '/^[a-z0-9]+-/i', '', $file ) ;
+			$stat		=  $fs -> stat ( "$RemotePath/$file" ) ;
+
+			$remote_list []	=  [ 'file' => $file, 'name' => $name, 'stat' => $stat ] ;
+		    }
+
+		// Sort by name (without the unique id) in ascending order, then by modification time in descending order
+		usort
+		   (
+			$remote_list, 
+			function ( $a, $b )
+			   {
+				if  ( $a [ 'name' ]  ==  $b [ 'name' ] )
+					return ( $b [ 'stat' ] [ 'mtime' ] - $a [ 'stat' ] [ 'mtime' ] ) ;
+				else
+					return ( strcmp ( $a [ 'name' ], $b [ 'name' ] ) ) ;
+			    }
+		    ) ;
+
+		// Now retrieve the files from the local directory
+		$rs		=  opendir ( $LocalPath ) ;
+		$local_list	=  [] ;
+
+		while  ( ( $file = readdir ( $rs ) ) )
+		   {
+			if  ( is_dir ( $file )  ||  ! String::EndsWith ( $file, '.pdf' ) )
+				continue ;
+			
+			$path		=  "$LocalPath/$file" ;
+			$stat		=  stat ( $path ) ;
+
+			// Short name of the file (if several files with the same name have been downloaded)
+			$short_name	=  preg_replace ( '/(.*?) \s+ \#\d+\#/x', '$1', $file ) ;
+
+			// Local files with the same name but with different contents are appended the string "#x#", where x is a sequential number
+			// To avoid exponential comparisons when determining which remote files are new, the local file list is indexed by the short name
+			// (ie, the initial name on the remote server) and all the files with the same short name will be grouped into the same
+			// array element
+			$local_list	[ $short_name ] []	=  [ 'file' => $path, 'name' => $file, 'short-name' => $short_name, 'stat' => $stat ] ;
+		    }
+
+		// Loop through the list of remote files
+		$new_files	=  [] ;
+
+		foreach  ( $remote_list  as  $remote_file )
+		    {
+			$remote_name	=  $remote_file [ 'name' ] ;
+
+			// File does not exist locally : it is really new
+			if  ( ! isset ( $local_list [ $remote_name ] ) )
+			   {
+				$remote_file [ 'homonym' ]	=  false ;
+				$remote_file [ 'local-path' ]	=  $LocalPath . '/' . $remote_file [ 'name' ] ;
+				$remote_file [ 'remote-path' ]	=  $RemotePath . '/' . $remote_file [ 'file' ] ;
+				$new_files []			=  $remote_file ;
+			    }
+			// File does not exist locally : check if this is a homonym or a new file with the same name
+			else
+			   {
+				$found	=  false ;
+
+				foreach  ( $local_list [ $remote_name ]  as  $local_file )
+				   {
+					if  ( $local_file [ 'stat' ] [ 'size' ]  ==  $remote_file [ 'stat' ] [ 'size' ] )
+					   {
+						$found	=  true ;
+						break ;
+					    }
+				    }
+
+				if  ( ! $found )
+				   {
+					$remote_file [ 'homonym' ]	=  true ;
+					$remote_file [ 'local-name' ]	=  get_local_path ( $LocalPath, $remote_file [ 'name' ] ) ;
+					$remote_file [ 'remote-path' ]	=  $RemotePath . '/' . $remote_file [ 'file' ] ;
+					$new_files []			=  $remote_file ;
+				    }
+			    }
+		     }
+
+		// All done, return
+		if  ( count ( $new_files ) )
+			return ( $new_files ) ;
+		else
+			return ( false ) ;
+	    }
+
+
+	/*==================================================================================================
+
+	    LoadParameters -
+		Loads configuration parameters.
+
+	  ==================================================================================================*/
+	function  LoadParameters ( $inifile )
+	   {
+		global	$RsAdmin, $Server, $ConfigurationFile,
+			$Domain, $LocalPath, $RemotePath ;
+
+
+		$iniconf	=  IniFile::LoadFromFile ( $inifile ) ;
+
+		// [Settings] section, Domain entry :
+		//	Name of the remote domain to be checked.
+		$Domain		=  $iniconf -> GetKey ( 'Settings', 'Domain' ) ;
+
+		if  ( ! $Domain )
+			error ( "No \"Domain\" key defined in the [Settings] section of file \"$ConfigurationFile\"." ) ;
+
+		$Server		=  $RsAdmin -> FindServer ( $Domain ) ;
+		
+		if  ( ! $Server ) 
+			error ( "The domain specified for the \"Domain\" key of the [Settings] section of file \"$ConfigurationFile\" ($Domain) does not exist." ) ;
+
+		// [Settings] section, LocalPath entry :
+		//	Local path where the new pdf samples are to be stored.
+		$LocalPath	=  Path::RealPath ( $iniconf -> GetKey ( 'Settings', 'LocalPath' ) ) ;
+
+		if  ( ! $LocalPath )
+			error ( "No \"LocalPath\" key defined in the [Settings] section of file \"$ConfigurationFile\"." ) ;
+
+		if  ( ! is_dir ( $LocalPath ) )
+			error ( "The local path specified for the \"LocalPath\" key of the [Settings] section of file \"$ConfigurationFile\" ($LocalPath) does not exist." ) ;
+
+		// [Settings] section, RemotePath entry
+		$RemotePath	=  $iniconf -> GetKey ( 'Settings', 'RemotePath' ) ;
+
+		if  ( ! $RemotePath )
+			error ( "No \"RemotePath\" key defined in the [Settings] section of file \"$ConfigurationFile\"." ) ;
+	    }
+
+
+	/*==================================================================================================
+
+	    ListNewFiles -
+		List remote new files.
+
+	  ==================================================================================================*/
+	function  ListNewFiles ( $entries )
+	   {
+		global	$RemotePath ;
+
+
+		if  ( ! $entries )
+		   {
+			output ( "No new samples found on the remote server." ) ;
+			return ;
+		     }
+
+		output ( "New files from $RemotePath :" ) ;
+		$report		=  new AsciiReport
+		   (
+			[ 'member' => 'remote-file'	, 'title' => 'Remote file'				],
+			[ 'member' => 'local-file'	, 'title' => 'Local file'				],
+			[ 'member' => 'creation-time'	, 'title' => 'Creation time'				],
+			[ 'member' => 'size'		, 'title' => 'Size'		, 'align' => 'right'	]
+		    ) ;
+		$data		=  [] ;
+
+		foreach  ( $entries  as  $entry )
+		   {
+			$row		=
+			   [
+				'remote-file'		=>  $entry [ 'file' ],
+				'local-file'		=>  basename ( $entry [ 'local-path' ] ),
+				'creation-time'		=>  date ( 'Y-m-d H:i:s', $entry [ 'stat' ] [ 'mtime' ] ),	// The ssh stat api does not return the 'ctime'...
+				'size'			=>  number_format ( $entry [ 'stat' ] [ 'size' ], 0, '.', ' ' )
+			    ] ;
+
+			$data []		=  $row ;
+		    }
+
+		echo $report -> Generate ( $data ) ;
+		echo $report -> Summary ( 'new remote file' ) ;
+	    }
+
+
+	/*==================================================================================================
+
+	    UpdateFiles -
+		Updates local directory with the new samples found on the remote server.
+
+	  ==================================================================================================*/
+	function  UpdateFiles ( $samples )
+	   {
+		global		$Server, $LocalPath ;
+
+
+		if  ( ! $samples )
+		   {
+			output ( "No new samples found on the remote server." ) ;
+			return ;
+		     }
+
+		$fs	=  $Server -> GetFileSystem ( ) ;
+
+		output ( "Output directory : $LocalPath" ) ;
+
+		foreach  ( $samples  as  $sample )
+		   {
+			$got_error	=  false ;
+
+			echo "Receiving file " . basename ( $sample [ 'local-path' ] ) . " (" . number_format ( $sample [ 'stat' ] [ 'size' ], 0, '.', ' ' ) . " bytes)..." ;
+
+			try
+			   {
+				$fs -> receive ( $sample [ 'remote-path' ], $sample [ 'local-path' ] ) ;
+			    }
+			catch ( Exception  $e )
+			   {
+				$got_error	=  true ;
+				$output ( "failed with the following message :\n\t" . $e -> getMessage ( ) ) ;
+			    }
+
+			if  ( ! $got_error )
+				output ( "ok" ) ;
+		    }
+	    }
+
+
+	/*==================================================================================================
+
+		Global constants and variables.
+
+	  ==================================================================================================*/
+	$CL 				=  new  CLParser ( $Definitions ) ;
+	$ConfigurationFile		=  $CL -> configuration_file ;
+	$List				=  $CL -> list ;
+	$ServerConfigurationFile	=  $CL -> server_configuration_file ;
+	$Update				=  $CL -> update ;
+
+	$Server				=  false ;
+	$Domain				=  false ;
+	$LocalPath			=  false ;
+	$RemotePath			=  false ;
+	$HadOption			=  false ;
+
+	/*==================================================================================================
+
+		Main program.
+
+	  ==================================================================================================*/
+	$RsAdmin			=  new RsAdmin ( $ServerConfigurationFile ) ;
+	LoadParameters ( $ConfigurationFile ) ;
+	
+
+	// -list option : 
+	//	Lists the remote files that are not yet into the local directory
+	if  ( ! $HadOption  &&  $List )
+	   {
+		$samples			=  retrieve_new_samples ( ) ;
+		ListNewFiles ( $samples ) ;
+		$HadOption	=  true ;
+	    }
+
+
+	// -update option :
+	//	Updates the local directory with the new samples on the remote server.
+	if  ( ! $HadOption  &&  $Update )
+	   {
+		$samples			=  retrieve_new_samples ( ) ;
+		UpdateFiles ( $samples ) ;
+		$HadOption	=  true ;
+	    }
+
+
+	if  ( ! $HadOption )
+		$CL -> DisplayHelp ( ) ;
