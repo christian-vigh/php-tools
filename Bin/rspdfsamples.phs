@@ -181,7 +181,7 @@ END;
 				if  ( ! $found )
 				   {
 					$remote_file [ 'homonym' ]	=  true ;
-					$remote_file [ 'local-name' ]	=  get_local_path ( $LocalPath, $remote_file [ 'name' ] ) ;
+					$remote_file [ 'local-path' ]	=  get_local_path ( $LocalPath, $remote_file [ 'name' ] ) ;
 					$remote_file [ 'remote-path' ]	=  $RemotePath . '/' . $remote_file [ 'file' ] ;
 					$new_files []			=  $remote_file ;
 				    }
