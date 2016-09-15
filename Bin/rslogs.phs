@@ -1568,7 +1568,7 @@ END;
 	$Sync				=  $CL -> sync ;
 	$TraceIp			=  $CL -> trace_ip ;
 	$Update				=  $CL -> update ;
-		
+
 	$RsAdmin			=  new RsAdmin ( $ConfigurationFile ) ;
 	$RsLogs				=  IniFile::LoadFromfile ( $RsLogsConfigurationFile ) ;
 
