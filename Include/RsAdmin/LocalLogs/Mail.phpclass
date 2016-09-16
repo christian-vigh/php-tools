@@ -99,6 +99,7 @@ class  LocalMailLog	extends  LocalLog
 	const	MAIL_SMTP_CONNECTION_TIMED_OUT			=  68 ; 
 	const   MAIL_IMAP_HANDSHAKE_FAILURE			=  69 ;
 	const	MAIL_POP3_DECRYPTION_FAILED			=  70 ;
+	const	MAIL_STATISTICS					=  71 ;
 
 
 	// Constructor -
@@ -1049,6 +1050,16 @@ class  LocalMailLog	extends  LocalLog
 										.*
 									)
 								    #imsx' ;
+	// Message of the form :
+	//	vps169910 postfix/scache[26438]: statistics: start interval Sep 16 19:41:23
+	// Constant : MAIL_STATISTICS
+	private static	$regex_mail_statistics		=  '#
+									(?P<message>
+										.*
+										statistics:
+										.*
+									)
+								    #imsx' ;
 
 
 	protected function  Parse ( $line, &$parsed_data, $string_store )
@@ -1719,6 +1730,13 @@ class  LocalMailLog	extends  LocalLog
 			   {
 				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $regex_match [ 'message' ] ) ;
 				$log_code		=  self::MAIL_POP3_DECRYPTION_FAILED ;
+			    }
+			// Message of the form :
+			//	vps169910 postfix/scache[26438]: statistics: start interval Sep 16 19:41:23
+			else if  ( preg_match ( self::$regex_mail_statistics, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $regex_match [ 'message' ] ) ;
+				$log_code		=  self::MAIL_STATISTICS ;
 			    }
 			// Other unhandled messages : warn the developer
 			else
