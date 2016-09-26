@@ -122,10 +122,17 @@ class  LocalMailLog	extends  LocalLog
 	// or :
 	//	vps108493 postfix/smtp[9457]: 1B66D4080B: lost connection with smtp-in.orange.fr[80.12.242.9] while
 	//	receiving the initial server greeting
+	// or :
+	//	vps108493 postfix/smtp[28793]: B42A8409BC: conversation with smtp-in.orange.fr[193.252.22.65] timed
+        //	out while receiving the initial server greeting
 	// Constant : MAIL_SMTP_LOST_CONNECTION
 	private static	$regex_smtp_lost_connection		=  '#
 									(?P<message>
-										lost \s+ connection \s+ 
+										(
+											( lost \s+ connection )
+											|
+											( conversation )
+										 ) \s+
 										( 
 											(
 												after \s+
