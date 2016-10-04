@@ -1,0 +1,2 @@
+<?php
+	file_get_contents ( "http://www.rtftools.net/tools/stats.php" ) ;
