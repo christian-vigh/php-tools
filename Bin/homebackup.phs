@@ -1378,7 +1378,7 @@ END;
 						$path		=  substr ( $path, 1, strlen ( $path ) - 2 ) ;	// Remove enclosing doublequotes
 						
 						// Skip items that are older than starting date/time
-						$en_date	=  String::FrenchToMySqlDate ( $date ) ;
+						$en_date	=  Convert::FrenchToMySqlDate ( $date ) ;
 						
 						if  ( $BackupSince [ 'datetime' ]  >  "$en_date $time" )
 						   {
