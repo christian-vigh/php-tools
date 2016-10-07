@@ -100,6 +100,7 @@ class  LocalMailLog	extends  LocalLog
 	const   MAIL_IMAP_HANDSHAKE_FAILURE			=  69 ;
 	const	MAIL_POP3_DECRYPTION_FAILED			=  70 ;
 	const	MAIL_STATISTICS					=  71 ;
+	const	MAIL_SMTP_MESSAGE_QUEUED			=  72 ;
 
 
 	// Constructor -
@@ -1068,6 +1069,18 @@ class  LocalMailLog	extends  LocalLog
 									)
 								    #imsx' ;
 
+	// Message of the form :
+	//	vps169912 postfix/pickup[1836]: warning: EDD5F40634: message has been queued for 1 days
+	//	Constant : MAIL_SMTP_MESSAGE_QUEUE
+	private static   $regex_smtp_message_queued		=  '#
+									(?P<message>
+										.*
+										warning: \s+ .*
+										message \s+ has \s+ been \s+ queued \s+ for
+										.*
+									)
+								    #imsx' ;
+
 
 	protected function  Parse ( $line, &$parsed_data, $string_store )
 	   {
@@ -1744,6 +1757,13 @@ class  LocalMailLog	extends  LocalLog
 			   {
 				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $regex_match [ 'message' ] ) ;
 				$log_code		=  self::MAIL_STATISTICS ;
+			    }
+			// Message of the form :
+			//	vps169912 postfix/pickup[1836]: warning: EDD5F40634: message has been queued for 1 days
+			else if  ( preg_match ( self::$regex_smtp_message_queued, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $regex_match [ 'message' ] ) ;
+				$log_code		=  self::MAIL_SMTP_MESSAGE_QUEUED ;
 			    }
 			// Other unhandled messages : warn the developer
 			else

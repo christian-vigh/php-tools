@@ -105,6 +105,7 @@ class  LocalHttpErrorLogBase	extends  LocalLog
 	const   HTTP_INVALID_CONTENT_LENGTH		=  23 ; 
 	const	HTTP_FILENAME_TOO_LONG			=  24 ;
 	const	HTTP_HTACCESS_ERROR			=  25 ;
+	const	HTTP_MAX_CONTENTS_LENGTH_EXCEEDED	=  26 ;
 
 
 	// Constructor -
@@ -432,6 +433,19 @@ class  LocalHttpErrorLogBase	extends  LocalLog
 										order \s+ takes \s+ one \s+ argument
 									 )
 								    #imsx' ;
+	// Message of the form :
+	//	[error] [client 46.140.119.114] PHP Warning:  POST Content-Length of 22648157 bytes exceeds the
+        //	limit of 8388608 bytes in Unknown on line 0, referer: http://www.pdftotext.eu/demo.php
+	// Constant : HTTP_CONTENTS_LENGTH_EXCEEDED
+	private static	$regex_contents_length_exceeded	=  '#
+									(?P<message>
+										PHP \s+ Warning: \s+
+										POST \s+ Content-Length .* bytes \s+ exceeds \s+ the \s+ limit
+										.*?
+										referer: \s+
+										(?P<referer> .*)
+									 )
+								    #imsx' ;
 
 	protected function  Parse ( $line, &$parsed_data, $string_store )
 	   {
@@ -687,6 +701,15 @@ class  LocalHttpErrorLogBase	extends  LocalLog
 			   {
 				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE, $regex_match [ 'message' ] ) ;
 				$file_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_HTTP_REQUEST_FILE, $regex_match [ 'file' ] ) ;
+				$log_error_code		=  self::HTTP_HTACCESS_ERROR ;
+			    }
+			// Message of the form :
+			//	[error] [client 46.140.119.114] PHP Warning:  POST Content-Length of 22648157 bytes exceeds the
+			//	limit of 8388608 bytes in Unknown on line 0, referer: http://www.pdftotext.eu/demo.php
+			else if  ( preg_match ( self::$regex_contents_length_exceeded, $message, $regex_match ) )
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE, $regex_match [ 'message' ] ) ;
+				$referer_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_HTTP_REFERER, $regex_match [ 'referer' ] ) ;
 				$log_error_code		=  self::HTTP_HTACCESS_ERROR ;
 			    }
 			else
