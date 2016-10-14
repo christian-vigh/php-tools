@@ -18,6 +18,9 @@
 	    [Version : 1.0.1]	[Date : 2015/11/29]     [Author : CV]
 		. Added the -list_configured_servers option.
 
+	    [Version : 1.1]	[Date : 2016/10/09]     [Author : CV]
+		. Added several command-line options to generate a zip file and binary data.
+
 	 ***************************************************************************************************/
 	require ( "tools.phpinclude" ) ;
 
@@ -52,24 +55,24 @@
 	
 	<flag name="keep_files, kf">
 		Normally, files are removed from the remote servers once they have been processed.
-		This options tels rsgetrandom to remove them after processing.
+		This options tels rsgetrandom to keep them after processing.
 	</flag>
 	
 	<flag name="list_configured_servers, lcs">
 		Lists the servers configured for this command.
 	</flag>
 		
-	<file name="output, o" disposition="any" default="thrak://Support/Materials/Random/random.%s.txt">
-		Output file containing all the collected random data.
+	<file name="output, o" disposition="any" default="thrak://Support/Materials/Random/random.%d.%s.txt">
+		Output file scheme for files containing all the collected random data.
 	</file>
-	
-	<string name="servers, server, s" default="*" arguments="0..*">
-		Server name(s) on which collected random data is to be retrieved.
-		Wildcard characters are authorized, and search is performed on every server alias.
-	</string>
 	
 	<string name="server_path, sp" default="/server/data/random">
 		Path on the remote server where the files containing random data are stored.
+	</string>
+
+	<string name="servers, server, s" default="*" arguments="0..*">
+		Server name(s) on which collected random data is to be retrieved.
+		Wildcard characters are authorized, and search is performed on every server alias.
 	</string>
 </command>
 END;
@@ -161,7 +164,7 @@ END;
 			output ( "No value found, no output file generated." ) ;
 		    }
 	    }
-	
+
 
 	/*==================================================================================================
 
@@ -180,7 +183,6 @@ END;
 	$ServerList		=  $RsAdmin -> FindServers ( $Servers ) ;
 	$HadOption		=  false ;
 
-	
 	/*==================================================================================================
 
 		Main program.
@@ -195,5 +197,6 @@ END;
 		$HadOption	=  true ;
 	    }
 
+	// Collect remote files
 	if  ( ! $HadOption )
 		CollectFiles ( $ServerList, $ServerPath, $Output, $KeepFiles ) ;
