@@ -1,0 +1,178 @@
+<?php
+	//!phpcmd(Administration, 1.0, production) : Generates binary files from a list of files containing random values retrieved by rsgetrandom.
+	/***************************************************************************************************
+
+	    NAME
+		rnd2bin.phs
+
+	    DESCRIPTION
+		Generates binary files from a list of files containing random values retrieved by the
+		rsgetrandom utility.
+
+	    AUTHOR
+	     	Christian Vigh, 10/2016.
+
+	    HISTORY
+	    [Version : 1.0]	[Date : 2016/10/10]	[Author : CV]
+	     	Initial version.
+
+	 ***************************************************************************************************/
+	require ( "tools.phpinclude" ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Types\String ;
+	use  Thrak\IO\Path ;
+	use  Thrak\Processors\IniFile ;
+	use  Thrak\Types\FileSpecificationFormatter ;
+	use  Thrak\Types\SpecializedFormatterDefinition ;
+
+	
+	require ( "RsAdmin.phpclass" ) ;
+
+	/*==================================================================================================
+
+		Command line parameters.
+
+	  ==================================================================================================*/
+	$Definitions = <<<END
+<command name="rnd2bin">
+
+	<usage>
+		Generates binary files from a list of files containing random integer values retrieved by the rsgetrandom utility.
+	</usage>
+
+	<directory name="output_directory, od" default="thrak://Support/Materials/Random/Binary" disposition="here">
+		Output directory.
+	</directory>
+
+	<string name="prefix, p" default="random">
+		File prefix to be used when generating random files. The resulting files will have the following names :
+			prefix.xxxxx.dat
+		where "prefix" is the value specified for the -name parameter, and "xxxxx" a sequential number.
+
+	</string>
+
+	<byte-quantity name="size, s" default="16mb">
+		Maximum size of output binary files. Must be a multiple of 4, since random values take are 32 bits (4 bytes).
+	</byte-quantity>
+
+	<unnamed>
+		<file min-arguments="1" max-arguments="*" value-text="file(s)" default="thrak://Support/Materials/Random/*.txt">
+			Text files containing random integer values to be processed.
+		</file>
+	</unnamed>
+
+</command>
+END;
+
+
+	/*==================================================================================================
+
+	    GenerateFiles -
+		Generate the output binary files containing random values.
+
+	  ==================================================================================================*/
+	function  GenerateFiles ( $output_directory, $prefix, $files, $size )
+	   {
+		$existing_files		=  glob ( "$output_directory/$prefix.*.dat" ) ;
+		$sequence_number	=  0 ;
+
+		// If there are any existing .dat files, retrieve the name of the last one
+		if  ( count ( $existing_files ) )
+		   {
+			sort ( $existing_files ) ;
+			$last_file		=  $existing_files [ count ( $existing_files ) - 1 ] ;
+			preg_match ( '/\. (?P<seq> \d+) \.dat$/x', $last_file, $match ) ;
+
+			$filesize		=  filesize ( $last_file ) ;
+			$sequence_number	=  ( integer ) $match [ 'seq' ] ;
+
+			// If the last one is already larger that the maximum size, then create a new one
+			if  ( $filesize  >=  $size )
+			   {
+				$sequence_number ++ ;
+				$filesize	=  0 ;
+			    }	
+
+			$current_sequence	=  sprintf ( "%05d", $sequence_number ) ;
+			$current_output_file	=  $output_directory . DIRECTORY_SEPARATOR . "$prefix.$current_sequence.dat" ;
+		    }
+		// The output directory contains not .dat files ; create an initial one
+		else 
+		   {
+			$sequence_number ++ ;
+			$current_sequence	=  sprintf ( "%05d", $sequence_number ) ;
+			$current_output_file	=  $output_directory . DIRECTORY_SEPARATOR . "$prefix.$current_sequence.dat" ;
+			$filesize		=  0 ;
+		    }
+
+		// Open the file determined by the above code (either a new file, or the very last one in the list of existing files)
+		$fp		=  fopen ( $current_output_file, "a" ) ;
+		$total_count	=  0 ;
+
+		// Process each input text file, containing one random number per line
+		foreach  ( $files  as  $file )
+		   {
+			$contents	=  file_get_contents ( $file ) ;
+			$start		=  0 ;
+			$count		=  0 ;
+
+			output ( "File $file... " ) ;
+			echo ( "\t$current_output_file : " ) ;
+
+			while  ( ( $end = strpos ( $contents, "\n", $start ) )  !==  false )
+			   {
+				if  ( $filesize + 4  >  $size )
+				   {
+					fclose ( $fp ) ;
+
+					$sequence_number ++ ;
+					$current_sequence	=  sprintf ( "%05d", $sequence_number ) ;
+					$current_output_file	=   $output_directory . DIRECTORY_SEPARATOR . "$prefix.$current_sequence.dat" ;
+					$filesize		=  0 ;
+					$fp			=  fopen ( $current_output_file, "a" ) ;
+
+					output ( number_format ( $count, 0, '.', ' ' ) . " values written." ) ;
+					echo ( "\t$current_output_file : " ) ;
+
+					$count			=  0 ;
+				    }
+
+				$number		=  ( integer ) trim ( substr ( $contents, $start, $end - $start ) ) ;
+
+				fwrite ( $fp,  pack ( 'N', $number ) ) ;
+				
+				$start		=  $end + 1 ;
+				$filesize      +=  4 ;
+				$count ++ ;
+				$total_count ++ ;
+			    }
+
+			output ( number_format ( $count, 0, '.', ' ' ) . " values written." ) ;
+		    }
+
+		fclose ( $fp ) ;
+		output ( number_format ( $total_count, 0, '.', ' ' ) . " values written." ) ;
+	    }
+	
+
+	/*==================================================================================================
+
+		Global constants and variables.
+
+	  ==================================================================================================*/
+	$CL 			=  new  CLParser ( $Definitions ) ;
+	$Files			=  $CL -> UnnamedParameters [0] -> Values ;
+	$Prefix			=  $CL -> prefix ;
+	$OutputDirectory	=  $CL -> output_directory ;
+	$Size			=  $CL -> size ;
+
+	if  ( $Size % 4 )
+		error ( "The output file size must be a multiple of 4." ) ;
+
+	/*==================================================================================================
+
+		Main program.
+
+	  ==================================================================================================*/
+	GenerateFiles ( $OutputDirectory, $Prefix, $Files, $Size ) ;
