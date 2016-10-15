@@ -105,7 +105,7 @@ END;
 
 		while  ( ( $file = $fs -> readdir ( $rs ) ) )
 		   {
-			if  ( $fs -> is_dir ( $file )  ||  ! String::EndsWith ( $file, ".pdf" ) )
+			if  ( $fs -> is_dir ( $file )  )//||  ! String::EndsWith ( $file, ".pdf" ) )
 				continue ;
 
 			$name		=  preg_replace ( '/^[a-z0-9]+-/i', '', $file ) ;
@@ -362,7 +362,6 @@ END;
 		ListNewFiles ( $samples ) ;
 		$HadOption	=  true ;
 	    }
-
 
 	// -update option :
 	//	Updates the local directory with the new samples on the remote server.
