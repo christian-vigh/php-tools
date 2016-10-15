@@ -101,6 +101,7 @@ class  LocalMailLog	extends  LocalLog
 	const	MAIL_POP3_DECRYPTION_FAILED			=  70 ;
 	const	MAIL_STATISTICS					=  71 ;
 	const	MAIL_SMTP_MESSAGE_QUEUED			=  72 ;
+	const	MAIL_SMTP_INVALID_HOSTNAME			=  73 ;
 
 
 	// Constructor -
@@ -1080,6 +1081,16 @@ class  LocalMailLog	extends  LocalLog
 										.*
 									)
 								    #imsx' ;
+	// Message of the form :
+	//	vps169910 postfix/smtpd[15687]: warning: valid_hostname: misplaced delimiter: .
+	// Constant : MAIL_SMTP_INVALID_HOSTNAME
+	private static	$regex_smtp_invalid_hostname		=  '#
+									(?P<message>
+										warning: \s+ valid_hostname: \s+
+										.*
+									)
+								    #imsx' ;
+
 
 
 	protected function  Parse ( $line, &$parsed_data, $string_store )
@@ -1764,6 +1775,13 @@ class  LocalMailLog	extends  LocalLog
 			   {
 				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $regex_match [ 'message' ] ) ;
 				$log_code		=  self::MAIL_SMTP_MESSAGE_QUEUED ;
+			    }
+			// Message of the form :
+			//	vps169910 postfix/smtpd[15687]: warning: valid_hostname: misplaced delimiter: .
+			else if  ( preg_match ( self::$regex_smtp_invalid_hostname, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $regex_match [ 'message' ] ) ;
+				$log_code		=  self::MAIL_SMTP_INVALID_HOSTNAME ;
 			    }
 			// Other unhandled messages : warn the developer
 			else
