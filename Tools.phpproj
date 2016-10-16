@@ -585,6 +585,7 @@
     <Content Include="Bin\iecache.phs" />
     <Content Include="Bin\rslogs.phs" />
     <Content Include="Bin\rsiptables.phs" />
+    <Content Include="Bin\rsreplica.phs" />
     <Content Include="Bin\rswebsync.phs" />
     <Content Include="Bin\ufile.phs" />
     <Content Include="Bin\whoisupdate.phs" />

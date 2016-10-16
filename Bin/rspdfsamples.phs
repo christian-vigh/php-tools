@@ -1,20 +1,20 @@
 <?php
-/**************************************************************************************************************
+	/**************************************************************************************************************
 
-    NAME
-        rspdfsamples.php
+	    NAME
+		rspdfsamples.php
 
-    DESCRIPTION
-        Retrieves the new Pdf samples from the pdftotext site.
+	    DESCRIPTION
+		Retrieves the new Pdf samples from the pdftotext site.
 
-    AUTHOR
-        Christian Vigh, 09/2016.
+	    AUTHOR
+		Christian Vigh, 09/2016.
 
-    HISTORY
-        [Version : 1.0]		[Date : 2016-09-09]     [Author : CV]
-                Initial version.
+	    HISTORY
+		[Version : 1.0]		[Date : 2016-09-09]     [Author : CV]
+			Initial version.
 
- **************************************************************************************************************/
+	 **************************************************************************************************************/
 	require ( "tools.phpinclude" ) ;
 
 	use  Thrak\Processors\CL\CLParser ;
