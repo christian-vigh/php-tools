@@ -1,0 +1,797 @@
+<?php
+	//!phpcmd(Administration, 1.0, production) : Backups remote servers.
+	/***************************************************************************************************
+
+	    NAME
+		rsbackup.phs
+
+	    DESCRIPTION
+		Backups remote servers.
+
+	    AUTHOR
+	     	Christian Vigh, 10/2016.
+
+	    HISTORY
+	    [Version : 1.0]	[Date : 2015/10/17]	[Author : CV]
+	     	Initial version.
+
+	 ***************************************************************************************************/
+	require ( "tools.phpinclude" ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Types\String ;
+	use  Thrak\IO\Path ;
+	use  Thrak\IO\AsciiReport ;
+	use  Thrak\Processors\IniFile ;
+	use  Thrak\Processors\Csv ;
+	use  Thrak\Processors\CsvOptions ;
+	use  Thrak\Types\FileSpecificationFormatter ;
+	use  Thrak\Types\SpecializedFormatterDefinition ;
+
+	
+	require ( "RsAdmin.phpclass" ) ;
+
+	/*==================================================================================================
+
+		Command line parameters.
+
+	  ==================================================================================================*/
+	$Definitions = <<<END
+<command allow-files="false">
+
+	<usage>
+		Backups remote servers to a local drive.
+	</usage>
+
+	<keyword name="backup, b">
+		Specifies which kind of backup is to be performed.
+
+		<case name="full, f">
+			Performs a full backup.
+		</case>
+
+		<case name="incremental, incr, inc, i">
+			Performs an incremental backup.
+		</case>
+	</keyword>
+
+	<flag name="clean, c">
+		Cleans the temporary files that may remain after an interrupted backup.
+	</flag>
+	
+	<file name="configuration_file, cf" disposition="existing" default="thraktools://Data/rsbackup.ini">
+		Backup parameters file.
+	</file>
+	
+	<flag name="list_configured_servers, lcs">
+		Lists the servers configured for this command.
+	</flag>
+
+	<flag name="list_summaries, list_summary, ls">
+		Lists backup history per server.
+	</flag>
+		
+	<file name="server_configuration_file, scf" disposition="existing" default="thraktools://Data/rsadmin.ini">
+		Hosted servers parameters file.
+	</file>
+	
+	<string name="servers, server, s" default="*" arguments="0..*">
+		Servers to be backed up.
+		Wildcard characters are authorized, and search is performed on every server alias.
+	</string>
+</command>
+END;
+
+	
+	/*==================================================================================================
+
+	    LogSummary class -
+		Handles all aspects of log summary updates.
+
+	  ==================================================================================================*/
+	class	LogSummary
+	   {
+		public		$SummaryFile ;			// Output log summary file
+		public		$LogLimit ;			// Maximum number of files to be kept for this file
+		public		$LogData	=  [] ;		// Logfile data
+
+
+		// Constructor -
+		//	Builds a log summary if necessary, or loads the contents of an existing one.
+		public function  __construct ( $summary_file, $limit )
+		   {
+			$this -> SummaryFile	=  $summary_file ;
+			$this -> LogLimit	=  $limit ;
+
+			if  ( file_exists ( $summary_file ) )
+				$this -> LogData	=  unserialize ( file_get_contents ( $this -> SummaryFile ) ) ;
+		    }
+
+
+		// Add -
+		//	Adds an entry in the log summary.
+		public function  Add ( $backup_type, $logfile, $start_time, $end_time ) 
+		   {
+			$files		=  file ( $logfile ) ;
+			$file_count	=  0 ;
+			$total_size	=  0 ;
+
+			foreach  ( $files  as  $file )
+			   {
+				$statinfo	=  @stat ( trim ( $file ) ) ;
+
+				// Filenames containing special characters, such as "?", will be stored with a replacement character
+				// (Unicode 0xEF 0x80 0xBF). Wen cannot do nothing much here...
+				if  ( ! $statinfo )
+					continue ;
+
+				if  ( $statinfo [ 'mode' ]  &  S_IFDIR )
+					continue ;
+
+				$file_count ++ ;
+				$total_size	+=  $statinfo [ 'size' ] ;
+			    }
+
+			$this -> LogData []	=
+			   [
+				'log-file'	=>  $logfile,
+				'backup-type'	=>  $backup_type,
+				'start-time'	=>  $start_time,
+				'end-time'	=>  $end_time,
+				'file-count'	=>  $file_count,
+				'total-size'	=>  $total_size
+			    ] ;
+		    }
+
+
+		// Save - 
+		//	Saves the log summary, up to LogLimit entries. Removes any previous backup files.
+		public function  Save ( )
+		   {
+			$count		=  count ( $this -> LogData ) ;
+
+			if  ( $count  >  $this -> LogLimit )
+			   {
+				$extra		=  $count - $this -> LogLimit ;
+
+				for  ( $i  =  0 ; $i  <  $extra ; $i ++ )
+					unlink ( $this -> LogData [$i] [ 'log-file' ] ) ;
+
+				$data		=  array_slice ( $this -> LogData, $extra ) ;
+			    }
+			else
+				$data	=  $this -> LogData ;
+
+			file_put_contents ( $this -> SummaryFile, serialize ( $data ) ) ;
+		    }
+	    }
+
+	
+	/*==================================================================================================
+
+		Utility functions
+
+	  ==================================================================================================*/
+
+	// reprocess_file_list -
+	//	Unifies the output of the find command for the Unix and Windows systems :
+	//	. Removes the microsecond part of a file time, which is always 0 on Windows. 
+	//	. Sets the size of a directory to 0 (it is at least 4096 bytes on Unix systems, while it is 0 on Windows)
+	function  reprocess_file_list ( $list ) 
+	   {
+		$result		=  [] ;
+
+		foreach  ( $list  as  $item )
+		   {
+			$item	=  trim ( $item ) ;
+
+			if  ( ! $item ) 
+				continue ;
+
+			list ( $mtime, $size, $type, $file )	=  explode ( ';', trim ( $item ) ) ;
+
+			if  ( $type  !=  'd'  &&  $type  !=  'f' )
+				continue ;
+
+			$mtime	=  ( integer ) $mtime ;
+
+			if  ( $type  !=  'f' )
+				$size	=  0 ;
+
+			$result []	=  "$mtime;$size;$type;$file" ;
+		    }
+
+		return ( $result ) ;
+	    }
+
+
+	// get_remote_file_list -
+	//	Gets the remote files that needs to be backed up (incremental mode).
+	function  get_remote_file_list ( $entry ) 
+	   {
+		$files		=  implode ( ' ', $entry [ 'files' ] ) ;
+		$command	=  "export LC_ALL=C ; cd / ; find $files -type d -o -type f -printf '%T@;%s;%y;%p\\n' | sort -t';' -k4" ;
+		$output		=  [] ;
+
+		$entry [ 'server' ] -> Execute ( $command, $output ) ;
+
+		return ( $output ) ;
+	    }
+
+
+	// get_local_file_list -
+	//	Gets the local file list, which will be compared to the remote one.
+	//	This function assumes that the current directory is the backup target directory on the local system.
+	function  get_local_file_list ( $entry ) 
+	   {
+		$command	=  "ufind . -type d -o -type f -printf '%T@;%s;%y;%P\\n' | usort -t';' -k4" ;
+		$output		=  [] ;
+
+		exec ( $command, $output ) ;
+
+		return ( $output ) ;
+	    }
+
+
+	// get_backup_file_list -
+	//	Given a list of remote and local files, returns the list of remote files that need to be backed up 
+	//	to the local system.
+	function  get_backup_file_list ( $remote_files, $local_files ) 
+	   {
+		$backup_files		=  [] ;
+
+		// Use a dumb method : write remote and local file lists i two temp files, then run the diff command on them
+		$temp_dir		=  sys_get_temp_dir ( ) ;
+		$remote_output_file	=  tempnam ( $temp_dir, 'rsi' ) ;
+		$local_output_file	=  tempnam ( $temp_dir, 'rsi' ) ;
+
+		file_put_contents ( $remote_output_file, implode ( "\n", reprocess_file_list ( $remote_files ) ) ) ;
+		file_put_contents ( $local_output_file , implode ( "\n", reprocess_file_list ( $local_files  ) ) ) ;
+
+		exec ( 'diff "' . Path::ToCygWin ( $remote_output_file ) . '" "' . Path::ToCygwin ( $local_output_file ) . '"', $output ) ;
+
+		// Process the differences between remote and local files 
+		// We only process additions here (deleted files on the remote host will not be deleted in the local backup)
+		$process_next	=  false ;
+
+		for  ( $i = 0, $count = count ( $output ) ; $i  <  $count ; $i ++ )
+		   {
+			$line	=  trim ( $output [$i] ) ;
+
+			if  ( preg_match ( '/^[\d,]+[ca][\d,]+/', $line ) )
+				$process_next	=  true ;
+			else if  ( $line [0]  ==  '-' )
+				$process_next	=  false ;
+			else if  ( $line [0]  ==  '<'  &&  $process_next )
+			   {
+				$parts			=  explode ( ';', $line ) ;
+				$file			=  $parts [3] ;
+				$backup_files []	=  $file ;
+			    }
+		    }
+
+		// Remove output files
+		unlink ( $remote_output_file ) ;
+		unlink ( $local_output_file  ) ;
+
+		return ( $backup_files ) ;
+	    }
+
+
+	// receive_progress -
+	//	Builds a "receive progress string".
+	function  receive_progress ( $title, $size, $length )
+	   {
+		$size		=  number_format ( $size, 0, '.', ' ' ) ;
+		$size		=  str_repeat ( ' ', $length - strlen ( $size ) ) . $size ;
+
+		$message	=  "$title$size" ;
+
+		return ( str_repeat ( "\x8", strlen ( $message ) ) . $message ) ;
+	    }
+
+
+	/*==================================================================================================
+
+	    CleanTempFiles -
+		Cleans the temporary files that may have been left on the remote servers.
+
+	  ==================================================================================================*/
+	function  CleanTempFiles ( $settings )
+	   {
+		foreach  ( $settings [ 'servers' ]  as  $host => $entry )
+		   {
+			echo ( "Host $host : " ) ;
+			$files		=  "/tmp/.$host.tar.gz /tmp/.$host.tar.lst" ;
+			$command	=  "rm -f $files >/dev/null 2>&1" ;
+
+			$entry [ 'server' ] -> Connect ( false, true, true ) ;
+			$entry [ 'server' ] -> Execute ( $command ) ;
+			$entry [ 'server' ] -> Disconnect ( ) ;
+
+			output ( "ok" ) ;
+		    }
+	    }
+
+
+	/*==================================================================================================
+
+	    IncrementalBackup -
+		Performs an incremental backup.
+
+	  ==================================================================================================*/
+	function  IncrementalBackup ( $settings )
+	   {
+		$time_backup_start	=  microtime ( true ) ;
+
+		foreach  ( $settings [ 'servers' ]  as  $host => $entry )
+		   {
+			output ( "Host $host : " ) ;
+
+			// Connect 
+			$time_start		=  microtime ( true ) ;
+			$entry [ 'server' ] -> Connect ( false, true, true ) ;
+			$fs			=  $entry [ 'server' ] -> GetFileSystem ( ) ;
+
+			// Change current directory to the 
+			$cwd			=  getcwd ( ) ;
+			chdir ( $entry [ 'backup-path' ] ) ;
+
+			// Get remote file list
+			echo ( "\tGet remote file list  : " ) ; 
+			$time_remote_file_start	=  microtime ( true ) ;
+			$remote_files		=  get_remote_file_list ( $entry ) ;
+			$time_remote_file_end	=  microtime ( true ) ;
+			output ( number_format ( round ( $time_remote_file_end - $time_remote_file_start, 0 ), 0, '.', ' ' ) . 's' ) ;
+
+			// Get local file list
+			echo ( "\tGet local file list   : " ) ; 
+			$time_local_file_start	=  microtime ( true ) ;
+			$local_files		=  get_local_file_list ( $entry ) ;
+			$time_local_file_end	=  microtime ( true ) ;
+			output ( number_format ( round ( $time_local_file_end - $time_local_file_start, 0 ), 0, '.', ' ' ) . 's' ) ;
+
+			// Get final file list to be backed up
+			echo ( "\tGet files to backup   : " ) ; 
+			$time_backup_file_start	=  microtime ( true ) ;
+			$backup_files		=  get_backup_file_list ( $remote_files, $local_files ) ;
+			$time_backup_file_end	=  microtime ( true ) ;
+			output ( number_format ( round ( $time_backup_file_end - $time_backup_file_start, 0 ), 0, '.', ' ' ) . 's' ) ;
+
+			// Build the tar command for backup up data on the remote szerver
+			$remote_lst_file	=  "/tmp/.$host.tar.lst" ;
+			$remote_tar_file	=  "/tmp/.$host.tar.gz" ;
+
+			$fs -> file_put_contents ( $remote_lst_file, implode ( "\n", $backup_files ) ) ;
+			$command		=  "cd / ; rm -f $remote_tar_file ; tar cfz $remote_tar_file -T $remote_lst_file" ;
+
+			// Perform the backup
+			echo ( "\tRemote backup size    : " ) ;
+			$time_tar_start		=  microtime ( true ) ;
+			$entry [ 'server' ] -> Execute ( $command ) ;
+			$remote_tar_size	=  $fs -> filesize ( $remote_tar_file ) ;
+			$time_tar_end		=  microtime ( true ) ;
+
+			$formatted_size		=  number_format ( $remote_tar_size, 0, '.', ' ' ) ;
+			$formatted_length	=  strlen ( $formatted_size ) ;
+
+			output ( $formatted_size . ' bytes' ) ;
+			output ( "\tRemote backup time    : " . number_format ( round ( $time_tar_end - $time_tar_start, 0 ), 0, '.', ' ' ) . 's' ) ;
+
+			// Retrieve the file 
+			$time_download_start	=  microtime ( true ) ;
+			$output_file		=  Path::ToUnix ( tempnam ( sys_get_temp_dir ( ), 'rsi' ) ) ;
+			$tar_output_file	=  Path::ToCygwin ( $output_file ) ;
+			$ifp			=  $fs -> fopen ( $remote_tar_file, 'r' ) ;
+			$ofp			=  fopen ( $output_file, "w" ) ;
+			$block_size		=  1 * 1024 * 1024 ;
+			$current_size		=  0 ;
+
+			while  ( ( $buffer = fread ( $ifp, $block_size ) ) )
+			   {
+				$current_size	+=  strlen ( $buffer ) ;
+				fwrite ( $ofp, $buffer ) ;
+				$message	 =  receive_progress ( "\tReceiving bytes       : ", $current_size, $formatted_length ) ;
+				echo ( $message ) ;
+			    }
+
+			// Delete the message on the current line
+			$del	=  str_repeat ( "\x8", strlen ( $message ) + 20 ) ;
+			$sp	=  str_repeat ( ' ', strlen ( $del ) ) ;
+			echo ( $del . $sp . $del ) ;
+
+			fclose ( $ifp ) ;
+			fclose ( $ofp ) ;
+			$time_download_end	=  microtime ( true ) ;
+			output ( "\tDownload time         : " . number_format ( $time_download_end - $time_download_start, 0, '.', ' ' ) . 's' ) ;
+
+			// Untar files
+			$time_unpack_start	=  microtime ( true ) ;
+			$cwd			=  getcwd ( ) ;
+			chdir ( $entry [ 'backup-path' ] ) ;
+			$command		=  "tar xvfz \"$tar_output_file\" >{$entry [ 'log-file' ]} 2>&1" ;
+
+			echo ( "\tUnpacking files       : " ) ;
+			system ( $command ) ;
+			$time_unpack_end	=  microtime ( true ) ;
+			output ( number_format ( round ( $time_unpack_end - $time_unpack_start, 0 ), 0, '.', ' ' ) . 's' ) ;
+
+			// Remove temp files 
+			unlink ( $output_file ) ;
+			$fs -> unlink ( $remote_lst_file ) ;
+			$fs -> unlink ( $remote_tar_file ) ;
+
+			// Disconnect
+			$entry [ 'server' ] -> Disconnect ( ) ;
+			$time_end		=  microtime ( true ) ;
+
+			// Create log summary
+			echo ( "\tGenerating summary    : " ) ;
+			$time_summary_start	=  microtime ( true ) ;
+			$log			=  new LogSummary ( $entry [ 'summary-file' ], $entry [ 'max-logs' ] ) ;
+			$log -> Add ( 'full', $entry [ 'log-file' ], $time_start, $time_end ) ;
+			$time_summary_end	=  microtime ( true ) ;
+			output ( number_format ( round ( $time_summary_end - $time_summary_start, 0 ), 0, '.', ' ' ) . 's' ) ;
+			$log -> Save ( ) ;
+
+			// Output total time for this server
+			$time_end		=  microtime ( true ) ;
+			output ( "\tTotal time            : " . number_format ( round ( $time_end - $time_start, 0 ), 0, '.', ' ' ) . 's' ) ;
+			output ( "" ) ;
+
+			chdir ( $cwd ) ;
+		    }
+
+		$time_backup_end	=  microtime ( true ) ;
+		output ( "Total backup time : "  . number_format ( round ( $time_backup_end - $time_backup_start, 0 ), 0, '.', ' ' ) . 's' ) ;
+	    }
+
+	
+	/*==================================================================================================
+
+	    FullBackup -
+		Performs a full backup.
+
+	  ==================================================================================================*/
+	function  FullBackup ( $settings )
+	   {
+		$time_backup_start	=  microtime ( true ) ;
+
+		foreach  ( $settings [ 'servers' ]  as  $host => $entry )
+		   {
+			output ( "Host $host : " ) ;
+
+			// Build the tar command for backup up data on the remote szrver
+			$remote_tar_file	=  "/tmp/.$host.tar.gz" ;
+			$backup_sources		=  String::ImplodeWithQuotedStrings ( ' ', $entry [ 'files' ] ) ;
+			$command		=  "cd / ; rm -f $remote_tar_file ; find $backup_sources -type d -o -type d | tar cfz $remote_tar_file -T -" ;
+
+			// Connect 
+			$time_start		=  microtime ( true ) ;
+			$entry [ 'server' ] -> Connect ( false, true, true ) ;
+			$fs			=  $entry [ 'server' ] -> GetFileSystem ( ) ;
+
+			// Perform the backup
+			echo ( "\tRemote backup size    : " ) ;
+			$time_tar_start		=  microtime ( true ) ;
+			$entry [ 'server' ] -> Execute ( $command ) ;
+			$remote_tar_size	=  $fs -> filesize ( $remote_tar_file ) ;
+			$time_tar_end		=  microtime ( true ) ;
+
+			$formatted_size		=  number_format ( $remote_tar_size, 0, '.', ' ' ) ;
+			$formatted_length	=  strlen ( $formatted_size ) ;
+
+			output ( $formatted_size . ' bytes' ) ;
+			output ( "\tRemote backup time    : " . number_format ( round ( $time_tar_end - $time_tar_start, 0 ), 0, '.', ' ' ) . 's' ) ;
+
+			// Retrieve the file 
+			$time_download_start	=  microtime ( true ) ;
+			$output_file		=  Path::ToUnix ( tempnam ( sys_get_temp_dir ( ), 'rsf' ) ) ;
+			$tar_output_file	=  Path::ToCygwin ( $output_file ) ;
+			$ifp			=  $fs -> fopen ( $remote_tar_file, 'r' ) ;
+			$ofp			=  fopen ( $output_file, "w" ) ;
+			$block_size		=  1 * 1024 * 1024 ;
+			$current_size		=  0 ;
+
+			while  ( ( $buffer = fread ( $ifp, $block_size ) ) )
+			   {
+				$current_size	+=  strlen ( $buffer ) ;
+				fwrite ( $ofp, $buffer ) ;
+				$message	 =  receive_progress ( "\tReceiving bytes       : ", $current_size, $formatted_length ) ;
+				echo ( $message ) ;
+			    }
+
+			// Delete the message on the current line
+			$del	=  str_repeat ( "\x8", strlen ( $message ) + 20 ) ;
+			$sp	=  str_repeat ( ' ', strlen ( $del ) ) ;
+			echo ( $del . $sp . $del ) ;
+
+			fclose ( $ifp ) ;
+			fclose ( $ofp ) ;
+			$time_download_end	=  microtime ( true ) ;
+			output ( "\tDownload time         : " . number_format ( $time_download_end - $time_download_start, 0, '.', ' ' ) . 's' ) ;
+
+			// Untar files
+			$time_unpack_start	=  microtime ( true ) ;
+			$cwd			=  getcwd ( ) ;
+			chdir ( $entry [ 'backup-path' ] ) ;
+			$command		=  "tar xvfz \"$tar_output_file\" >{$entry [ 'log-file' ]} 2>&1" ;
+
+			echo ( "\tUnpacking files       : " ) ;
+			system ( $command ) ;
+			$time_unpack_end	=  microtime ( true ) ;
+			output ( number_format ( round ( $time_unpack_end - $time_unpack_start, 0 ), 0, '.', ' ' ) . 's' ) ;
+
+			// Remove temp files
+			unlink ( $output_file ) ;
+			$fs -> unlink ( $remote_tar_file ) ;
+
+			// Disconnect
+			$entry [ 'server' ] -> Disconnect ( ) ;
+			$time_end		=  microtime ( true ) ;
+
+			// Create log summary
+			echo ( "\tGenerating summary    : " ) ;
+			$time_summary_start	=  microtime ( true ) ;
+			$log			=  new LogSummary ( $entry [ 'summary-file' ], $entry [ 'max-logs' ] ) ;
+			$log -> Add ( 'full', $entry [ 'log-file' ], $time_start, $time_end ) ;
+			$time_summary_end	=  microtime ( true ) ;
+			output ( number_format ( round ( $time_summary_end - $time_summary_start, 0 ), 0, '.', ' ' ) . 's' ) ;
+			$log -> Save ( ) ;
+
+			// Output total time for this server
+			$time_end		=  microtime ( true ) ;
+			output ( "\tTotal time            : " . number_format ( round ( $time_end - $time_start, 0 ), 0, '.', ' ' ) . 's' ) ;
+			output ( "" ) ;
+
+			chdir ( $cwd ) ;
+		    }
+
+		$time_backup_end	=  microtime ( true ) ;
+		output ( "Total backup time : "  . number_format ( round ( $time_backup_end - $time_backup_start, 0 ), 0, '.', ' ' ) . 's' ) ;
+	    }
+
+
+	/*==================================================================================================
+
+	    ListSummaries -
+		Lists backup summary per server.
+
+	  ==================================================================================================*/
+	function  ListSummaries ( $settings )
+	   {
+		foreach  ( $settings [ 'servers' ]  as  $host => $entry )
+		   {
+			$log		=  new LogSummary ( $entry [ 'summary-file' ], $entry [ 'max-logs' ] ) ;
+
+			output ( "Server $host :" ) ;
+
+			if  ( count ( $log -> LogData ) )
+			   {
+				$report		=  new AsciiReport 
+				   (
+					[ 'member' => 'filename', 'title' => 'Filename'							],
+					[ 'member' => 'type'	, 'title' => 'Type'							],
+					[ 'member' => 'date'	, 'title' => 'Date/Time'						],
+					[ 'member' => 'duration', 'title' => 'Duration'		, 'align' => 'right'			],
+					[ 'member' => 'files'	, 'title' => 'Files'		, 'align' => 'right', 'width' =>  8	],
+					[ 'member' => 'size'	, 'title' => 'Total size'	, 'align' => 'right', 'width' => 14	]
+				    ) ;
+
+				$data		=  [] ;
+
+				foreach (  $log -> LogData  as  $item )
+				   {
+					$data []	=
+					   [
+						'filename'	=>  basename ( $item [ 'log-file' ] ),
+						'type'		=>  ucfirst ( $item [ 'backup-type' ] ),
+						'date'		=>  date ( 'Y-m-d H:i:s', $item [ 'start-time' ] ),
+						'duration'	=>  number_format ( $item [ 'end-time' ] - $item [ 'start-time' ], 0, '.', ' ' ) . 's',
+						'files'		=>  number_format ( $item [ 'file-count' ], 0, '.', ' ' ),
+						'size'		=>  number_format ( $item [ 'total-size' ], 0, '.', ' ' ) 
+					    ] ;
+				    }
+
+				echo $report -> Generate ( $data ) ;
+			    }
+			else
+				output ( "\tNo backup data." ) ;	
+
+			output ( '' ) ;
+		    }	
+	    }
+
+
+	/*==================================================================================================
+
+	    LoadConfigurationParameters -
+		Loads configuration settings from file Rsbackup.ini
+
+	  ==================================================================================================*/
+	function  LoadConfigurationParameters ( )
+	   {
+		global	$RsAdmin, $ConfigurationFile, $ServerConfigurationFile, $ServerList ;
+
+		$cf	=  IniFile::LoadFromFile ( $ConfigurationFile ) ;
+		$now	=  time ( ) ;
+
+		// [Settings] section, BackupPath entry
+		if  ( ! ( $backup_path = $cf -> GetKey ( 'Settings', [ 'BackupPath', 'BackupDirectory' ] ) ) )
+			error ( "The required \"BackupPath\" entry of the [Settings] section is missing in file \"$ConfigurationFile\"." ) ;
+
+		// [Settings] section, LogPath entry
+		if  ( ! ( $log_path = $cf -> GetKey ( 'Settings', [ 'LogPath', 'LogDirectory' ] ) ) )
+			error ( "The required \"LogPath\" entry of the [Settings] section is missing in file \"$ConfigurationFile\"." ) ;
+
+		if  ( ! is_dir ( $log_path ) )
+			mkdir ( $log_path ) ;
+
+		// [Settings] section, MaxLogs entry
+		$max_logs	=  $cf -> GetIntegerKey ( 'Settings', 'MaxLogs', 30, 1 ) ;
+
+		// [Settings] section, TarCommand entry
+		$tar_command	= $cf -> GetKey ( 'Settings', 'TarCommand', 'tar' ) ;
+
+		// [Settings] section, Servers entry
+		if  ( ! ( $value = $cf -> GetKey ( 'Settings', 'Servers' ) ) )
+			error ( "The required \"Servers\" entry of the [Settings] section is missing in file \"$ConfigurationFile\"." ) ;
+
+		// Resulting settings
+		$settings	=  
+		   [ 
+			'backup-path'	=>  Path::RealPath ( $backup_path ),
+			'log-path'	=>  Path::RealPath ( $log_path ),
+			'max-logs'	=>  $max_logs,
+			'tar-command'	=>  $tar_command,
+			'servers'	=>  [] 
+		    ] ;
+
+		// Loop through server names
+		$servers	=  explode ( ',', $value ) ;
+
+		foreach  ( $servers  as  $server )
+		   {
+			$server		=  trim ( $server ) ;
+
+			// Check that the current server has a corresponding section in the .Ini file, and that it is defined in RsAdmin.ini.
+			if  ( ! $cf -> IsSectionDefined ( $server ) )
+				error ( "No [$server] section found for the server defined in the \"Servers\" entry of the [Settings] section of file \"$ConfigurationFile\"." ) ;
+
+			$server_entry	=  $RsAdmin -> FindServer ( $server ) ;
+
+			if  ( ! $server_entry )
+				error ( "Server \"$server\" not found in \"$ServerConfigurationFile\"." ) ;
+
+			// Exclude this server if not in the list of selected ones
+			if  ( ! in_array ( $server_entry -> Host, $ServerList ) )
+				continue ;
+
+			// Get files/directories to backup 
+			if  ( ! ( $value = $cf -> GetKey ( $server, 'Files' ) ) )
+				error ( "No \"Files\" entry found in the [$server] section of file \"$ConfigurationFile\"." ) ;
+
+			$value_list	=  explode ( "\n", $value ) ;
+			$files		=  [] ;
+
+			foreach  ( $value_list  as  $item )
+			   {
+				$item		=  trim ( $item ) ;
+
+				if  ( $item  !==  '' )
+				   {
+					if  ( $item [0]  ==  '/' )
+						$item	=  substr ( $item, 1 ) ;
+
+					$files []	=  $item ;
+				    }
+			    }
+
+			// Create the output backup directory if needed 
+			$server_backup_path	=  Path::RealPath ( $backup_path . '/' . $server_entry -> Host ) ;
+
+			if  ( ! file_exists ( $server_backup_path ) )
+			   {
+				if  ( ! mkdir ( $server_backup_path ) )
+					exit ;
+			    }
+			else if  ( ! is_dir ( $server_backup_path ) )
+				error ( "Path \"$server_backup_path\" exists, but is not a directory." ) ;
+
+			// Log path for this server
+			$server_log_path	=  Path::RealPath ( $cf -> GetKey ( $server, [ 'LogPath', 'LogDirectory' ], $settings [ 'log-path' ] ) . '/' . $server_entry -> Host ) ;
+
+			if  ( ! is_dir ( $server_log_path ) )
+				mkdir ( $server_log_path ) ;
+
+			// Max logs to be kept for this server
+			$server_max_logs	=  $cf -> GetIntegerKey ( $server, 'MaxLogs', $max_logs, 1 ) ;
+
+			// Add the current server to the settings
+			$settings [ 'servers' ] [ $server_entry -> Host ]	=
+			   [
+				'server'	=>  $server_entry,
+				'backup-path'	=>  $server_backup_path,
+				'summary-file'	=>  $server_log_path . '/summary.log',
+				'log-file'	=>  $server_log_path . '/backup.' . date ( 'Ymd.His') . '.log',
+				'log-path'	=>  $server_log_path,
+				'max-logs'	=>  $server_max_logs,
+				'files'		=>  $files
+			    ] ;
+		    }
+
+		    //dump ( $settings ) ; exit ;
+		return ( $settings ) ;
+	    }
+
+
+	/*==================================================================================================
+
+		Global constants and variables.
+
+	  ==================================================================================================*/
+	$CL 				=  new  CLParser ( $Definitions ) ;
+	$Backup				=  $CL -> backup ;
+	$Clean				=  $CL -> clean ;
+	$ConfigurationFile		=  $CL -> configuration_file ;
+	$ListConfiguredServers		=  $CL -> list_configured_servers ;
+	$ListSummaries			=  $CL -> list_summaries ;
+	$Servers			=  $CL -> servers ;
+	$ServerConfigurationFile	=  $CL -> server_configuration_file ;
+	
+	$RsAdmin			=  new RsAdmin ( $ServerConfigurationFile ) ;
+	$ServerList			=  $RsAdmin -> FindServers ( $Servers ) ;
+	$HadOption			=  false ;
+	$BackupSettings			=  LoadConfigurationParameters ( ) ;
+
+
+	/*==================================================================================================
+
+		Main program.
+
+	  ==================================================================================================*/
+
+	// -list_configured_servers :
+	//	Lists the servers configured for this command.
+	if  ( ! $HadOption  &&  $ListConfiguredServers ) 
+	   {
+		$RsAdmin -> ListServers ( ) ;
+		$HadOption	=  true ;
+	    }
+
+	// -list_summaries :
+	//	Lists backup history per server.
+	if  ( ! $HadOption  &&  $ListSummaries ) 
+	   {
+		ListSummaries ( $BackupSettings ) ;
+		$HadOption	=  true ;
+	    }
+
+	// -backup type
+	//	Launches a backup of the specified type.
+	if  ( ! $HadOption  &&  $CL -> IsSpecified ( 'backup' ) )
+	   {
+		switch  ( strtolower ( $Backup ) )
+		   {
+			case	'incremental' :
+				IncrementalBackup ( $BackupSettings ) ;
+				break ;
+
+			case	'full' :
+				FullBackup ( $BackupSettings ) ;
+				break ;
+		    }
+
+		$HadOption	=  true ;
+	    }
+
+	// -clean :
+	//	Clean temporary files that may have been left on the remote servers.
+	if  ( $Clean ) 
+	   {
+		CleanTempFiles ( $BackupSettings ) ;
+		$HadOption	=  true ;
+	    }
+
+	if  ( ! $HadOption )
+		$CL -> DisplayHelp ( ) ;
