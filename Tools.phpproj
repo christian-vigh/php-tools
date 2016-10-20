@@ -43,7 +43,6 @@
     <Compile Include="Bin\rsgetrandom.phs" />
     <Compile Include="Bin\rspdfsamples.phs" />
     <Compile Include="Bin\rswebprotect.phs" />
-    <Compile Include="Bin\rswhm.phs" />
     <Compile Include="Bin\rwhois.phs" />
     <Compile Include="Bin\qotd.phs" />
     <Compile Include="Bin\minify.phs" />
@@ -583,10 +582,12 @@
     <Content Include="Bin\px.phs" />
     <Content Include="Bin\drives.phs" />
     <Content Include="Bin\iecache.phs" />
+    <Content Include="Bin\rsbackup.phs" />
     <Content Include="Bin\rslogs.phs" />
     <Content Include="Bin\rsiptables.phs" />
     <Content Include="Bin\rsreplica.phs" />
     <Content Include="Bin\rswebsync.phs" />
+    <Content Include="Bin\rtfstats.phs" />
     <Content Include="Bin\ufile.phs" />
     <Content Include="Bin\whoisupdate.phs" />
     <Content Include="Bin\zratio.phs" />
@@ -675,9 +676,11 @@
     <Content Include="Data\rsadmin\vps169912.ini" />
     <Content Include="Data\rsadmin\vps179002.ini" />
     <Content Include="Data\rsadmin\vps179003.ini" />
+    <Content Include="Data\rsbackup.ini" />
     <Content Include="Data\rsgetrandom.ini" />
     <Content Include="Data\rslogs.ini" />
     <Content Include="Data\rspdfsamples.ini" />
+    <Content Include="Data\rsreplica.ini" />
     <Content Include="Data\rswebprotect.ini" />
     <Content Include="Data\rswebprotect\.htaccess" />
     <Content Include="Data\rswebsync.ini" />
