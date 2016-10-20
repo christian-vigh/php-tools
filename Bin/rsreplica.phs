@@ -1,0 +1,304 @@
+<?php
+	//!phpcmd(Administration, 1.0, production) : Shows mysql slaves status.
+	/**************************************************************************************************************
+
+	    NAME
+		rsreplica.phs
+
+	    DESCRIPTION
+		Shows status of masters and replicas.
+
+	    AUTHOR
+		Christian Vigh, 10/2016.
+
+	    HISTORY
+		[Version : 1.0]		[Date : 2016-10-16]     [Author : CV]
+			Initial version.
+
+	 **************************************************************************************************************/
+	require ( "tools.phpinclude" ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Types\String ;
+	use  Thrak\IO\Path ;
+	use  Thrak\IO\AsciiReport ;
+	use  Thrak\IO\Console ;
+	use  Thrak\Processors\IniFile ;
+	use  Thrak\Database\Database ;
+
+	require ( "RsAdmin.phpclass" ) ;
+
+
+	/*==================================================================================================
+
+		Command line parameters.
+
+	  ==================================================================================================*/
+	$Definitions = <<<END
+<command allow-files="false">
+
+	<usage>
+		Displays the status of configured Mysql replicas masters &amp; slaves.
+	</usage>
+	
+	<file name="configuration_file, cf" disposition="existing" default="thraktools://Data/rsreplica.ini">
+		Parameters file describing masters and slaves connection information.
+	</file>
+
+	<flag name="list, l">
+		Lists the masters/slaves relationships.
+	</flag>
+
+	<flag name="status, s">
+		Lists masters/slaves current status.
+	</flag>
+</command>
+END;
+
+	/*==================================================================================================
+
+		Utility functions.
+
+	  ==================================================================================================*/
+
+	// get_host_settings -
+	//	Retrieves the standard settings from the specified section.
+	function  get_host_settings  ( $configuration_file, $cf, $section_name ) 
+	   {
+		$hostname	=  null ;
+		$ip		=  null ;
+		$description	=  null ;
+		$user		=  null ;
+		$port		=  null ;
+		$password	=  null ;
+
+		$hostname	=  $cf -> GetKey ( $section_name, 'Hostname', $section_name ) ;
+		$description	=  $cf -> GetKey ( $section_name, 'Description', $section_name ) ;
+		
+		if  ( ( $ip = $cf -> GetKey ( $section_name, [ 'Host', 'Ip' ] ) )  ===  null )
+			error ( "No ip address defined in section [$section] of configuration file \"$configuration_file\"." ) ;
+		
+		if  ( ( $user = $cf -> GetKey ( $section_name, [ 'User', 'Username' ] ) )  ===  null )
+			error ( "No username defined in section [$section] of configuration file \"$configuration_file\"." ) ;
+
+		$port		=  $cf -> GetKey ( $section_name, 'Port' ) ;
+		$password	=  $cf -> GetKey ( $section_name, 'Password' ) ;
+
+
+		return
+		   ([
+			'hostname'	=>  $hostname,
+			'host'		=>  $ip,
+			'description'	=>  $description,
+			'port'		=>  $port,
+			'user'		=>  $user,
+			'password'	=>  $password,
+			'database'	=>  null 
+		     ]) ;
+	    }
+
+
+	/*==================================================================================================
+
+	    LoadConfiguration -
+		Loads master/slave data from the specified configuration file.
+
+	  ==================================================================================================*/
+	function  LoadConfiguration ( $configuration_file )
+	   {
+		$configuration	=  
+		   [ 
+			'masters'	=>  [] 
+		    ] ;
+
+		$cf		=  IniFile::LoadFromFile ( $configuration_file ) ;
+
+		// Get the list of masters 
+		$value		=  $cf -> GetKey ( 'Settings', 'Masters' ) ;
+
+		if  ( ! $value )
+			error ( "The [Settings] section should have a \"Masters\" entry in configuration file \"$configuration_file\"." ) ;
+
+		$masters	=  explode ( ',', $value ) ;
+
+		// Retrieve the individual settings of each master
+		foreach  ( $masters  as  $master )
+		   {
+			$master		=  trim ( $master ) ;
+
+			if  ( ! $master )
+				continue ;
+
+			// Check that a section exists for this master
+			if  ( ! $cf -> IsSectionDefined ( $master ) )
+				error ( "The \"$master\" master has been defined in the \"Masters\" entry of the [Settings] section, " .
+					"but no section named [$master] exists in configuration file \"$configuration_file\"." ) ;
+
+			// Get the slaves for this master
+			$slave_settings		=  [] ;
+			$value			=  $cf -> GetKey ( $master, 'Slaves' ) ;
+
+			if  ( ! $value )
+				error ( "The [$master] section should contain a \"Slaves\" entry in configuration file \"$configuration_file\"." ) ;
+
+			// Before going further, retrieve host settings for this master
+			$host_settings	=  get_host_settings ( $configuration_file, $cf, $master ) ;
+			
+			// Now retrieve host settings for each slave
+			$slaves			=  explode ( ',', $value ) ;
+
+			foreach  ( $slaves  as  $slave )
+			   {
+				$slave		=  trim ( $slave ) ;
+
+				if  ( ! $cf -> IsSectionDefined ( $slave ) )
+					error ( "The \"$slave\" slave has been defined in the \"Slaves\" entry of the [$master] section, " .
+						"but no section named [$slave] exists in configuration file \"$configuration_file\"." ) ;
+
+				$slave_settings [ $slave ]	=  get_host_settings ( $configuration_file, $cf, $slave ) ;
+			    }
+
+			$host_settings	[ 'slaves' ]			=  $slave_settings ;
+			$configuration [ 'masters' ] [ $master ]	=  $host_settings ;
+		    }
+
+		return ( $configuration ) ;
+	    }
+
+
+	/*==================================================================================================
+
+	    ListMastersAndSlaves -
+		Lists masters and slaves relationships.
+
+	  ==================================================================================================*/
+	function  ListMastersAndSlaves ( $settings )
+	   {
+		$report		=  new  AsciiReport 
+		   ([
+			[ 'member' => 'host'	, 'title' => 'Master/Slave(s)'		],
+			[ 'member' => 'ip'	, 'title' => 'Ip'			],
+			[ 'member' => 'port'	, 'title' => 'Port', 'align' => 'right' ],
+			[ 'member' => 'user'	, 'title' => 'User'			],
+			[ 'member' => 'password', 'title' => 'Password'			]
+		     ]) ;
+
+		foreach  ( $settings [ 'masters' ]  as  $master_settings )
+		   {
+			$data		=  
+			   [[ 
+				'host'		=>  $master_settings [ 'description' ], 
+				'ip'		=>  $master_settings [ 'host' ],
+				'port'		=>  $master_settings [ 'port' ],
+				'user'		=>  $master_settings [ 'user' ],
+				'password'	=>  $master_settings [ 'password' ]
+			     ]] ;
+
+			foreach  ( $master_settings [ 'slaves' ]  as  $slave )
+			   {
+				$data []	=  '*' ;
+				$data []	=  
+				   [
+					'host'		=>  '--> ' . $slave [ 'description' ], 
+					'ip'		=>  $slave [ 'host' ],
+					'port'		=>  $slave [ 'port' ],
+					'user'		=>  $slave [ 'user' ],
+					'password'	=>  $slave [ 'password' ]
+				    ] ;
+			    }
+		    }
+
+		echo $report -> Generate ( $data ) ;
+	    }
+
+
+	/*==================================================================================================
+
+	    ShowSlavesStatus -
+		Lists masters and slaves relationships.
+
+	  ==================================================================================================*/
+	function  ShowSlavesStatus ( $settings )
+	   {
+		$first		=  true ;
+
+		foreach  ( $settings [ 'masters' ]  as  $master )
+		   {
+			// Master information
+			$db	=  new Database ( $master ) ;
+			$db -> SetQuery ( 'SHOW MASTER STATUS' ) ;
+			$row	=  $db -> LoadRow ( ) ;
+
+			if  ( ! $first )
+				output ( "" ) ;
+
+			output ( "Master {$master [ 'description' ]} ({$row [ 'File' ]} @pos {$row [ 'Position' ]}) :" ) ;
+			$db -> Disconnect ( ) ;
+
+			foreach  ( $master [ 'slaves' ]  as  $slave )
+			   {
+				$db		=  new Database ( $slave ) ;
+				$db -> SetQuery ( 'SHOW SLAVE STATUS' ) ;
+				$row		=  $db -> LoadRow ( ) ;
+
+				$io_running	=  ( ! strcasecmp ( $row [ 'Slave_IO_Running'  ], 'Yes' ) ) ?  'Running' : 'Stopped' ;
+				$sql_running	=  ( ! strcasecmp ( $row [ 'Slave_SQL_Running' ], 'Yes' ) ) ?  'Running' : 'Stopped' ;
+
+				output ( "\n    Slave {$slave [ 'description' ]} ({$slave [ 'host' ]}, port {$slave [ 'port' ]}) : " ) ;
+				output ( "\tMaster                : {$row [ 'Master_Host' ]}" ) ;
+				output ( "\tMaster info           : port {$row [ 'Master_Port' ]}, user {$row [ 'Master_User' ]}, master id {$row [ 'Master_Server_Id' ]}" ) ;
+				output ( "\tMaster log file       : {$row [ 'Relay_Master_Log_File' ]} @read pos {$row [ 'Read_Master_Log_Pos' ]}, exec pos {$row [ 'Exec_Master_Log_Pos' ]}" ) ;
+				output ( "\tRelay log file        : {$row [ 'Relay_Log_File' ]} @pos {$row [ 'Relay_Log_Pos' ]}" ) ;
+				output ( "\tSeconds behind master : {$row [ 'Seconds_Behind_Master' ]}" ) ;
+
+				if  ( $row [ 'Last_Errno' ] )
+					output ( "\tLast error            : {$row [ 'Last_Error' ]} ({$row [ 'Last_Errno' ]})" ) ;
+
+				if  ( $row [ 'Last_IO_Errno' ] )
+					output ( "\tLast IO error         : {$row [ 'Last_IO_Error' ]} ({$row [ 'Last_IO_Errno' ]})" ) ;
+
+				if  ( $row [ 'Last_SQL_Errno' ] )
+					output ( "\tLast SQL error        : {$row [ 'Last_SQL_Error' ]} ({$row [ 'Last_SQL_Errno' ]})" ) ;
+
+				output ( "\tSlave IO thread       : $io_running / {$row [ 'Slave_IO_State' ]}" ) ;
+				output ( "\tSlave SQL thread      : $sql_running / {$row [ 'Slave_SQL_Running_State' ]}" ) ;
+
+				$db -> Disconnect ( ) ;
+			    }
+
+			$first	=  false ;
+		    }
+	    }
+
+
+	/*==================================================================================================
+
+		Global constants and variables.
+
+	  ==================================================================================================*/
+	$CL 				=  new  CLParser ( $Definitions ) ;
+	$ConfigurationFile		=  $CL -> configuration_file ;
+	$List				=  $CL -> list ;
+	$Status				=  $CL -> status ;
+
+	$HadOption			=  false ;
+	$settings			=  LoadConfiguration ( $ConfigurationFile ) ;
+
+	// -list :
+	//	Lists the masters/slaves relationships.
+	if  ( ! $HadOption  &&  $List )
+	   {
+		ListMastersAndSlaves ( $settings ) ;
+		$HadOption		=  true ;
+	    }
+
+	// -status :
+	//	Show slaves status.
+	if  ( ! $HadOption  &&  $Status )
+	   {
+		ShowSlavesStatus ( $settings ) ;
+		$HadOption		=  true ;
+	    }
+
+	if  ( ! $HadOption )
+		$CL -> DisplayHelp ( ) ;
