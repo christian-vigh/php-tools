@@ -43,18 +43,6 @@
 		Backups remote servers to a local drive.
 	</usage>
 
-	<keyword name="backup, b">
-		Specifies which kind of backup is to be performed.
-
-		<case name="full, f">
-			Performs a full backup.
-		</case>
-
-		<case name="incremental, incr, inc, i">
-			Performs an incremental backup.
-		</case>
-	</keyword>
-
 	<flag name="clean, c">
 		Cleans the temporary files that may remain after an interrupted backup.
 	</flag>
@@ -62,6 +50,14 @@
 	<file name="configuration_file, cf" disposition="existing" default="thraktools://Data/rsbackup.ini">
 		Backup parameters file.
 	</file>
+
+	<flag name="full, f">
+		Performs a full backup. The -full and -incremental options are mutually exclusive.
+	</flag>
+
+	<flag name="incremental, incr, inc, i">
+		Performs an increment backup. The -full and -incremental options are mutually exclusive.
+	</flag>
 	
 	<flag name="list_configured_servers, lcs">
 		Lists the servers configured for this command.
@@ -79,6 +75,8 @@
 		Servers to be backed up.
 		Wildcard characters are authorized, and search is performed on every server alias.
 	</string>
+
+	<exclude name="incremental" with="full"/>
 </command>
 END;
 
@@ -731,8 +729,8 @@ END;
 
 	  ==================================================================================================*/
 	$CL 				=  new  CLParser ( $Definitions ) ;
-	$Backup				=  $CL -> backup ;
 	$Clean				=  $CL -> clean ;
+	$Backup				=  false ;
 	$ConfigurationFile		=  $CL -> configuration_file ;
 	$ListConfiguredServers		=  $CL -> list_configured_servers ;
 	$ListSummaries			=  $CL -> list_summaries ;
@@ -744,6 +742,11 @@ END;
 	$HadOption			=  false ;
 	$BackupSettings			=  LoadConfigurationParameters ( ) ;
 
+
+	if  ( $CL -> incremental )
+		$Backup		=  'incremental' ;
+	else if  ( $CL -> full )
+		$Backup		=  'full' ;
 
 	/*==================================================================================================
 
@@ -769,7 +772,7 @@ END;
 
 	// -backup type
 	//	Launches a backup of the specified type.
-	if  ( ! $HadOption  &&  $CL -> IsSpecified ( 'backup' ) )
+	if  ( ! $HadOption  &&  $Backup )
 	   {
 		switch  ( strtolower ( $Backup ) )
 		   {
