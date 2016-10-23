@@ -407,7 +407,7 @@ END;
 			$time_unpack_start	=  microtime ( true ) ;
 			$cwd			=  getcwd ( ) ;
 			chdir ( $entry [ 'backup-path' ] ) ;
-			$command		=  "tar xvfz \"$tar_output_file\" >{$entry [ 'log-file' ]} 2>&1" ;
+			$command		=  "utar xvfz \"$tar_output_file\" >{$entry [ 'log-file' ]} 2>&1" ;
 
 			echo ( "\tUnpacking files       : " ) ;
 			system ( $command ) ;
@@ -462,7 +462,7 @@ END;
 			// Build the tar command for backup up data on the remote szrver
 			$remote_tar_file	=  "/tmp/.$host.tar.gz" ;
 			$backup_sources		=  String::ImplodeWithQuotedStrings ( ' ', $entry [ 'files' ] ) ;
-			$command		=  "cd / ; rm -f $remote_tar_file ; find $backup_sources -type d -o -type d | tar cfz $remote_tar_file -T -" ;
+			$command		=  "cd / ; rm -f $remote_tar_file ; find $backup_sources -type d  | tar cfz $remote_tar_file -T -" ;
 
 			// Connect 
 			$time_start		=  microtime ( true ) ;
@@ -513,7 +513,7 @@ END;
 			$time_unpack_start	=  microtime ( true ) ;
 			$cwd			=  getcwd ( ) ;
 			chdir ( $entry [ 'backup-path' ] ) ;
-			$command		=  "tar xvfz \"$tar_output_file\" >{$entry [ 'log-file' ]} 2>&1" ;
+			$command		=  "utar xvfz \"$tar_output_file\" >{$entry [ 'log-file' ]} 2>&1" ;
 
 			echo ( "\tUnpacking files       : " ) ;
 			system ( $command ) ;
