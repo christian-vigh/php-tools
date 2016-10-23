@@ -102,7 +102,11 @@ class  LocalMailLog	extends  LocalLog
 	const	MAIL_STATISTICS					=  71 ;
 	const	MAIL_SMTP_MESSAGE_QUEUED			=  72 ;
 	const	MAIL_SMTP_INVALID_HOSTNAME			=  73 ;
-
+	const   MAIL_NO_SASL_AUTHENTICATION_MECHANISM		=  74 ;
+	const	MAIL_FILE_NOT_FOUND				=  75 ;
+	const	MAIL_AUTHDAEMON_RESTARTING_CHILDREN		=  76 ;
+	const	MAIL_SMTP_STARTUP_ERROR				=  77 ;
+	const	MAIL_IGNORED					=  0x8000 ;
 
 	// Constructor -
 	//	Builds the log object
@@ -1091,6 +1095,57 @@ class  LocalMailLog	extends  LocalLog
 									)
 								    #imsx' ;
 
+	// Message of the form :
+	//	vps330714 postfix/smtpd[15628]: fatal: no SASL authentication mechanisms
+	//	vps330714 postfix/smtpd[15628]: warning: xsasl_cyrus_server_get_mechanism_list: no mechanism available
+	// Constant : MAIL_NO_SASL_AUTHENTICATION_MECHANISM
+	private static	$regex_no_sasl_authentication_mechanism	=  '#
+									(?P<message>
+										(
+											( fatal: \s+ no \s+ SASL \s+ authentication \s+ mechanisms )
+											|
+											( warning: \s+ xsasl_cyrus_server_get_mechanism_list: \s+ no \s+ mechanism \s+ available)
+										 )
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	postfix/proxymap[3592]: error: open /etc/postfix/mysql-virtual_domains.cf: No such file or directory
+	// Constant : MAIL_FILE_NOT_FOUND
+	private static	$regex_file_not_found			=  '#
+									(?P<message>
+										error: \s+ open \s+
+										(?P<path> [^:]+)
+										: \s+ No \s+ such \s+ file \s+ or \s+ directory
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	vps330714 authdaemond: restarting authdaemond children
+	// Constant : MAIL_AUTHDAEMON_RESTARTING_CHILDREN
+	private static	$regex_authdaemon_restarting_children	=  '#
+									(?P<message>
+										restarting \s+ authdaemond \s+ children
+										.*
+									)
+								    #imsx' ;
+								    #imsx' ;
+	// Message of the form :
+	//	vps330714 postfix/master[15363]: warning: /usr/lib/postfix/smtpd: bad command startup -- throttling
+	// Constant : MAIL_SMTP_STARTUP_ERROR
+	private static	$regex_smtp_startup_error		=  '#
+									(?P<message>
+										.* bad \s+ command \s+ startup 
+										.*
+									)
+								    #imsx' ;
+	// Other messages
+	// Constant : MAIL_IGNORED
+	private static	$regex_mail_ignored			=  '#
+									(?P<message>
+										.*
+									)
+								    #imsx' ;
 
 
 	protected function  Parse ( $line, &$parsed_data, $string_store )
@@ -1783,11 +1838,45 @@ class  LocalMailLog	extends  LocalLog
 				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $regex_match [ 'message' ] ) ;
 				$log_code		=  self::MAIL_SMTP_INVALID_HOSTNAME ;
 			    }
+			// Message of the form :
+			//	vps330714 postfix/smtpd[15628]: fatal: no SASL authentication mechanisms
+			else if  ( preg_match ( self::$regex_no_sasl_authentication_mechanism, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $regex_match [ 'message' ] ) ;
+				$log_code		=  self::MAIL_NO_SASL_AUTHENTICATION_MECHANISM ;
+			    }
+			// Message of the form :
+			//	postfix/proxymap[3592]: error: open /etc/postfix/mysql-virtual_domains.cf: No such file or directory
+			// Constant : MAIL_POSTFIX_FILE_NOT_FOUND
+			else if  ( preg_match ( self::$regex_file_not_found, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $regex_match [ 'message' ] ) ;
+				$path_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_PATH			, $regex_match [ 'message' ] ) ;
+				$log_code		=  self::MAIL_FILE_NOT_FOUND ;
+			    }
+			// Message of the form :
+			//	vps330714 authdaemond: restarting authdaemond children
+			else if  ( preg_match ( self::$regex_authdaemon_restarting_children, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $regex_match [ 'message' ] ) ;
+				$log_code		=  self::MAIL_AUTHDAEMON_RESTARTING_CHILDREN ;
+			    }
+			// Message of the form :
+			//	vps330714 postfix/master[15363]: warning: /usr/lib/postfix/smtpd: bad command startup -- throttling
+			else if  ( preg_match ( self::$regex_smtp_startup_error, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $regex_match [ 'message' ] ) ;
+				$log_code		=  self::MAIL_SMTP_STARTUP_ERROR ;
+			    }
 			// Other unhandled messages : warn the developer
 			else
 			   {
+				/*
+				preg_match ( self::$regex_mail_ignored, $message, $regex_match ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $regex_match [ 'message' ] ) ;
+				$log_code		=  self::MAIL_IGNORED ;
+				*/
 				warning ( new \Thrak\System\ParseException ( "The following {$this -> Title} log entry message part could not be interpreted :\n\t$line" ) ) ;
-
 				return ( false ) ;
 			    }
 

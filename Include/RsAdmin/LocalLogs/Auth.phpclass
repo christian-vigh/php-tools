@@ -93,6 +93,8 @@ class  LocalAuthLog	extends  LocalLog
 	const   AUTH_CORRUPTED_MAC				=  60 ;
 	const   AUTH_SSH_PADDING_ERROR				=  61 ;
 	const	AUTH_SSH_PACKET_CORRUPT				=  62 ;
+	const	AUTH_SSH_BAD_OWNERSHIP				=  63 ;
+	const	AUTH_IGNORED					=  0x8000 ;
 
 
 	// Constructor -
@@ -830,6 +832,23 @@ class  LocalAuthLog	extends  LocalLog
 										.*
 									 )
 								    #imsx' ;
+	// Message of the form :
+	//	vps330714 sshd[2041]: Authentication refused: bad ownership or modes for file /root/.ssh/authorized_keys
+	// Constant : AUTH_SSH_BAD_OWNERSHIP
+	private static	$regex_bad_ownership		=  '#	
+									(?P<message>
+										Authentication \s+ refused: \s+ bad \s+ ownership \s+ or \s+ modes \s+ for \s+ file \s+
+										(?P<path> [^\s]+)
+										.*
+									 )
+								    #imsx' ;
+	// Other messages
+	// Constant : AUTH_IGNORED
+	private static	$regex_auth_ignored			=  '#
+									(?P<message>
+										.*
+									)
+								    #imsx' ;
 
 
 
@@ -1425,10 +1444,21 @@ class  LocalAuthLog	extends  LocalLog
 				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
 				$log_code		=  self::AUTH_SSH_PACKET_CORRUPT ;
 			    }
+			// Message of the form :
+			//	vps330714 sshd[2041]: Authentication refused: bad ownership or modes for file /root/.ssh/authorized_keys
+			else if  ( preg_match ( self::$regex_bad_ownership, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SSH_BAD_OWNERSHIP ;
+			    }
 			else
 			   {
+				/*
+				preg_match ( self::$regex_auth_ignored, $message, $regex_match ) ;
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $regex_match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_IGNORED ;
+				*/
 				warning ( new \Thrak\System\ParseException ( "The following {$this -> Title} log entry message part could not be interpreted :\n\t$line" ) ) ;
-
 				return ( false ) ;
 			    }
 
