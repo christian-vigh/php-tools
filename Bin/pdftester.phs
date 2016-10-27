@@ -190,4 +190,6 @@ END;
 			$image		=  $thrak_pdf -> Images [$i] ;
 			$image -> SaveAs ( $image_output ) ;
 		    }
+
+		output ( "\tMemory usage       : {$thrak_pdf -> MemoryPeakUsage}" ) ;
 	    }
