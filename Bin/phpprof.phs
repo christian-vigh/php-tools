@@ -118,7 +118,7 @@ END;
 	$Output		=  basename ( $OutputFile ) ;
 
 	// Build the command line
-	$command	=  "php -e -d\"xdebug.profiler_output_dir=$OutputDir\" -d\"xdebug.profiler_output_name=$Output\" -dxdebug.profiler_enable=on " .
+	$command	=  "w:/wamp/bin/php/php5.6.16-cli/php.exe -e -d\"xdebug.profiler_output_dir=$OutputDir\" -d\"xdebug.profiler_output_name=$Output\" -dxdebug.profiler_enable=on " .
 			   "    -dxdebug.extended_info=1 " .
 			   "    -dopcache.enable_cli=0 " .
 			   "    $path" ;
