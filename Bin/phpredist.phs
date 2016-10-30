@@ -1,0 +1,857 @@
+<?php
+	//!phpcmd(PHP, 1.0, production) : Updates the local versions of PHP executables for Windows.
+	/**************************************************************************************************************
+
+	    NAME
+		phpredist.phs
+
+	    DESCRIPTION
+		Updates the local versions of PHP executables for Windows.
+
+	    AUTHOR
+		Christian Vigh, 10/2016.
+
+	    HISTORY
+	    [Version : 1.0]	[Date : 2016-10-28]     [Author : CV]
+		Initial version.
+
+	 **************************************************************************************************************/
+	require ( 'tools.phpinclude' ) ;
+	require ( 'PhpRunner.phpclass' ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Types\String ;
+	use  Thrak\IO\Path ;
+	use  Thrak\IO\AsciiReport ;
+	use  Thrak\IO\Console ;
+	use  Thrak\Processors\IniFile ;
+
+
+	/*==================================================================================================
+
+		Command line parameters.
+
+	  ==================================================================================================*/
+	$Definitions = <<<END
+<command allow-files="false">
+
+	<usage>
+		Updates the local versions of PHP executables for Windows.
+	</usage>
+
+	<flag name="force, f">
+		When the -update parameter has been specified, indicates that redistributables need to be 
+		downloaded again.
+	</flag>
+
+	<flag name="list_modules, lm">
+		Lists the modules referenced in the change history of each version.
+	</flag>
+
+	<flag name="list_new, ln">
+		Lists information about the new or modified remote PHP redistributables.
+	</flag>
+
+	<directory name="local_directory, ld" disposition="here" default="E:\PHP\SDK\Packages\Bin">
+		Local directory where the PHP redistributables are to be put.
+	</directory>
+	
+	<string name="modules, module, m" arguments="1..*">
+		Narrows the search to the specified module(s) when searching the history with the -search
+		option.
+	</string>
+
+	<string name="remote_url, ru" default="http://windows.php.net/downloads/releases/archives">
+		Remote URL where to find the PHP redistributables.
+	</string>
+
+	<string name="search, s">
+		Searches the changes history for the specified string.
+	</string>
+
+	<flag name="update, u">
+		Update the local directory containing the redistributable packages.
+	</flag>
+
+	<flag name="update_database, udb, ud">
+		When the -update parameter has been specified, indicates that the database needs to be updated, 
+		even if no new redistributable download occurred.
+	</flag>
+</command>
+END;
+
+
+	/*==================================================================================================
+
+		Support functions.
+
+	  ==================================================================================================*/
+
+	// download -
+	//	Downloads a remote file to the local directory.
+	//	Returns true if the redistributable has been downloaded.
+	//	A distributable is downloaded when one of the following conditions is true :
+	//	- The -force command line parameter has been specified
+	//	- No local version exists for this version
+	//	- A local version exists, but is older than the one found in the remote repository
+	function  download ( $remote_entry, $force = false )
+	   {
+		global		$LocalDirectory ;
+
+		if  ( ! $remote_entry [ 'zipfile' ] )		// Skip versions that have no remote equivalent
+			return ;
+
+		$local_dir	=  $remote_entry [ 'local-dir' ] ;
+		$exists		=  file_exists ( $local_dir ) ;
+		$status		=  false ;
+
+
+		if (  ! $exists  ||  filemtime ( $local_dir )  <  $remote_entry [ 'date' ]  ||  $force )
+		   {
+			if  ( ! $exists )
+				mkdir ( $local_dir ) ;
+
+			echo ( "Downloading {$remote_entry [ 'zipfile' ]}..." ) ;
+
+			// Copy the remote zip file to a file of the same name into the temp directory
+			$temp_file	=  sys_get_temp_dir ( ) . '/' . $remote_entry [ 'zipfile' ] ;
+			$contents	=  file_get_contents ( $remote_entry [ 'link' ] ) ;
+			file_put_contents ( $temp_file, $contents ) ;
+
+			// Build the unzip command - using Cygwin paths (otherwise unzip will bail oout when encountering paths such as "C:\Temp\...")
+			$cyg_temp_file	=  Path::ToCygwin ( $temp_file ) ;
+			$cyg_local_dir	=  Path::ToCygwin ( $local_dir ) ;
+		
+			// Unzip the file then unlink it
+			$command	=  "uunzip -o -q $cyg_temp_file -d $cyg_local_dir" ;
+
+			system ( $command ) ;
+			unlink ( $temp_file ) ;
+
+			output ( ' ' . number_format ( $remote_entry [ 'size' ], 0, '.', ' ' ) . ' bytes' ) ;
+
+			$status		=  true ;
+		    }
+		else
+			echo ( "File {$remote_entry [ 'zipfile' ]} not updated\n" ) ;
+
+		return ( $status ) ;
+	    }
+
+
+	// extract_bugs -
+	//	Extracts references to bugs from the supplied text.
+	function  extract_bugs ( $text )
+	   {
+		if  ( preg_match_all ( '/\# (?P<id> \d+)/x', $text, $matches ) )
+			return ( '/' . implode ( '/', $matches [ 'id' ] ) . '/' ) ;
+		else
+			return ( '' ) ; 
+	    }
+
+
+	// get_distribution_list -
+	//	Gets the list of remote distributions for the specified url.
+	function  get_distribution_list ( $remote_url ) 
+	   {
+		global		$RemoteUrl, $LocalDirectory ;
+
+		$domain				=  preg_replace ( '#^ (http://) ([^/]+) (.*)$#ix', '$1$2', $RemoteUrl ) ;
+
+		// A typical link in the windows.php.net archive directory :
+		//	3/22/2011  2:30 PM     19378176 <A HREF="/downloads/releases/archives/php-5.2.10-nts-Win32-VC6-x86.msi">php-5.2.10-nts-Win32-VC6-x86.msi</A>
+		static		$re	=  '#
+						(?P<date> \d+ / \d+ / \d+ \s+ \d+:\d+ \s* (AM|PM) )
+						\s+ 
+						(?P<size> \d+) \s+
+						<a .*? href="(?P<link> [^"]+)" .*? >
+						(?P<file> [^<]+) 
+						\s* </a>
+					    #imsx' ;
+
+		$contents	=  file_get_contents ( $remote_url ) ;
+		$result		=  [] ;
+
+		if  ( preg_match_all ( $re, $contents, $matches ) )
+		   {
+			for  ( $i = 0, $count = count ( $matches [ 'file' ] ) ; $i  <  $count ; $i ++ )
+			   {
+				$file			=  trim ( $matches [ 'file' ] [$i] ) ;
+				$package		=  pathinfo ( $file, PATHINFO_FILENAME ) ;
+				$local_directory	=  Path::ToUnix ( Path::RealPath ( $LocalDirectory . '/' . $package ) ) ;
+
+				if  ( strpos ( $file, '-src' )  !==  false )
+					continue ;
+
+				if  ( preg_match ( '/^php-\d .* \.zip$/ix', $file ) )
+				   {
+					$result	[ $package ]	= 
+					   [
+						'package'	=>  $package,
+						'zipfile'	=>  $file,
+						'link'		=>  $domain . trim ( $matches [ 'link' ] [$i] ),
+						'date'		=>  strtotime ( $matches [ 'date' ] [$i] ),
+						'size'		=>  ( integer ) trim ( $matches [ 'size' ] [$i] ),
+						'local-dir'	=>  $local_directory,
+						'version'	=>  new PhpPackage ( $local_directory )
+					    ] ;
+				    }
+			    }
+		    }
+		else
+			error ( "Unrecognized php.net archive list." ) ;
+
+		// Search any local version that does not have a counterpart in the remote distribution list
+		$local_directories	=  glob ( "$LocalDirectory/*" ) ;
+
+		foreach  ( $local_directories  as  $local_directory )
+		   {
+			$package	=  basename ( $local_directory ) ;
+
+			if  ( isset ( $result [ $package ] )  ||  ! preg_match ( '/^php-\d/ix', $package ) )
+				continue ;
+
+			$result [ $package ]	=
+			   [
+				'package'	=>  $package,
+				'zipfile'	=>  false,
+				'link'		=>  false,
+				'date'		=>  0,
+				'size'		=>  0,
+				'local-dir'	=>  Path::ToWindows ( Path::RealPath ( $local_directory ) ),
+				'version'	=>  new PhpPackage ( $local_directory )
+			    ] ;
+		    }
+
+		ksort ( $result ) ;
+
+		return ( $result ) ;
+	    }
+
+
+	// get_history -
+	//	Retrieve the history for the specified entry
+	//	The "news.txt" file bundled with each binary distribution is of course, free-form text, but generally has
+	//	the following format :
+	/*
+		PHP                                                                        NEWS
+		|||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
+
+		17 Jun 2009, PHP 5.2.10
+		- Updated timezone database to version 2009.9 (2009i) (Derick)
+
+		- Added "ignore_errors" option to http fopen wrapper. (David Zulke, Sara)
+		- Added new CURL options CURLOPT_REDIR_PROTOCOLS, CURLOPT_PROTOCOLS,
+		  and CURLPROTO_* for redirect fixes in CURL 7.19.4. (Yoram Bar Haim, Stas)
+		- Added support for Sun CC (FR #46595 and FR #46513). (David Soria Parra)
+	 */
+	// or, for more recent versions :
+	/*
+		PHP                                                                        NEWS
+		|||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
+		13 Oct 2016, PHP 5.6.27
+
+		- Core:
+		  . Fixed bug #73025 (Heap Buffer Overflow in virtual_popen of
+		    zend_virtual_cwd.c). (cmb)
+		  . Fixed bug #73058 (crypt broken when salt is 'too' long). (Anatol)
+		  . Fixed bug #72703 (Out of bounds global memory read in BF_crypt triggered by
+		    password_verify). (Anatol)
+
+		- Filter:
+		  . Fixed bug #72972 (Bad filter for the flags FILTER_FLAG_NO_RES_RANGE and
+		    FILTER_FLAG_NO_PRIV_RANGE). (julien)
+	 */
+	//	The function correctly handles both presentations. It can gather several lines into a single one (for example,
+	//	the "Fixed bug #72972" entry of the "Filter" module will be extracted as a single line).
+	//	The file "news.txt" may contain history data for several versions, but the get_history() function only extracts
+	//	the part that is related to the version specified by $remote_entry. The criteria line used for recognition has
+	//	the following shape :
+	//
+	//		13 Oct 2016, PHP 5.6.27
+	//
+	//	Other cases can include intermediate releaes, such as :
+	/*	
+		17 Sep 2009, PHP 5.2.11
+		- Fixed certificate validation inside php_openssl_apply_verification_policy.
+		  (Ryan Sleevi, Ilia)
+
+
+		10 Sep 2009, PHP 5.2.11RC3
+		- Updated timezone database to version 2009.13 (2009m) (Derick)
+
+		- Fixed bug #49470 (FILTER_SANITIZE_EMAIL allows disallowed characters). (Ilia)
+
+		03 Sep 2009, PHP 5.2.11RC2
+		- Added missing sanity checks around exif processing. (Ilia)
+	 */
+	function  get_history ( $remote_entry ) 
+	   {
+		// This regex searches for a line starting with some sort of date, followed by "PHP" and a version number
+		static		$version_re	=  '/^
+							(?P<date> .+?)
+							,? \s*
+							PHP \s+
+							(?P<version> \d+ ( \. \d+ ( \. \d+ )? )? )
+						    /ix' ;
+		// Regular expressions to match  history entry when no module has been specified ($line_re) or when 
+		// a module has been specified as : "- Core:" ($subline_re)
+		static		$line_re	=  '/^ - \s* (?P<text> .*)/x' ;
+		static		$subline_re	=  '/^ \s+ [.\-] \s* (?P<text> .*)/x' ;
+
+		// Get the "news.txt" file path, and complain if not found
+		$news_file	=  Path::ToUnix ( Path::RealPath ( $remote_entry [ 'local-dir' ] . '/news.txt' ) ) ;
+
+		if  ( ! file_exists ( $news_file ) )
+			error ( "The distribution \"{$remote_entry [ 'package' ]}\" does not contain any file named news.txt." ) ;
+
+		// Loop through the lines of file "news.txt"
+		$contents	=  file ( $news_file ) ;
+
+		for  ( $i = 0, $count = count ( $contents ) ; $i  <  $count ; $i ++ )
+		   {
+			$line	=  trim ( $contents [$i] ) ;
+
+			// Look for a line of the form "some date, PHP x.y.z", that introduces the modifications for a given php version
+			if  ( preg_match ( $version_re, $line, $version_match )  &&  $version_match [ 'version' ]  ==  $remote_entry [ 'version' ] -> PhpVersion )
+			   {
+				// Extract version number
+				$version_date		=  date ( 'Y-m-d', strtotime ( $version_match [ 'date' ] ) ) ;
+
+				// Initializations
+				$version_contents	=  '' ;				// Full text contents of the version history
+				$version_entries	=  [] ;				// Individual history entries
+				$current_module		=  'Core' ;			// Current module encountered so far
+				$current_line		=  '' ;				// Current history entry contents
+				$current_re		=  $line_re ;			// Current regular expression to be used
+
+				// Now that we have found the PHP version history matching the version number found in $remote_entry, scan lines
+				for ( $j = $i + 1 ; $j  <  $count ; $j ++ )
+				   {
+					$line			=  rtrim ( $contents [$j] ) ;
+
+					// A history entry can end either with :
+					// - an empty line
+					// - A line that starts with "-" (if no module was specified)
+					// - A line that starts with "." (if a module was specified)
+					// Here, we are only handling empty lines
+					if  ( ! $line )
+					   {
+						// If line data has already been collected, add it to the list of version entries
+						if  ( $current_line )
+							$version_entries []	=  
+							   [ 
+								'module'	=>  $current_module, 
+								'text'		=>  $current_line, 
+								'bugs'		=>  extract_bugs ( $current_line ) 
+							    ] ;
+
+						// Then re-initialize everything related to a version entry
+						$current_module		=  'Core' ;
+						$current_re		=  $line_re ;
+						$current_line		=  '' ;
+
+						continue ;
+					    }
+
+					// A new date with a PHP version has been found
+					if  ( preg_match ( $version_re, $line, $version_match )  &&  trim ( $version_match [ 'date' ] ) )
+					   {
+						// However, we can find things like : "PHP 5.2.1", "PHP 5.2.1RC1", "PHP 5.2.1RC2"
+						// In this case, consider they are all related to the same version
+						if  ( $version_match [ 'version' ]  ==  $remote_entry [ 'version' ] -> PhpVersion )
+							continue ;
+						// Otherwise we're done
+						else
+							break ;
+					    }
+
+					// Add the current line to the whole version hstory contents
+					$version_contents	.=  $contents [$j] ;
+
+					// Current line starts either by "-" or "." : this is a new history entry
+					if  ( preg_match ( $current_re, $line, $match ) )
+					   {
+						// Add any previous history entry to the history list
+						if  ( $current_line )
+							$version_entries []	=  
+							   [ 
+								'module'	=>  $current_module, 
+								'text'		=>  $current_line, 
+								'bugs'		=>  extract_bugs ( $current_line ) 
+							    ] ;
+
+						// Look if the current line does not specify a module ("- module_name:")
+						if  ( preg_match ( '/^ - \s* (?P<module> \w+) \s* : \s* $/ix', $line, $module_match ) )
+						   {
+							$current_module		=  $module_match [ 'module' ] ;
+							$current_re		=  $subline_re ;
+							$current_line		=  '' ;
+						    }
+						// Otherwise, this is a new history entry
+						else
+							$current_line	=  trim ( $match [ 'text' ] ) ;
+					    }
+					// Here we found a continuation line of the current history entry
+					else
+					   {
+						if  ( preg_match ( '/^ \s+ \./x', $line ) )
+							$line	=  "\r\n$line" ;
+						else
+							$line	=  trim ( $line ) ;
+
+						$current_line	.=  ' ' . $line ;
+					    }
+				    }
+
+				// At that point, we're done with scanning history entries for the PHP version we are looking for
+				// Add the last entry found, if any
+				if  ( $current_line )
+					$version_entries []	=  
+					   [ 
+						'module'	=>  $current_module, 
+						'text'		=>  $current_line, 
+						'bugs'		=>  extract_bugs ( $current_line ) 
+					    ] ;
+
+				// Return history data for this version
+				$version_contents	=  trim ( $version_contents ) ;
+				
+				return
+				   ([
+					'date'		=>  $version_date,
+					'text'		=>  $version_contents,
+					'entries'	=>  $version_entries,
+					'bugs'		=>  extract_bugs ( $version_contents )
+				     ]) ;
+			    }
+		    }
+
+		// Should never arrive here, unless the "news.txt" file does not contain any information related to the PHP version
+		// defined in $remote_entry
+		error ( "The file \"news.txt\" does not contain any version information related to {$remote_entry [ 'package' ]}" ) ;
+	    }
+
+
+	// optimize_tables -
+	//	Optimize the phpredist tables.
+	function  optimize_tables ( )
+	   {
+		global		$Database ;
+
+		$Database -> Execute ( "OPTIMIZE TABLE phpredist_packages" ) ;
+		$Database -> Execute ( "OPTIMIZE TABLE phpredist_package_history" ) ;
+	    }
+
+
+	// update_database -
+	//	Updates the database using the specified entry description.
+	function  update_database ( $remote_entry )
+	   {
+		global		$Database ;
+
+
+		$history			=  get_history ( $remote_entry ) ;
+
+		// Escaped values for the phpredist_packages table
+		$package_local_directory	=  $Database -> Escape ( $remote_entry [ 'local-dir' ] ) ;
+		$package_zipfile		=  ( $remote_entry [ 'zipfile' ] ) ?  
+							$Database -> Escape ( $remote_entry [ 'zipfile' ] ) : 
+							$Database -> Escape ( basename ( $remote_entry [ 'local-dir' ] ) . '.zip' ) ;
+		$package_name			=  $Database -> Escape ( basename ( $remote_entry [ 'local-dir' ] ) ) ;
+		$package_date			=  ( $remote_entry [ 'date' ] ) ?  date ( 'Y-m-d', $remote_entry [ 'date' ]) : $history [ 'date' ] ;
+		$package_size			=  ( $remote_entry [ 'size' ] ) ?  $remote_entry [ 'size' ] : 0 ;
+		$package_version		=  $remote_entry [ 'version' ] -> PhpVersion ;
+		$package_is_win32		=  $remote_entry [ 'version' ] -> IsWin32 ;
+		$package_is_thread_safe		=  $remote_entry [ 'version' ] -> IsThreadSafe ;
+		$package_architecture		=  $remote_entry [ 'version' ] -> Architecture ;
+		$package_vc_version		=  $remote_entry [ 'version' ] -> VcVersion ;
+		$package_remote_url		=  $Database -> Escape ( $remote_entry [ 'link' ] ) ;
+		$package_history		=  $Database -> Escape ( $history [ 'text' ] ) ;
+		$package_bugs			=  $Database -> Escape ( $history [ 'bugs' ] ) ;
+
+		$version_bytes			=  explode ( '.', $package_version ) ;
+		$package_hex_version		=  ( $version_bytes [0]  <<  16 ) | ( $version_bytes [1]  <<  8 ) | $version_bytes [2] ;
+
+		// Delete all entries in phpredist_history linked to this package
+		$Database -> Execute
+		   ("
+			DELETE FROM phpredist_package_history 
+			WHERE pach_package_id IN
+			    (
+				SELECT pac_id
+				FROM  phpredist_packages
+				WHERE
+					pac_local_directory	=  '$package_local_directory' 
+			     ) 
+		    ") ;
+
+		// Delete this package
+		$Database -> Execute
+		   ("
+			DELETE FROM phpredist_packages
+			WHERE 
+				pac_local_directory = '$package_local_directory'
+		    ") ;
+
+		// Recreate this package
+		$query		=  "
+					INSERT INTO phpredist_packages
+					SET
+						pac_remote_url		=  '$package_remote_url',
+						pac_local_directory	=  '$package_local_directory',
+						pac_filename		=  '$package_zipfile',
+						pac_package		=  '$package_name',
+						pac_version		=  '$package_version',
+						pac_hex_version		=  '$package_hex_version',
+						pac_version_date	=  '$package_date',
+						pac_platform		=  0,
+						pac_win32		=  $package_is_win32,
+						pac_thread_safe		=  $package_is_thread_safe,
+						pac_vcredist		=  $package_vc_version,
+						pac_architecture	=  $package_architecture,
+						pac_last_update		=  NOW(),
+						pac_size		=  $package_size,
+						pac_history		=  '$package_history',
+						pac_related_bugs	=  '$package_bugs'
+				   " ;
+
+		$Database -> Execute ( $query ) ;
+		$package_id	=  $Database -> GetLastInsertId ( ) ;
+
+		// Recreate package history
+		foreach  ( $history [ 'entries' ]  as  $history_entry )
+		   {
+			$package_history_module		=  $Database -> Escape ( $history_entry [ 'module' ] ) ;
+			$package_history_text		=  $Database -> Escape ( $history_entry [ 'text' ] ) ;
+			$package_history_bugs		=  $Database -> Escape ( $history_entry [ 'bugs' ] ) ;
+
+			$query	=  "
+					INSERT INTO phpredist_package_history
+					SET
+						pach_package_id		=  $package_id,
+						pach_module		=  '$package_history_module',
+						pach_description	=  '$package_history_text',
+						pach_related_bugs	=  '$package_history_bugs'
+				   " ; 
+
+			$Database -> Execute ( $query ) ;
+		    }
+	    }
+
+
+	/*==================================================================================================
+
+	    ListModules -
+		Lists the modules referenced in change history.
+
+	  ==================================================================================================*/
+	function  ListModules ( )
+	   {
+		global		$Database ;
+
+
+		$query		=  "
+					SELECT pach_module
+					FROM phpredist_package_history
+					GROUP BY pach_module
+					ORDER BY pach_module
+				   " ;
+		$Database -> SetQuery ( $query ) ;
+		$modules	=  $Database -> LoadRows ( ) ;
+
+		foreach  ( $modules  as  $module )
+			output ( $module ) ;
+	    }
+
+
+	/*==================================================================================================
+
+	    ListNew -
+		List new or modified remote repositories.
+
+	  ==================================================================================================*/
+	function  ListNew ( $remote_entries )
+	   {
+		global		$Database, $LocalDirectory ;
+
+
+		$data		=  [] ;
+
+		foreach  ( $remote_entries  as  $remote_entry )
+		   {
+			if  ( ! $remote_entry [ 'zipfile' ] )
+				continue ;
+
+			$sql_local_dir	=  $Database -> Escape ( $remote_entry [ 'local-dir' ] ) ;
+			$Database -> SetQuery ( "SELECT * FROM phpredist_packages WHERE pac_local_directory = '$sql_local_dir'" ) ;
+			$row		=  $Database -> LoadRow ( ) ;
+
+			if  ( ! $row )
+			   {
+				$data []	=  
+				   [
+					'directory'		=>  $row [ 'pac_local_directory' ],
+					'package'		=>  $row [ 'pac_filename' ],
+					'reason'		=>  'Remote new',
+					'old-date'		=>  'N/A',
+					'new-date'		=>  date ( 'Y-m-d', $remote_entry [ 'date' ] ),
+					'old-size'		=>  'N/A',
+					'new-size'		=>  number_format ( $remote_entry [ 'size' ], 0, '.', ' ' )
+				    ] ;
+			    }
+			else  if  ( $row [ 'pac_version_date' ]  <  date ( 'Y-m-d', $remote_entry [ 'date' ] ) )
+			   {
+				$data []	=  
+				   [
+					'directory'		=>  $row [ 'pac_local_directory' ],
+					'package'		=>  $row [ 'pac_filename' ],
+					'reason'		=>  'Newer',
+					'old-date'		=>  $row [ 'pac_version_date' ],
+					'new-date'		=>  date ( 'Y-m-d', $remote_entry [ 'date' ] ),
+					'old-size'		=>  number_format ( $row [ 'pac_size' ], 0, '.', ' ' ),
+					'new-size'		=>  number_format ( $remote_entry [ 'size' ], 0, '.', ' ' )
+				    ] ;
+			    }
+			else  if  ( $row [ 'pac_size' ]  !=  $remote_entry [ 'size' ] )
+			   {
+				$data []	=  
+				   [
+					'directory'		=>  $row [ 'pac_local_directory' ],
+					'package'		=>  $row [ 'pac_filename' ],
+					'reason'		=>  'Size change',
+					'old-date'		=>  $row [ 'pac_version_date' ],
+					'new-date'		=>  date ( 'Y-m-d', $remote_entry [ 'date' ] ),
+					'old-size'		=>  number_format ( $row [ 'pac_size' ], 0, '.', ' ' ),
+					'new-size'		=>  number_format ( $remote_entry [ 'size' ], 0, '.', ' ' )
+				    ] ;
+			    }
+		    }
+
+		if  ( count ( $data ) )
+		   {
+			$report		=  new  AsciiReport
+			   (
+				[ 'member' => 'directory'	, 'title' => 'Directory'				],
+				[ 'member' => 'package'		, 'title' => 'Package'					],
+				[ 'member' => 'reason'		, 'title' => 'Reason'					],
+				[ 'member' => 'old-date'	, 'title' => 'Local date'	, 'align' => 'right'	],
+				[ 'member' => 'new-date'	, 'title' => 'Remote date'	, 'align' => 'right'	],
+				[ 'member' => 'old-size'	, 'title' => 'Local size'	, 'align' => 'right'	],
+				[ 'member' => 'new-size'	, 'title' => 'Remote size'	, 'align' => 'right'	]
+			    ) ;
+
+			echo $report -> Generate ( $data ) ;
+			echo $report -> Summary ( 'new/modified version' ) ;
+		    }
+		else
+			output ( "No new or modified version available." ) ;
+	    }
+
+
+	/*==================================================================================================
+
+	    SearchHistory -
+		Searches the change history for the specified string.
+
+	  ==================================================================================================*/
+	function  SearchHistory ( $search, $modules )
+	   {
+		global		$Database ;
+
+
+		$wheres		=  [] ;
+
+		if  ( count ( $modules ) )
+			$wheres []	=  'pach_module IN ( ' . String::ImplodeWithQuotedStrings ( ', ', $modules, "'" ) . ' )' ;
+
+		if  ( count ( $wheres ) )
+			$where_clause	=  ' AND ' . implode ( ' AND ', $wheres ) ;
+		else
+			$where_clause	=  '' ;
+
+		$sql_search	=  $Database -> Escape ( $search ) ;
+		$query		=  "
+					SELECT 
+						phpredist_packages. pac_package AS package,
+						phpredist_packages. pac_version AS version,
+						phpredist_packages. pac_version_date AS version_date,
+						CASE phpredist_packages. pac_win32
+							WHEN 0 THEN 'N'
+							ELSE 'Y'
+						END AS 'is_win32',
+						CASE phpredist_packages. pac_thread_safe
+							WHEN 0 THEN 'N'
+							ELSE 'Y'
+						END AS 'is_thread_safe',
+						phpredist_packages. pac_vcredist AS vcredist,
+						CASE phpredist_packages. pac_architecture
+							WHEN 0 THEN 'x86'
+							WHEN 1 THEN 'x64'
+							ELSE '?'
+						END AS 'architecture',
+						phpredist_package_history. pach_module AS module,
+						phpredist_package_history. pach_description AS description
+
+					FROM phpredist_package_history
+					INNER JOIN phpredist_packages ON
+						phpredist_packages. pac_id = phpredist_package_history. pach_package_id
+					WHERE 
+						MATCH( phpredist_package_history. pach_description ) AGAINST( '$sql_search' )
+						$where_clause
+					ORDER BY
+						phpredist_packages. pac_hex_version,
+						phpredist_package_history. pach_module
+				   " ; 
+
+		$Database -> SetQuery ( $query ) ;
+		$rows		=  $Database -> LoadRows ( ) ;
+
+		if  ( count ( $rows ) )
+		   {
+			$report		=  new AsciiReport
+			   (
+				[ 'member' => 'package'		, 'title' => 'Package' ],
+				[ 'member' => 'version'		, 'title' => 'Version' ],
+				[ 'member' => 'version_date'	, 'title' => 'Date' ],
+				[ 'member' => 'module'		, 'title' => 'Module' ],
+				[ 'member' => 'description'	, 'title' => 'Description', 'width' => 80, 'overflow' => 'wrap' ]
+			    ) ;
+
+			echo $report -> Generate ( $rows ) ;
+			echo $report -> Summary ( 'match' ) ;
+		    }
+		else
+			output ( "No match." ) ;
+
+	    }
+
+
+	/*==================================================================================================
+
+	    Update -
+		Updates local packages with remote repository.
+
+	  ==================================================================================================*/
+	function  Update ( $remote_entries, $force = false, $update_database = false )
+	   {
+		foreach  ( $remote_entries  as  $remote_entry )
+		   {
+			$status		=  download ( $remote_entry, $force ) ;
+
+			if  ( $status  ||  $update_database )
+			   {
+				update_database ( $remote_entry ) ;
+
+				if  ( $status ) 
+					;//setup_package ( $remote_entry ) ;
+			   }
+		    }
+
+		optimize_tables ( ) ;
+	    }
+
+
+	/*==================================================================================================
+
+	    UpdateDatabase -
+		Updates local packages with remote repository.
+
+	  ==================================================================================================*/
+	function  UpdateDatabase ( $remote_entries )
+	   {
+		foreach  ( $remote_entries  as  $remote_entry )
+		   {
+			update_database ( $remote_entry ) ;
+
+			if  ( $status ) 
+				;//setup_package ( $remote_entry ) ;
+
+			output ( $remote_entry [ 'local-dir' ] ) ;
+		    }
+
+		optimize_tables ( ) ;
+	    }
+
+
+	/*==================================================================================================
+
+		Global constants and variables.
+
+	  ==================================================================================================*/
+	$CL 				=  new  CLParser ( $Definitions ) ;
+	$ForceDownloads			=  $CL -> force ;
+	$ListModules			=  $CL -> list_modules ;
+	$ListNew			=  $CL -> list_new ;
+	$LocalDirectory			=  Path::RealPath ( $CL -> local_directory ) ;
+	$Modules			=  $CL -> modules ;
+	$RemoteUrl			=  $CL -> remote_url ;
+	$Search				=  $CL -> search ;
+	$Update				=  $CL -> update ;
+	$UpdateDatabase			=  $CL -> update_database ;
+
+	$HadOption			=  false ;
+
+	if  ( strncasecmp ( $RemoteUrl, 'http://', 7 ) )
+		$RemoteUrl	=  "http://$RemoteUrl" ;
+
+	$RemoteFiles			=  false ;
+
+	/*==================================================================================================
+
+		Main program.
+
+	  ==================================================================================================*/
+
+	// -list_modules :
+	//	List the modules actually referenced in the change history.
+	if  ( ! $HadOption  &&  $ListModules )
+	   {
+		ListModules ( ) ;
+		$HadOption	=  true ;
+	    }
+
+	// -list_new :
+	//	Lists the new releases available in the remote repository.
+	if  ( ! $HadOption  &&  $ListNew )
+	   {
+		if  ( ! $RemoteFiles )
+			$RemoteFiles	=  get_distribution_list ( $RemoteUrl ) ; ;
+
+		ListNew ( $RemoteFiles ) ;
+		$HadOption	=  true ;
+	    }
+
+	// -search :
+	//	Searches for the specified text in the change history.
+	if  ( ! $HadOption  &&  $Search )
+	   {
+		SearchHistory ( $Search, $Modules ) ;
+		$HadOption	=  true ;
+	    }
+
+	// -update :
+	//	Updates local packages with remote repository.
+	if  ( ! $HadOption  &&  $Update )
+	   {
+		if  ( ! $RemoteFiles )
+			$RemoteFiles	=  get_distribution_list ( $RemoteUrl ) ; ;
+
+		Update ( $RemoteFiles, $ForceDownloads, $UpdateDatabase ) ;
+		$HadOption	=  true ;
+	    }
+
+	// -update_database :
+	//	Updates the local database
+	if  ( ! $HadOption  &&  $UpdateDatabase )
+	   {
+		if  ( ! $RemoteFiles )
+			$RemoteFiles	=  get_distribution_list ( $RemoteUrl ) ; ;
+
+		UpdateDatabase ( $RemoteFiles ) ;
+		$HadOption	=  true ;
+	    }
+
+
+	if  ( ! $HadOption )
+		$CL -> DisplayHelp ( ) ;
