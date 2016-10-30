@@ -1,0 +1,98 @@
+<?php
+/**************************************************************************************************************
+
+    NAME
+        PhpRunner.phpclass
+
+    DESCRIPTION
+        Utility class for running a script using different PHP versions.
+
+    AUTHOR
+        Christian Vigh, 10/2016.
+
+    HISTORY
+    [Version : 1.0]	[Date : 2016-10-29]     [Author : CV]
+        Initial version.
+
+ **************************************************************************************************************/
+use  Thrak\System\Object ;
+use  Thrak\Types\String ;
+use  Thrak\IO\Path ;
+
+class	PhpRunner	extends  Object
+   {
+	public function  __construct ( $binary_directory )
+	   {
+		parent::__construct ( ) ;
+
+		$this -> BinaryDirectory	=  $binary_directory ;
+	    }
+
+
+	public static function  VersionOf ( $directory )
+	   {
+		if  ( ! Path::IsAbsolute ( $directory ) )
+			$directory	=  Path::RealPath ( $this -> BinaryDirectory . '/' . $directory ) ;
+
+		return ( new PhpPackage ( $directory ) ) ;
+	    }
+    }
+
+
+
+class  PhpPackage	extends	 Object 
+   {
+	const		ARCHITECTURE_X86	=  0 ;
+	const		ARCHITECTURE_X64	=  1 ;
+
+
+	public		$PhpVersion ;
+	public		$Directory ;
+	public		$IsWin32		=  1 ;
+	public		$IsThreadSafe		=  1 ;
+	public		$Architecture		=  self::ARCHITECTURE_X86 ;
+	public		$VcVersion		=  6 ;
+
+
+	public function  __construct ( $directory ) 
+	   {
+		$this -> Directory	=  Path::ToWindows ( Path::RealPath ( $directory ) ) ;
+		$filename		=  basename ( $directory ) ;
+
+		if  ( ! preg_match_all ( '/ - (?P<option> [a-z_][a-z_0-9]*) /ix', $filename, $option_matches )  ||
+		      ! preg_match ( '/^ php- (?P<version> \d+ \. \d+ \. \d+)/ix', $filename, $version_match ) )
+			error ( "Path \"$directory\" does not follow the naming conventions for PHP redistributables." ) ;
+
+		$this -> PhpVersion	=  $version_match [ 'version' ] ;
+
+		foreach  ( $option_matches [ 'option' ]  as  $option )
+		   {
+			$low_option	=  strtolower ( $option ) ;
+
+			switch ( $low_option )
+			   {
+				case	'win32' :
+					$this -> IsWin32	=  1 ;
+					break ;
+
+				case	'nts' :
+					$this -> IsThreadSafe	=  0 ;
+					break ;
+
+				case	'x64' :
+					$this -> Architecture	=  self::ARCHITECTURE_X64 ;
+					break ;
+
+				case	'x86' :
+					$this -> Architecture	=  self::ARCHITECTURE_X86 ;
+					break ;
+
+				default :
+					if  ( substr ( $low_option, 0, 2 )  ==  'vc' )
+						$this -> VcVersion	=  ( integer ) substr ( $low_option, 2 ) ;
+					else
+						error ( "Path \"$directory\" contains an unknown token : $option." ) ;
+			    }
+		    }
+	    }
+    }
