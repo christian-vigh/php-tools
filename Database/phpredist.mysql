@@ -1,0 +1,99 @@
+/***************************************************************************************************
+
+    NAME
+	phpredist.mysql
+
+    DESCRIPTION
+	Defines the tables used to store information about PHP redistributables downloaded on the
+	system.
+
+    AUTHOR
+	Christian Vigh, 10/2016.
+
+    HISTORY
+    [Version : 1.0]	[Date : 2016/10/28]	[Author : CV]
+	Initial version.
+
+  ***************************************************************************************************/
+
+USE  indiscipline ;
+
+/*==============================================================================================================
+
+    phpredist_packages -
+        Holds the list of PHP redistributables downloaded so far.
+	Due to the number of records that are likely to live here, no index has been put except the primary
+	index.
+
+  ==============================================================================================================*/
+DROP TABLE IF EXISTS  phpredist_packages ;
+
+CREATE TABLE  phpredist_packages
+   (
+	pac_id			INT UNSIGNED		NOT NULL AUTO_INCREMENT
+							COMMENT 'Unique id for this package entry',
+	pac_remote_url		VARCHAR(1024)		NOT NULL DEFAULT ''
+							COMMENT 'Remote url of the windows.php.net archive directory',
+	pac_local_directory 	VARCHAR(1024)		NOT NULL DEFAULT ''
+							COMMENT 'Package local directory',
+	pac_filename		VARCHAR(1024)		NOT NULL DEFAULT ''
+							COMMENT 'Name of the .ZIP archive, without extension',
+	pac_package		VARCHAR(1024)		NOT NULL DEFAULT ''
+							COMMENT 'Package name on the site',
+	pac_version		CHAR(20)		NOT NULL DEFAULT ''
+							COMMENT 'PHP version',
+	pac_hex_version 	INTEGER UNSIGNED 	NOT NULL DEFAULT 0
+							COMMENT 'PHP version as an unsigned integer value, one byte for major/minor/release',
+	pac_version_date 	DATE 			NOT NULL DEFAULT '0000-00-00'
+							COMMENT 'Version date',
+	pac_platform		TINYINT 		NOT NULL DEFAULT 0
+							COMMENT 'Target platform : 0 = Windows, 1 = Unix',
+	pac_win32		TINYINT			NOT NULL DEFAULT 1
+							COMMENT '0 if Win32, other values to be determined if some stuff like "Win64" arrives',
+	pac_thread_safe 	TINYINT			NOT NULL DEFAULT 0
+							COMMENT '1 for thread-safe redistributables, 0 for NTS',
+	pac_vcredist		TINYINT 		NOT NULL DEFAULT 0
+							COMMENT 'Target VC redistributable version',
+	pac_architecture 	TINYINT 		NOT NULL DEFAULT 0
+							COMMENT '0 = x86, 1 = x64',
+	pac_last_update		DATETIME		NOT NULL DEFAULT '0000-00-00 00:00:00'
+							COMMENT 'Last update time',
+	pac_size 		INTEGER UNSIGNED 	NOT NULL DEFAULT 0
+							COMMENT 'Package (.zip) size',
+	pac_history 		LONGTEXT 		NOT NULL
+							COMMENT 'Description of the modifications for this version',
+	pac_related_bugs 	VARCHAR(4096) 		NOT NULL DEFAULT ''
+							COMMENT 'Id of the bugs addressed by this patch, separated with slashes, such as : "/400001/400002/"',
+							
+	PRIMARY KEY 		( pac_id ),
+	KEY 			( pac_local_directory(128) ),
+	FULLTEXT 		( pac_history )
+    )  ENGINE = MyISAM CHARSET latin1 COMMENT 'List of PHP package redistributables downloaded so far' ;
+
+    
+/*==============================================================================================================
+
+    phpredist_package_history -
+        Holds the history of a given package.
+
+  ==============================================================================================================*/
+DROP TABLE IF EXISTS  phpredist_package_history ;
+
+CREATE TABLE  phpredist_package_history
+   (
+	pach_id			INT UNSIGNED		NOT NULL AUTO_INCREMENT
+							COMMENT 'Unique id for this package history entry',
+	pach_package_id 	INT UNSIGNED 		NOT NULL DEFAULT 0
+							COMMENT 'Parent package id',
+	pach_module 		VARCHAR(32)		NOT NULL DEFAULT ''
+							COMMENT 'Related PHP module',
+	pach_related_bugs 	VARCHAR(512) 		NOT NULL DEFAULT ''
+							COMMENT 'Id of the bugs addressed by this patch, separated with slashes, such as : "/400001/400002/"',
+	pach_description 	TEXT			NOT NULL
+							COMMENT 'Modification description',
+							
+	PRIMARY KEY 		( pach_id ),
+	KEY 			( pach_package_id ),
+	KEY 			( pach_module ),
+	FULLTEXT 		( pach_description )
+    )  ENGINE = MyISAM CHARSET latin1 COMMENT 'PHP package history' ;
