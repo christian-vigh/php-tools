@@ -17,7 +17,6 @@
 
 	 **************************************************************************************************************/
 	require ( 'tools.phpinclude' ) ;
-	require ( 'PhpRunner.phpclass' ) ;
 
 	use  Thrak\Processors\CL\CLParser ;
 	use  Thrak\Types\String ;
@@ -25,6 +24,7 @@
 	use  Thrak\IO\AsciiReport ;
 	use  Thrak\IO\Console ;
 	use  Thrak\Processors\IniFile ;
+	use  Thrak\Utilities\PhpVersion ;
 
 
 	/*==================================================================================================
@@ -313,7 +313,7 @@ END;
 			$line	=  trim ( $contents [$i] ) ;
 
 			// Look for a line of the form "some date, PHP x.y.z", that introduces the modifications for a given php version
-			if  ( preg_match ( $version_re, $line, $version_match )  &&  $version_match [ 'version' ]  ==  $remote_entry [ 'version' ] -> PhpVersion )
+			if  ( preg_match ( $version_re, $line, $version_match )  &&  $version_match [ 'version' ]  ==  $remote_entry [ 'version' ] -> Version )
 			   {
 				// Extract version number
 				$version_date		=  date ( 'Y-m-d', strtotime ( $version_match [ 'date' ] ) ) ;
@@ -359,7 +359,7 @@ END;
 					   {
 						// However, we can find things like : "PHP 5.2.1", "PHP 5.2.1RC1", "PHP 5.2.1RC2"
 						// In this case, consider they are all related to the same version
-						if  ( $version_match [ 'version' ]  ==  $remote_entry [ 'version' ] -> PhpVersion )
+						if  ( $version_match [ 'version' ]  ==  $remote_entry [ 'version' ] -> Version )
 							continue ;
 						// Otherwise we're done
 						else
@@ -444,6 +444,39 @@ END;
 	    }
 
 
+	// setup_package -
+	//	Sets up a given package. Performs the following operations :
+	//	- Create a php.ini files, from the ones supplied in the distribution (the development
+	//	  .ini file is preferred over the production one)
+	function  setup_package ( $remote_entry ) 
+	   {
+		static		$ini_files	=  [ 'php.ini-development', 'php.ini-recommenced', 'php.ini-production', 'php.ini-dist' ] ;
+
+
+		$ini_found	=  false ;
+		$php_ini	=  $remote_entry [ 'local-dir' ] . '/php.ini' ;
+
+		if  ( file_exists ( $php_ini ) )
+			$ini_found	=  true ;
+		else
+		   {
+			foreach  ( $ini_files  as  $ini_file )
+			   {
+				$sample		=  $remote_entry [ 'local-dir' ] . '/' . $ini_file ;
+
+				if  ( file_exists ( $sample ) )
+				   {
+					copy ( $sample, $php_ini ) ;
+					$ini_found	=  true ;
+				    }
+			    }
+		    }
+
+		if  ( ! $ini_found )
+			error ( "No sample php.ini file could be found in directory \"{$remote_entry [ 'local-dir' ]}\"." ) ;
+	    }
+
+
 	// update_database -
 	//	Updates the database using the specified entry description.
 	function  update_database ( $remote_entry )
@@ -461,7 +494,7 @@ END;
 		$package_name			=  $Database -> Escape ( basename ( $remote_entry [ 'local-dir' ] ) ) ;
 		$package_date			=  ( $remote_entry [ 'date' ] ) ?  date ( 'Y-m-d', $remote_entry [ 'date' ]) : $history [ 'date' ] ;
 		$package_size			=  ( $remote_entry [ 'size' ] ) ?  $remote_entry [ 'size' ] : 0 ;
-		$package_version		=  $remote_entry [ 'version' ] -> PhpVersion ;
+		$package_version		=  $remote_entry [ 'version' ] -> Version ;
 		$package_is_win32		=  $remote_entry [ 'version' ] -> IsWin32 ;
 		$package_is_thread_safe		=  $remote_entry [ 'version' ] -> IsThreadSafe ;
 		$package_architecture		=  $remote_entry [ 'version' ] -> Architecture ;
@@ -744,7 +777,7 @@ END;
 				update_database ( $remote_entry ) ;
 
 				if  ( $status ) 
-					;//setup_package ( $remote_entry ) ;
+					setup_package ( $remote_entry ) ;
 			   }
 		    }
 
@@ -763,9 +796,7 @@ END;
 		foreach  ( $remote_entries  as  $remote_entry )
 		   {
 			update_database ( $remote_entry ) ;
-
-			if  ( $status ) 
-				;//setup_package ( $remote_entry ) ;
+			setup_package ( $remote_entry ) ;
 
 			output ( $remote_entry [ 'local-dir' ] ) ;
 		    }
