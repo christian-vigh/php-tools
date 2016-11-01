@@ -582,6 +582,7 @@
     <Content Include="Benchmark\MySQL\Select random record\randomtest.phs" />
     <Content Include="Bin\guts.phs" />
     <Content Include="Bin\phpredist.phs" />
+    <Content Include="Bin\phprunner.phs" />
     <Content Include="Bin\rnd2bin.phs" />
     <Content Include="Bin\pdfstats.phs" />
     <Content Include="Bin\myip.phs" />

@@ -192,5 +192,5 @@ END;
 		    }
 
 		output ( "\tMemory usage (peak) : " . number_format ( $thrak_pdf -> MemoryPeakUsage, 0, '.', ' ' ) ) ;
-		output ( "\tMemory usage        : " . number_format ( $thrak_pdf -> MemoryUsage, 0, '.', ' ' )
+		output ( "\tMemory usage        : " . number_format ( $thrak_pdf -> MemoryUsage, 0, '.', ' ' ) ) ;
 	    }
