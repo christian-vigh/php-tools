@@ -905,19 +905,31 @@ END;
 
 		reset ( $statistics ) ;
 
+		$totals			=  [ 'package' => 'Total :' ] ;
+
 		foreach  ( $statistics  as  $package => $statistic )
 		   {
 			$column		=  [ 'package' => $package ] ;
 
 			foreach  ( $statistic  as  $statistic_name => $statistic_value ) 
+			   {
 				$column [ $statistic_name ]	=  ( $statistic_value ) ?  $statistic_value : '' ;
+
+				if  ( isset ( $totals [ $statistic_name ] ) )
+					$totals [ $statistic_name ]    +=  $column [ $statistic_name ] ;
+				else
+					$totals [ $statistic_name ]     =  $column [ $statistic_name ] ;
+			    }
 
 			$data_columns []	=  $column ;
 		    }
 
+		$data_columns []		=  '!=' ;
+		$data_columns []		=  $totals ;
+
 		$report		=  new  AsciiReport ( $report_columns ) ;
 		echo $report -> Generate ( $data_columns ) ;
-		echo $report -> Summary ( 'class' ) ;
+		echo $report -> Summary ( 'class', '', '', 1 ) ;
 	    }
 
 
