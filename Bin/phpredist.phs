@@ -24,7 +24,7 @@
 	use  Thrak\IO\AsciiReport ;
 	use  Thrak\IO\Console ;
 	use  Thrak\Processors\IniFile ;
-	use  Thrak\Utilities\PhpVersion ;
+	use  Thrak\Utilities\PhpPackage ;
 
 
 	/*==================================================================================================
@@ -65,6 +65,10 @@
 		Remote URL where to find the PHP redistributables.
 	</string>
 
+	<flag name="recreate_php_ini, rpi">
+		Recreates the php.ini file for each distribution.
+	</flag>
+
 	<string name="search, s">
 		Searches the changes history for the specified string.
 	</string>
@@ -96,7 +100,7 @@ END;
 	//	- A local version exists, but is older than the one found in the remote repository
 	function  download ( $remote_entry, $force = false )
 	   {
-		global		$LocalDirectory ;
+		global		$LocalDirectory, $Database ;
 
 		if  ( ! $remote_entry [ 'zipfile' ] )		// Skip versions that have no remote equivalent
 			return ;
@@ -105,8 +109,10 @@ END;
 		$exists		=  file_exists ( $local_dir ) ;
 		$status		=  false ;
 
+		$Database -> SetQuery ( "SELECT pac_version_date FROM phpredist_packages WHERE pac_package = '{$remote_entry [ 'package' ]}'" ) ;
+		$last_update	=  $Database -> LoadValue ( ) ;
 
-		if (  ! $exists  ||  filemtime ( $local_dir )  <  $remote_entry [ 'date' ]  ||  $force )
+		if (  ! $exists  ||  $last_update  <  date ( 'Y-m-d', $remote_entry [ 'date' ] )  ||  $force )
 		   {
 			if  ( ! $exists )
 				mkdir ( $local_dir ) ;
@@ -169,40 +175,50 @@ END;
 						\s* </a>
 					    #imsx' ;
 
-		$contents	=  file_get_contents ( $remote_url ) ;
 		$result		=  [] ;
 
-		if  ( preg_match_all ( $re, $contents, $matches ) )
+		if  ( $remote_url )
 		   {
-			for  ( $i = 0, $count = count ( $matches [ 'file' ] ) ; $i  <  $count ; $i ++ )
+			$contents	=  file_get_contents ( $remote_url ) ;
+
+			if  ( preg_match_all ( $re, $contents, $matches ) )
 			   {
-				$file			=  trim ( $matches [ 'file' ] [$i] ) ;
-				$package		=  pathinfo ( $file, PATHINFO_FILENAME ) ;
-				$local_directory	=  Path::ToUnix ( Path::RealPath ( $LocalDirectory . '/' . $package ) ) ;
-
-				if  ( strpos ( $file, '-src' )  !==  false )
-					continue ;
-
-				if  ( preg_match ( '/^php-\d .* \.zip$/ix', $file ) )
+				for  ( $i = 0, $count = count ( $matches [ 'file' ] ) ; $i  <  $count ; $i ++ )
 				   {
-					$result	[ $package ]	= 
-					   [
-						'package'	=>  $package,
-						'zipfile'	=>  $file,
-						'link'		=>  $domain . trim ( $matches [ 'link' ] [$i] ),
-						'date'		=>  strtotime ( $matches [ 'date' ] [$i] ),
-						'size'		=>  ( integer ) trim ( $matches [ 'size' ] [$i] ),
-						'local-dir'	=>  $local_directory,
-						'version'	=>  new PhpPackage ( $local_directory )
-					    ] ;
+					$file			=  trim ( $matches [ 'file' ] [$i] ) ;
+					$package		=  pathinfo ( $file, PATHINFO_FILENAME ) ;
+					$local_directory	=  Path::ToUnix ( Path::RealPath ( $LocalDirectory . '/' . $package ) ) ;
+
+					if  ( strpos ( $file, '-src' )  !==  false )
+						continue ;
+
+					if  ( preg_match ( '/^php-\d .* \.zip$/ix', $file ) )
+					   {
+						if  ( file_exists ( $local_directory ) )
+							$version	=  new PhpPackage ( $local_directory ) ;
+						else
+							$version	=  new PhpPackage ( $local_directory, true ) ;
+
+						$result	[ $package ]	= 
+						   [
+							'package'	=>  $package,
+							'zipfile'	=>  $file,
+							'link'		=>  $domain . trim ( $matches [ 'link' ] [$i] ),
+							'date'		=>  strtotime ( $matches [ 'date' ] [$i] ),
+							'size'		=>  ( integer ) trim ( $matches [ 'size' ] [$i] ),
+							'local-dir'	=>  $local_directory,
+							'version'	=>  $version
+						    ] ;
+					    }
 				    }
 			    }
+			else
+				error ( "Unrecognized php.net archive list." ) ;
 		    }
-		else
-			error ( "Unrecognized php.net archive list." ) ;
 
 		// Search any local version that does not have a counterpart in the remote distribution list
 		$local_directories	=  glob ( "$LocalDirectory/*" ) ;
+		$virtual		=  ( $remote_url  ===  false ) ;
 
 		foreach  ( $local_directories  as  $local_directory )
 		   {
@@ -219,7 +235,7 @@ END;
 				'date'		=>  0,
 				'size'		=>  0,
 				'local-dir'	=>  Path::ToWindows ( Path::RealPath ( $local_directory ) ),
-				'version'	=>  new PhpPackage ( $local_directory )
+				'version'	=>  new PhpPackage ( $local_directory, $virtual )
 			    ] ;
 		    }
 
@@ -448,7 +464,7 @@ END;
 	//	Sets up a given package. Performs the following operations :
 	//	- Create a php.ini files, from the ones supplied in the distribution (the development
 	//	  .ini file is preferred over the production one)
-	function  setup_package ( $remote_entry ) 
+	function  setup_package ( $remote_entry, $force = false ) 
 	   {
 		static		$ini_files	=  [ 'php.ini-development', 'php.ini-recommenced', 'php.ini-production', 'php.ini-dist' ] ;
 
@@ -456,7 +472,7 @@ END;
 		$ini_found	=  false ;
 		$php_ini	=  $remote_entry [ 'local-dir' ] . '/php.ini' ;
 
-		if  ( file_exists ( $php_ini ) )
+		if  ( ! $force  ||  file_exists ( $php_ini ) )
 			$ini_found	=  true ;
 		else
 		   {
@@ -624,8 +640,8 @@ END;
 			   {
 				$data []	=  
 				   [
-					'directory'		=>  $row [ 'pac_local_directory' ],
-					'package'		=>  $row [ 'pac_filename' ],
+					'directory'		=>  $remote_entry [ 'local-dir' ],
+					'package'		=>  $remote_entry [ 'package' ],
 					'reason'		=>  'Remote new',
 					'old-date'		=>  'N/A',
 					'new-date'		=>  date ( 'Y-m-d', $remote_entry [ 'date' ] ),
@@ -638,7 +654,7 @@ END;
 				$data []	=  
 				   [
 					'directory'		=>  $row [ 'pac_local_directory' ],
-					'package'		=>  $row [ 'pac_filename' ],
+					'package'		=>  $row [ 'pac_package' ],
 					'reason'		=>  'Newer',
 					'old-date'		=>  $row [ 'pac_version_date' ],
 					'new-date'		=>  date ( 'Y-m-d', $remote_entry [ 'date' ] ),
@@ -679,6 +695,22 @@ END;
 		    }
 		else
 			output ( "No new or modified version available." ) ;
+	    }
+
+
+	/*==================================================================================================
+
+	    RecreatePhpIni -
+		Recreates the php.ini file for each package.
+
+	  ==================================================================================================*/
+	function  RecreatePhpIni ( $remote_entries )
+	   {
+		foreach  ( $remote_entries  as  $remote_entry )
+		   {
+			setup_package ( $remote_entry, true ) ;
+			output ( $remote_entry [ 'package' ] ) ;
+		    }
 	    }
 
 
@@ -817,6 +849,7 @@ END;
 	$LocalDirectory			=  Path::RealPath ( $CL -> local_directory ) ;
 	$Modules			=  $CL -> modules ;
 	$RemoteUrl			=  $CL -> remote_url ;
+	$Recreate			=  $CL -> recreate_php_ini ;
 	$Search				=  $CL -> search ;
 	$Update				=  $CL -> update ;
 	$UpdateDatabase			=  $CL -> update_database ;
@@ -847,9 +880,20 @@ END;
 	if  ( ! $HadOption  &&  $ListNew )
 	   {
 		if  ( ! $RemoteFiles )
-			$RemoteFiles	=  get_distribution_list ( $RemoteUrl ) ; ;
+			$RemoteFiles	=  get_distribution_list ( $RemoteUrl ) ;
 
 		ListNew ( $RemoteFiles ) ;
+		$HadOption	=  true ;
+	    }
+
+	// -recreate_php_ini :
+	//	Recreates the php.ini file into each build directory
+	if  ( ! $HadOption  &&  $Recreate )
+	   {
+		if  ( ! $RemoteFiles )
+			$RemoteFiles	=  get_distribution_list ( false ) ;
+
+		RecreatePhpIni ( $RemoteFiles ) ;
 		$HadOption	=  true ;
 	    }
 
@@ -866,7 +910,7 @@ END;
 	if  ( ! $HadOption  &&  $Update )
 	   {
 		if  ( ! $RemoteFiles )
-			$RemoteFiles	=  get_distribution_list ( $RemoteUrl ) ; ;
+			$RemoteFiles	=  get_distribution_list ( $RemoteUrl ) ;
 
 		Update ( $RemoteFiles, $ForceDownloads, $UpdateDatabase ) ;
 		$HadOption	=  true ;
@@ -877,7 +921,7 @@ END;
 	if  ( ! $HadOption  &&  $UpdateDatabase )
 	   {
 		if  ( ! $RemoteFiles )
-			$RemoteFiles	=  get_distribution_list ( $RemoteUrl ) ; ;
+			$RemoteFiles	=  get_distribution_list ( $RemoteUrl ) ;
 
 		UpdateDatabase ( $RemoteFiles ) ;
 		$HadOption	=  true ;
