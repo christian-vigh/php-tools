@@ -830,7 +830,6 @@
     <Content Include="Data\rswebsync.ini" />
     <Content Include="Data\winkb.cache" />
     <Content Include="Data\winkb.ini" />
-    <Content Include="Include\PhpRunner.phpclass" />
     <Content Include="Include\RsAdmin\LocalLogs\Auth.phpclass" />
     <Content Include="Unix\BackOfficeFun\data\rndserver.conf">
       <SubType>Content</SubType>

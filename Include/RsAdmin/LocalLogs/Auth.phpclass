@@ -94,8 +94,10 @@ class  LocalAuthLog	extends  LocalLog
 	const   AUTH_SSH_PADDING_ERROR				=  61 ;
 	const	AUTH_SSH_PACKET_CORRUPT				=  62 ;
 	const	AUTH_SSH_BAD_OWNERSHIP				=  63 ;
+	const	AUTH_SASL_DETACH_TTY				=  64 ;
+	const	AUTH_SASL_LISTENING				=  65 ;
+	const	AUTH_SASL_EXIT					=  66 ;
 	const	AUTH_IGNORED					=  0x8000 ;
-
 
 	// Constructor -
 	//	Builds the log object
@@ -842,6 +844,34 @@ class  LocalAuthLog	extends  LocalLog
 										.*
 									 )
 								    #imsx' ;
+	// Message of the form :
+	//	vps330714 saslauthd[1897]: detach_tty      : master pid is: 1897
+	// Constant : AUTH_SASL_DETACH_TTY
+	private static	$regex_sasl_detach_tty		=  '#	
+									(?P<message>
+										detach_tty \s* : \s* master \s+ pid \s+ is
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps330714 saslauthd[1897]: ipc_init        : listening on socket: /var/run/saslauthd/mux
+	// Constant : AUTH_SASL_LISTENING
+	private static	$regex_sasl_listening		=  '#	
+									(?P<message>
+										ipc_init \s* : \s* listening \s+ on \s+ socket \s* : \s+
+										(?P<path> [^\s]+)
+										.*
+									 )
+								    #imsx' ;
+	// Message of the form :
+	//	vps330714 saslauthd[1897]: server_exit     : master exited: 1897
+	// Constant : AUTH_SASL_EXIT
+	private static	$regex_sasl_exit		=  '#	
+									(?P<message>
+										server_exit \s* : \s* master \s+ exited \s* :
+										.*
+									 )
+								    #imsx' ;
 	// Other messages
 	// Constant : AUTH_IGNORED
 	private static	$regex_auth_ignored			=  '#
@@ -1450,6 +1480,27 @@ class  LocalAuthLog	extends  LocalLog
 			   {
 				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
 				$log_code		=  self::AUTH_SSH_BAD_OWNERSHIP ;
+			    }
+			// Message of the form :
+			//	vps330714 saslauthd[1897]: detach_tty      : master pid is: 1897
+			else if  ( preg_match ( self::$regex_sasl_detach_tty, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SASL_DETACH_TTY ;
+			    }
+			// Message of the form :
+			//	vps330714 saslauthd[1897]: ipc_init        : listening on socket: /var/run/saslauthd/mux
+			else if  ( preg_match ( self::$regex_sasl_listening, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SASL_LISTENING ;
+			    }
+			// Message of the form :
+			//	vps330714 saslauthd[1897]: server_exit     : master exited: 1897
+			else if  ( preg_match ( self::$regex_sasl_exit, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $match [ 'message' ] ) ;
+				$log_code		=  self::AUTH_SASL_EXIT ;
 			    }
 			else
 			   {
