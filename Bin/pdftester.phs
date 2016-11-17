@@ -77,7 +77,6 @@
 </command>
 END;
 
-
 	$CL			=  new CLParser ( $Definitions ) ;
 	$verbose		=  $CL -> verbose ;
 	$debug			=  ( $verbose ) ?  100 : $CL -> debug ;
@@ -98,10 +97,10 @@ END;
 	   {
 		$name			=  pathinfo ( $filename, PATHINFO_FILENAME ) ;
 		$debug_output		=  "$name.debug.lst" ;
-		$csv_output		=  "$name.csv" ;
 		ob_start ( ) ;
 
 		// Generate the Thrak version
+		$thrak_start			=  microtime ( true ) ;
 		$thrak_pdf			=  new ThrakPdfToText ( ) ;
 		$thrak_pdf -> BlockSeparator	=  $block_separator ;
 		$thrak_pdf -> Separator		=  $separator ;
@@ -117,11 +116,14 @@ END;
 
 		$thrak_pdf -> Load ( $filename, $user_password, $owner_password ) ;
 		$thrak_output			=  "$name.thrak.txt" ;
+		$thrak_end			=  microtime ( true ) ;
 		file_put_contents ( $thrak_output, $thrak_pdf -> Text ) ;
 
 		// Then the phpclasses.org version
+		$phpclasses_start	=  microtime ( true ) ;
 		$phpclasses_pdf		=  new PdfToText ( $filename, $user_password, $owner_password ) ;
 		$phpclasses_output	=  "$name.phpclasses.txt" ;
+		$phpclasses_end	=  microtime ( true ) ;
 		file_put_contents ( $phpclasses_output, $phpclasses_pdf -> Text ) ;
 
 		// Generate the differences file
@@ -134,27 +136,6 @@ END;
 		// Get debug information (if any)
 		$debug_data		=  ob_get_clean ( ) ;
 		file_put_contents ( $debug_output, $debug_data ) ;
-
-		// Generate a .CSV file containing text object ids, initial size and optimized size
-		$re		=  '/
-					- \s+ TEXT \s+ \# (?P<object> \d+) 
-					.*?
-					size \s+ = \s+ (?P<initial> \d+)
-					.*?
-					new \s+ size \s+ = \s+ (?P<final> \d+)
-				    /imsx' ;
-		
-		if  ( preg_match_all ( $re, $debug_data, $matches ) )
-		   {
-			$fp	=  fopen ( $csv_output, "w" ) ;
-
-			for  ( $i = 0, $count = count ( $matches [ 'object' ] ) ; $i  <  $count ; $i ++ )
-				fprintf ( $fp, "{$matches [ 'object' ] [$i]};{$matches [ 'initial' ] [$i]};{$matches [ 'final' ] [$i]}\n" ) ;
-
-			fclose ( $fp ) ;
-		    }
-		else
-			file_put_contents ( $csv_output, '' ) ;
 
 		// Output some information ; differences will be printed if only one file has been specified
 		if  ( $single ) 
@@ -177,10 +158,10 @@ END;
 				$diff_text	=  ' (no difference)' ;
 
 			output ( "$filename ->" ) ;
-			output ( "\tThrak version      : $thrak_output" ) ;
-			output ( "\tPhpclasses version : $phpclasses_output" ) ;
-			output ( "\tDiff output        : $diff_output$diff_text" ) ;
-			output ( "\tDebug output       : $debug_output" ) ;
+			output ( "\tThrak version        : $thrak_output" ) ;
+			output ( "\tPhpclasses version   : $phpclasses_output" ) ;
+			output ( "\tDiff output          : $diff_output$diff_text" ) ;
+			output ( "\tDebug output         : $debug_output" ) ;
 		     }
 
 		// Extract images from the Thrak version
@@ -191,6 +172,11 @@ END;
 			$image -> SaveAs ( $image_output ) ;
 		    }
 
-		output ( "\tMemory usage (peak) : " . number_format ( $thrak_pdf -> MemoryPeakUsage, 0, '.', ' ' ) ) ;
-		output ( "\tMemory usage        : " . number_format ( $thrak_pdf -> MemoryUsage, 0, '.', ' ' ) ) ;
+		output ( "\tElapsed (thrak)      : " . number_format ( $thrak_end - $thrak_start, 3, '.', ' ' ) ) ;
+		output ( "\tElapsed (phpclasses) : " . number_format ( $phpclasses_end - $phpclasses_start, 3, '.', ' ' ) ) ;
+		output ( "\tText size            : " . number_format ( $thrak_pdf -> Statistics [ 'TextSize' ], 0, '.', ' ' ) ) ;
+		output ( "\tOptimized text size  : " . number_format ( $thrak_pdf -> Statistics [ 'OptimizedTextSize' ], 0, '.', ' ' ) ) ;
+		output ( "\tGain in size         : " . number_format ( $thrak_pdf -> Statistics [ 'TextSize' ] - $thrak_pdf -> Statistics [ 'OptimizedTextSize' ], 0, '.', ' ' ) ) ;
+		output ( "\tMemory usage (peak)  : " . number_format ( $thrak_pdf -> MemoryPeakUsage, 0, '.', ' ' ) ) ;
+		output ( "\tMemory usage         : " . number_format ( $thrak_pdf -> MemoryUsage, 0, '.', ' ' ) ) ;
 	    }
