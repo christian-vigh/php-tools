@@ -106,6 +106,9 @@ class  LocalMailLog	extends  LocalLog
 	const	MAIL_FILE_NOT_FOUND				=  75 ;
 	const	MAIL_AUTHDAEMON_RESTARTING_CHILDREN		=  76 ;
 	const	MAIL_SMTP_STARTUP_ERROR				=  77 ;
+	const	MAIL_SYNTAX_ERROR				=  78 ;
+	const	MAIL_TABLE_LOOKUP_PROBLEM			=  79 ;
+	const	MAIL_VIRTUAL_MAILBOX_LOOKUP_FAILURE		=  80 ;
 	const	MAIL_IGNORED					=  0x8000 ;
 
 	// Constructor -
@@ -1111,12 +1114,25 @@ class  LocalMailLog	extends  LocalLog
 								    #imsx' ;
 	// Message of the form :
 	//	postfix/proxymap[3592]: error: open /etc/postfix/mysql-virtual_domains.cf: No such file or directory
+	// or :
+	//	vps330714 postfix/proxymap[4472]: warning: mysql:/etc/postfix/mysql-virtual_domains.cf is
+        //	unavailable. open /etc/postfix/mysql-virtual_domains.cf: No such file or directory
 	// Constant : MAIL_FILE_NOT_FOUND
 	private static	$regex_file_not_found			=  '#
 									(?P<message>
-										error: \s+ open \s+
-										(?P<path> [^:]+)
-										: \s+ No \s+ such \s+ file \s+ or \s+ directory
+										(
+											(
+												error: \s+ open \s+
+												(?P<path1> [^:]+)
+												: \s+ No \s+ such \s+ file \s+ or \s+ directory
+											 )
+											|
+											(
+												warning: \s+ 
+												(?P<path2> [^\s]+)
+												\s+ is \s+ unavailable
+											 )
+										 )
 										.*
 									)
 								    #imsx' ;
@@ -1139,6 +1155,41 @@ class  LocalMailLog	extends  LocalLog
 										.*
 									)
 								    #imsx' ;
+	// Message of the form :
+	//	vps330714 postfix/postmap[4092]: warning: /etc/postfix/regexp.header_checks, line 5: expected format: key whitespace value
+	// Constant : MAIL_SYNTAX_ERROR
+	private static	$regex_syntax_error			=  '#
+									(?P<message>
+										warning: \s+ 
+										(?P<path> [^,]+)
+										.*
+										expected \s+ format: \s+ key \s+ whitespace \s+ value
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	vps330714 postfix/trivial-rewrite[4475]: warning: proxy:mysql:/etc/postfix/mysql-virtual_domains.cf: table lookup problem
+	// Constant : MAIL_TABLE_LOOKUP_PROBLEM
+	private static	$regex_table_lookup_problem		=  '#
+									(?P<message>
+										warning: \s+ proxy:mysql:
+										(?P<path> [^:]+)
+										.*
+										table \s+ lookup \s+ problem
+										.*
+									)
+								    #imsx' ;
+	// Message of the form :
+	//	vps330714 postfix/trivial-rewrite[4475]: warning: virtual_mailbox_domains lookup failure
+	// Constant : MAIL_VIRTUAL_MAILBOX_LOOKUP_FAILURE
+	private static	$regex_virtual_mailbox_lookup_failure	=  '#
+									(?P<message>
+										virtual_mailbox_domains \s+ lookup \s+ failure
+										.*
+									)
+								    #imsx' ;
+
+
 	// Other messages
 	// Constant : MAIL_IGNORED
 	private static	$regex_mail_ignored			=  '#
@@ -1850,8 +1901,15 @@ class  LocalMailLog	extends  LocalLog
 			// Constant : MAIL_POSTFIX_FILE_NOT_FOUND
 			else if  ( preg_match ( self::$regex_file_not_found, $message, $regex_match ) ) 
 			   {
+				if (  isset ( $regex_match [ 'path1' ] ) )
+					$path	=  $regex_match [ 'path1' ] ;
+				else if (  isset ( $regex_match [ 'path2' ] ) )
+					$path	=  $regex_match [ 'path2' ] ;
+				else	
+					$path	=  '' ;
+
 				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $regex_match [ 'message' ] ) ;
-				$path_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_PATH			, $regex_match [ 'message' ] ) ;
+				$path_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_PATH			, $path ) ;
 				$log_code		=  self::MAIL_FILE_NOT_FOUND ;
 			    }
 			// Message of the form :
@@ -1867,6 +1925,31 @@ class  LocalMailLog	extends  LocalLog
 			   {
 				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $regex_match [ 'message' ] ) ;
 				$log_code		=  self::MAIL_SMTP_STARTUP_ERROR ;
+			    }
+			// Message of the form :
+			//	vps330714 postfix/postmap[4092]: warning: /etc/postfix/regexp.header_checks, line 5: expected format: key whitespace value
+			// Constant : MAIL_SYNTAX_ERROR
+			else if  ( preg_match ( self::$regex_syntax_error, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $regex_match [ 'message' ] ) ;
+				$path_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_PATH			, $regex_match [ 'message' ] ) ;
+				$log_code		=  self::MAIL_SYNTAX_ERROR ;
+			    }
+			// Message of the form :
+			//	vps330714 postfix/trivial-rewrite[4475]: warning: proxy:mysql:/etc/postfix/mysql-virtual_domains.cf: table lookup problem
+			else if  ( preg_match ( self::$regex_table_lookup_problem, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $regex_match [ 'message' ] ) ;
+				$path_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_PATH			, $regex_match [ 'message' ] ) ;
+				$log_code		=  self::MAIL_TABLE_LOOKUP_PROBLEM ;
+			    }
+			// Message of the form :
+			//	vps330714 postfix/trivial-rewrite[4475]: warning: virtual_mailbox_domains lookup failure
+			// Constant : MAIL_VIRTUAL_MAILBOX_LOOKUP_FAILURE
+			else if  ( preg_match ( self::$regex_virtual_mailbox_lookup_failure, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $regex_match [ 'message' ] ) ;
+				$log_code		=  self::MAIL_VIRTUAL_MAILBOX_LOOKUP_FAILURE ;
 			    }
 			// Other unhandled messages : warn the developer
 			else
