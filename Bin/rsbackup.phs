@@ -321,6 +321,7 @@ END;
 	function  IncrementalBackup ( $settings )
 	   {
 		$time_backup_start	=  microtime ( true ) ;
+		$backup_size		=  0 ;
 
 		foreach  ( $settings [ 'servers' ]  as  $host => $entry )
 		   {
@@ -387,7 +388,9 @@ END;
 
 			while  ( ( $buffer = fread ( $ifp, $block_size ) ) )
 			   {
-				$current_size	+=  strlen ( $buffer ) ;
+				$size		 =  strlen ( $buffer ) ;
+				$current_size	+=  $size ;
+				$backup_size	+=  $size ;
 				fwrite ( $ofp, $buffer ) ;
 				$message	 =  receive_progress ( "\tReceiving bytes       : ", $current_size, $formatted_length ) ;
 				echo ( $message ) ;
@@ -442,6 +445,7 @@ END;
 
 		$time_backup_end	=  microtime ( true ) ;
 		output ( "Total backup time : "  . number_format ( round ( $time_backup_end - $time_backup_start, 0 ), 0, '.', ' ' ) . 's' ) ;
+		output ( "Total backup size : "  . number_format ( $backup_size, 0, '.', ' ' ) . ' bytes' ) ;
 	    }
 
 	

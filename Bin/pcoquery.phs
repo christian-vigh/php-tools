@@ -240,6 +240,11 @@ END;
 	//	Returns the html contents for the specified url.
 	function  get_url_contents ( $url )
 	   {
+		if  ( strpos ( $url, '?' )  ==  false )
+			$append		=  '?' . rand ( 0, 10000000 ) ;
+		else
+			$append		=  '&' . rand ( 0, 10000000 ) ;
+
 		$contents	=  file_get_contents ( $url ) ;
 		$contents	=  str_replace ( "\0", '', $contents ) ;
 
