@@ -277,6 +277,9 @@ END;
 	//	Saves the new ips found with the -sync option.
 	function  save_new_ips ( $rows )
 	   {
+		if  ( ! count ( $rows ) )
+			return ;
+
 		global	$Database ;
 
 		$now		=  date ( 'Y-m-d H:i:s' ) ;
@@ -293,11 +296,12 @@ END;
 
 		foreach  ( $rows  as  $row )
 		   {
+			$logtype	=  get_logtype_name ( $row [ 'logtype' ] ) ;
 			$query		=  "
 						INSERT INTO server_new_ips
 						SET
 							serni_parent_id		=  $batch_id,
-							serni_log_type		=  '{$row [ 'logtype' ]}',
+							serni_log_type		=  '$logtype',
 							serni_ip		=  '{$row [ 'ip' ]}',
 							serni_server		=  '{$row [ 'server' ]}',
 							serni_domain		=  '{$row [ 'domain' ]}',
