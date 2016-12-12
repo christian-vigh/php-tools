@@ -214,6 +214,58 @@ CREATE TABLE server_iptables
 
 /*==============================================================================================================
 
+    server_new_ip_batch, server_new_ips tables -
+        New IPs collected by the rslogs utility.
+
+  ==============================================================================================================*/
+DROP TABLE IF EXISTS  server_new_ip_batches ;
+CREATE TABLE server_new_ip_batches
+   (
+	sernib_id 			INT 			NOT NULL AUTO_INCREMENT
+								COMMENT 'Unique id for this entry',
+	sernib_date			DATETIME		NOT NULL DEFAULT '0000-00-00 00:00:00'
+								COMMENT 'Date of processing',
+	sernib_crc			SMALLINT UNSIGNED	NOT NULL DEFAULT 0
+								COMMENT 'CRC16 of the date',
+		
+	PRIMARY KEY 			( sernib_id ),
+	KEY				( sernib_date, sernib_crc ),
+	KEY				( sernib_crc, sernib_date ) 
+	
+    )  ENGINE = MyISAM CHARSET latin1 COMMENT 'New IPs collected by the rslogs utility (header records)' ;
+
+
+DROP TABLE IF EXISTS server_new_ips ;
+
+CREATE TABLE server_new_ips
+   (
+	serni_id			INT			NOT NULL AUTO_INCREMENT 
+								COMMENT 'Unique id for this entry',
+	serni_parent_id			INT			NOT NULL DEFAULT 0
+								COMMENT 'Parent id in the server_new_ip_batch table',
+	serni_log_type			CHAR(10)		NOT NULL DEFAULT ''
+								COMMENT 'Log file type',
+	serni_ip			VARCHAR(40)		NOT NULL DEFAULT ''
+								COMMENT 'New IP recognized by the rslogs utility',
+	serni_server			VARCHAR(64)		NOT NULL DEFAULT ''
+								COMMENT 'Server accessed by this ip',
+	serni_domain			VARCHAR(64)		NOT NULL DEFAULT ''
+								COMMENT 'Domain accessed by this ip',
+	serni_all_time_count		INTEGER UNSIGNED	NOT NULL DEFAULT 0
+								COMMENT 'All time number of accesses for this IP',
+	serni_today_count		INTEGER UNSIGNED	NOT NULL DEFAULT 0
+								COMMENT 'Number of today accesses for this IP',
+	serni_blocked			CHAR(1)			NOT NULL DEFAULT ''
+								COMMENT '= "*" if the IP is already blocked',
+
+	PRIMARY KEY			( serni_id ),
+	KEY				( serni_parent_id )
+
+    )  ENGINE = MyISAM CHARSET latin1 COMMENT 'New IPs collected by the rslogs utility' ;
+								  
+
+/*==============================================================================================================
+
     whois_information table -
         Holds general whois information for ip addresses stored in the server string store table.
 

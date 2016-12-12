@@ -30,6 +30,10 @@
 		. Changed all the options of type "query" to take into account the servers specified on the
 		  command line.
 
+	    [Version : 1.1.2]	[Date : 2016/12/12]	[Author : CV]
+		. Added the update of the server_new_ip_batches and server_new_ips tables for the -sync
+		  option.
+
 	 ***************************************************************************************************/
 	require ( "tools.phpinclude" ) ;
 
@@ -44,6 +48,7 @@
 	use  Thrak\Database\Tables\ResolvedDomains ;
 	use  Thrak\Database\Tables\StringStore ;
 	use  Thrak\Reflection\ReflectionClass ;
+	use  Thrak\Math ;
 
 
 	require ( "RsAdmin.phpclass" ) ;
@@ -265,6 +270,43 @@ END;
 			error ( "Could not find all the specified servers" ) ;
 
 		return ( $ids ) ;
+	    }
+
+
+	// save_new_ips -
+	//	Saves the new ips found with the -sync option.
+	function  save_new_ips ( $rows )
+	   {
+		global	$Database ;
+
+		$now		=  date ( 'Y-m-d H:i:s' ) ;
+		$crc		=  Math::crc16 ( $now ) ;
+		$query		=  "
+					INSERT INTO server_new_ip_batches 
+					SET
+						sernib_date		=  '$now',
+						sernib_crc		=  $crc
+				   " ;
+
+		$Database -> Execute ( $query ) ;
+		$batch_id	=  $Database -> GetLastInsertid ( ) ;
+
+		foreach  ( $rows  as  $row )
+		   {
+			$query		=  "
+						INSERT INTO server_new_ips
+						SET
+							serni_parent_id		=  $batch_id,
+							serni_log_type		=  '{$row [ 'logtype' ]}',
+							serni_ip		=  '{$row [ 'ip' ]}',
+							serni_server		=  '{$row [ 'server' ]}',
+							serni_domain		=  '{$row [ 'domain' ]}',
+							serni_all_time_count	=  {$row [ 'count' ]},
+							serni_today_count	=  {$row [ 'today_count' ]},
+							serni_blocked		=  '{$row [ 'blocked' ]}'
+					   " ;
+			$Database -> Execute ( $query ) ;
+		    }
 	    }
 
 
@@ -1418,6 +1460,7 @@ END;
 
 		$report		=  new AsciiReport ( $report_columns ) ;
 		$report -> Generate ( $rows, true ) ;
+		save_new_ips ( $rows ) ;
 		echo $report -> Summary ( 'new ip' ) ;
 	    }
 	
