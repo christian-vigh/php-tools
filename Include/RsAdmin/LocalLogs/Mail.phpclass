@@ -1954,13 +1954,13 @@ class  LocalMailLog	extends  LocalLog
 			// Other unhandled messages : warn the developer
 			else
 			   {
-				
+				/*
 				preg_match ( self::$regex_mail_ignored, $message, $regex_match ) ;
 				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $regex_match [ 'message' ] ) ;
 				$log_code		=  self::MAIL_IGNORED ;
-				/*
+				*/
 				warning ( new \Thrak\System\ParseException ( "The following {$this -> Title} log entry message part could not be interpreted :\n\t$line" ) ) ;
-				return ( false ) ;*/
+				return ( false ) ;
 			    }
 
 			// Message has been processed ; assign individual column values
