@@ -1,0 +1,321 @@
+<?php
+	/**************************************************************************************************************
+	
+	    NAME
+	        nlips.phs
+	
+	    DESCRIPTION
+	        Manages the new log ips gathered by the rslogs utility used with the -sync option.
+	
+	    AUTHOR
+	        Christian Vigh, 12/2016.
+	
+	    HISTORY
+	    [Version : 1.0]	[Date : 2016-12-12]     [Author : CV]
+	        Initial version.
+	
+	 **************************************************************************************************************/
+	require ( "tools.phpinclude" ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Processors\CL\CLException ;
+	use  Thrak\Types\String ;
+	use  Thrak\IO\Console ;
+	use  Thrak\IO\Path ;
+	use  Thrak\IO\AsciiReport ;
+	use  Thrak\Processors\IniFile ;
+
+	require ( "RsAdmin.phpclass" ) ;
+
+	/*==============================================================================================================
+	
+	        Command-line definitions.
+	
+	  ==============================================================================================================*/
+	$Definitions = <<<END
+<command allow-files="false">
+
+	<usage>
+		 Manages the new log ips gathered by the rslogs utility used with the -sync option.
+	</usage>
+
+	<flag name="clear_all_batches, cab">
+		Clears all the new ip batches currently stored in the database.
+	</flag>
+
+	<unsigned name="clear_batches, clear_batch, cb" arguments="1..*">
+		Clears the specified batches.
+	</unsigned>
+
+	<flag name="list_batches, lb">
+		Lists the collected batches.
+	</flag>
+
+	<unsigned name="list_batch_contents, lbc" default="0">
+		Lists the contents of the batch whose id has been specified. If no id is specified, the latest
+		batch is taken.
+	</unsigned>
+</command>
+END;
+
+
+	/*==================================================================================================
+
+		Utility functions.
+
+	  ==================================================================================================*/
+
+	// get_logtype_name -
+	//	Returns a logfile type name corresponding to the specified constant.
+	function  get_logtype_name ( $value )
+	   {
+		switch  ( $value )
+		   {
+			case  RsAdmin::LOGTYPE_AUTH		:  return ( 'auth' ) ;
+			case  RsAdmin::LOGTYPE_HTTP		:  return ( 'http' ) ;
+			case  RsAdmin::LOGTYPE_HTTP_ERROR	:  return ( 'http error' ) ;
+			case  RsAdmin::LOGTYPE_HTTP_ERROR_404	:  return ( 'http err404' ) ;
+			case  RsAdmin::LOGTYPE_MAIL		:  return ( 'mail' ) ;
+			case  RsAdmin::LOGTYPE_SSH		:  return ( 'ssh' ) ;
+			default					:  return ( 'UNKNOWN' ) ;
+		    }
+	    }
+
+	// remove_empty_sets -
+	//	Remove rows from the server_new_ip_batches table that have no corresponding rows in
+	//	server_new_ips.
+	function  remove_empty_sets ( )
+ 	   {
+		global		$Database ;
+
+		$query		=  "
+					DELETE FROM server_new_ip_batches
+					WHERE
+						NOT EXISTS
+						   (
+							SELECT serni_parent_id
+							FROM server_new_ips
+							WHERE
+								serni_parent_id = server_new_ip_batches. sernib_id
+						    )
+				   " ;
+		$Database -> Execute ( $query ) ;
+	    }
+
+
+	/*==================================================================================================
+
+		Clearing functions.
+
+	  ==================================================================================================*/
+
+
+	// ClearAllBatches -
+	//	Clears all batches.
+	function  ClearAllBatches ( )
+	   {
+		global		$Database ;
+
+		$Database -> Execute ( "TRUNCATE TABLE server_new_ip_batches" ) ;
+		$Database -> Execute ( "TRUNCATE TABLE server_new_ips" ) ;
+	    }
+
+
+	// ClearBatches -
+	//	Clears the specified batches.
+	function  ClearBatches ( $ids )
+	   {
+		global		$Database ;
+
+		$id_list	=  implode ( ', ', $ids ) ;
+		$Database -> Execute ( "DELETE FROM server_new_ip_batches WHERE sernib_id IN ( $id_list )" ) ;
+		$Database -> Execute ( "DELETE FROM server_new_ips WHERE serni_parent_id IN ( $id_list )" ) ;
+	    }
+
+
+	/*==================================================================================================
+
+		List functions.
+
+	  ==================================================================================================*/
+
+	// ListBatches -
+	//	Lists the available new ip batches.
+	function  ListBatches ( )
+	   {
+		global		$Database ;
+
+		// Get the list of available log types
+		$query		=  "SELECT serni_log_type FROM server_new_ips GROUP BY serni_log_type ORDER BY serni_log_type" ;
+		$Database -> Execute ( $query ) ;
+		$log_types	=  $Database -> LoadValues ( ) ;
+
+		if  ( ! $log_types )
+		   {
+			output ( "No new ip batches available." ) ;
+			return ;
+		    }
+
+		// Build the report shape
+		$report_columns		=  
+		   [
+			'id'	=> [ 'member' => 'id'	, 'title' => 'ID'	],
+			'date'	=> [ 'member' => 'date'	, 'title' => 'Date'	]
+		    ] ;
+
+		foreach  ( $log_types  as  $log_type )
+			$report_columns [ $log_type ]	=  [ 'member' => $log_type, 'title' => ucfirst ( $log_type ) ] ;
+
+		// Get batch data 
+		$data		=  [] ;
+		$query		=  "
+					SELECT
+						serni_parent_id  	AS  'batch_id',
+						sernib_date 		AS  'batch_date',
+						serni_log_type 		AS  'log_type',
+						COUNT(*)		AS  'log_count'
+					FROM server_new_ips
+					LEFT JOIN server_new_ip_batches ON
+						server_new_ip_batches. sernib_id = server_new_ips. serni_parent_id
+					GROUP BY
+						serni_parent_id,
+						serni_log_type
+					ORDER BY
+						serni_parent_id,
+						serni_log_type
+				   " ;
+		$Database -> SetQuery ( $query ) ;
+		$rows		=  $Database -> LoadRows ( ) ;
+
+		foreach  ( $rows  as  $row )
+		   {
+			$id			=  $row [ 'batch_id' ] ;
+			$type			=  $row [ 'log_type' ] ;
+
+			if  ( ! isset ( $data [ $id ] ) )
+			   {
+				$data [ $id ] =  
+				   [
+					'id'		=>  $row [ 'batch_id' ],
+					'date'		=>  $row [ 'batch_date' ]
+				    ] ;
+			    }
+
+			$data [ $id ] [ $type ]		=  $row [ 'log_count' ] ;
+		    }
+
+		// Generate the report
+		$report		=  new AsciiReport ( $report_columns ) ;
+		echo $report -> Generate ( $data ) ;
+		echo $report -> Summary ( 'batch' ) ;
+	    }
+
+
+	// ListBatchContents -
+	//	Lists the contents of the specified batch.
+	function  ListBatchContents ( $id )
+	   {
+		global		$Database ;
+
+		// Get requested batch id
+		if  ( $id )
+			$query	=  "SELECT sernib_id FROM server_new_ip_batches WHERE sernib_id = $id" ;
+		else
+			$query	=  "SELECT MAX(sernib_id) FROM server_new_ip_batches" ;
+
+		$Database -> SetQuery ( $query ) ;
+		$batch_id		=  $Database -> LoadValue ( ) ;
+
+		if  ( ! $batch_id )
+		   {
+			if  ( $id )
+				output ( "Batch #$id not found." ) ;
+			else
+				output ( "No batch found." ) ;
+
+			return ;
+		    }
+
+		// Get batch contents
+		$query		=  "
+					SELECT *
+					FROM server_new_ips
+					LEFT JOIN server_new_ip_batches ON
+						server_new_ip_batches. sernib_id = server_new_ips. serni_parent_id
+					WHERE
+						server_new_ips. serni_parent_id		=  $batch_id 
+					ORDER BY
+						serni_log_type, serni_ip, serni_server, serni_domain
+				   " ;
+		$Database -> SetQuery ( $query ) ;
+		$rows		=  $Database -> LoadRows ( ) ;
+
+		$report		=  new  AsciiReport 
+		  (
+			[ 'member' => 'serni_parent_id'		, 'title' => 'ID'							],
+			[ 'member' => 'sernib_date'		, 'title' => 'Date'							],
+			[ 'member' => 'serni_log_type'		, 'title' => 'Log type'		, 'format' => 'get_logtype_name'	],
+			[ 'member' => 'serni_ip'		, 'title' => 'Ip'							],
+			[ 'member' => 'serni_server'		, 'title' => 'Server'							],
+			[ 'member' => 'serni_domain'		, 'title' => 'Domain'							],
+			[ 'member' => 'serni_all_time_count'	, 'title' => 'All time count'						],
+			[ 'member' => 'serni_today_count'	, 'title' => 'Today\'s count'						],
+			[ 'member' => 'blocked' 		, 'title' => 'Blocked?'		, 'align' => 'center'			]
+		   ) ;
+
+		echo $report -> Generate ( $rows ) ;
+		echo $report -> Summary ( 'new ip' ) ;
+	    }
+
+
+	/*==================================================================================================
+
+		Global constants and variables.
+
+	  ==================================================================================================*/
+	$CL 				=  new  CLParser ( $Definitions ) ;
+	$ClearAllBatches		=  $CL -> clear_all_batches ;
+	$ClearBatches			=  $CL -> clear_batches ;
+	$ListBatches			=  $CL -> list_batches ;
+	$ListBatchContents		=  $CL -> list_batch_contents ;
+
+	$HadOption			=  false ;
+
+	// Remove potential empty batches of ips
+	remove_empty_sets ( ) ;
+
+	// -list_batches -
+	//	Lists the available batches of new ips.
+	if  ( ! $HadOption  &&  $ListBatches )
+	   {
+		ListBatches ( ) ;
+		$HadOption		=  true ;
+	    }
+
+	// -list_batch_contents -
+	//	Lists the contents of the specified batch.
+	if  ( ! $HadOption  &&  $CL -> IsSpecified ( 'list_batch_contents' ) )
+	   {
+		ListBatchContents ( $ListBatchContents ) ;
+		$HadOption		=  true ;
+	    }
+
+	// -clear_all_batches -
+	//	Clears all new ip batches stored so far.
+	if  ( ! $HadOption  &&  $ClearAllBatches )
+	   {
+		ClearAllBatches ( ) ;
+		$HadOption		=  true ;
+	    }
+
+	// -clear_batches -
+	//	Clears all new ip batches stored so far.
+	if  ( ! $HadOption  &&  count ( $ClearBatches ) )
+	   {
+		ClearBatches ( $ClearBatches ) ;
+		$HadOption		=  true ;
+	    }
+
+
+	if  ( ! $HadOption )
+		$CL -> DisplayHelp ( ) ;
