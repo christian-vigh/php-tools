@@ -243,7 +243,7 @@ CREATE TABLE server_new_ips
 								COMMENT 'Unique id for this entry',
 	serni_parent_id			INT			NOT NULL DEFAULT 0
 								COMMENT 'Parent id in the server_new_ip_batch table',
-	serni_log_type			CHAR(10)		NOT NULL DEFAULT ''
+	serni_log_type			CHAR(16)		NOT NULL DEFAULT ''
 								COMMENT 'Log file type',
 	serni_ip			VARCHAR(40)		NOT NULL DEFAULT ''
 								COMMENT 'New IP recognized by the rslogs utility',
