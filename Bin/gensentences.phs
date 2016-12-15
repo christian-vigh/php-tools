@@ -22,7 +22,7 @@
 	require_once ( 'Processors/CL/CLParser.phpclass' ) ;
 
 	use  Thrak\Processors\CL\CLParser ;
-	use  Thrak\Types\String ;
+	use  Thrak\Types\StringUtilities ;
 	use  Thrak\IO\Path ;
 
 	define ( 'DICTIONARY_ENV'	,  'GENSENTENCES_DICTIONARY' ) ;

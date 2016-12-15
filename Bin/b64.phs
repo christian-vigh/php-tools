@@ -29,7 +29,7 @@
 
 	use  Thrak\Processors\CL\CLParser ;
 	use  Thrak\Processors\CL\CLAbstractParameter ;
-	use  Thrak\Types\String ;
+	use  Thrak\Types\StringUtilities ;
 	use  Thrak\IO\Path ;
 
 

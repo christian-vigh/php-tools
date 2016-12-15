@@ -35,7 +35,7 @@
 
 	use  Thrak\Processors\CL\CLParser ;
 	use  Thrak\IO\AsciiReport ;
-	use  Thrak\Types\String ;
+	use  Thrak\Types\StringUtilities ;
 	use  Thrak\IO\Path ;
 
 

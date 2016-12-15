@@ -26,7 +26,7 @@
 	use  Thrak\Runtime\AsynchronousCommand ;
 	use  Thrak\Types\AssociativeArray ;
 	use  Thrak\Types\ArrayHelpers ;
-	use  Thrak\Types\String ;
+	use  Thrak\Types\StringUtilities ;
 	use  Thrak\Types\String\Regex ;
 
 	

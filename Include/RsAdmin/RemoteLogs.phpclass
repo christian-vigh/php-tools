@@ -21,7 +21,7 @@ require_once ( 'RemoteLog.phpclass' ) ;
 
 
 use  Thrak\System\Object ;
-use  Thrak\Types\String ;
+use  Thrak\Types\StringUtilities ;
 
 
 /*==============================================================================================================

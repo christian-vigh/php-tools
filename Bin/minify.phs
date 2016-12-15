@@ -23,7 +23,7 @@
 	require ( "tools.phpinclude" ) ;
 
 	use  Thrak\Processors\CL\CLParser ;
-	use  Thrak\Types\String ;
+	use  Thrak\Types\StringUtilities ;
 	use  Thrak\Types\String\Convert ;
 	use  Thrak\IO\Console ;
 	use  Thrak\IO\Path ;

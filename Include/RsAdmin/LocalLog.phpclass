@@ -16,7 +16,7 @@
 
  **************************************************************************************************************/
 use  Thrak\System\Object ;
-use  Thrak\Types\String ;
+use  Thrak\Types\StringUtilities ;
 use  Thrak\Database\BufferedInsert ;
 use  Thrak\Database\BufferedLoadFile ;
 use  Thrak\Database\BufferedUpdate ;
