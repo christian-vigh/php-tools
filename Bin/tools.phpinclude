@@ -1,5 +1,5 @@
 <?php
-use  Thrak\Types\String ;
+use  Thrak\Types\StringUtilities ;
 use  Thrak\IO\Path ;
 
 // Define the thrak tools root
@@ -21,7 +21,7 @@ require ( getenv (  'THRAK_ROOT' ) . '/Thrak.phpinclude' ) ;
 // Normalize THRAK_PHPTOOLS
 $THRAK_PHPTOOLS		=  Path::ToUnix ( $THRAK_PHPTOOLS ) ;
 
-if  ( ! String::EndsWith ( $THRAK_PHPTOOLS, '/' ) )
+if  ( ! StringUtilities::EndsWith ( $THRAK_PHPTOOLS, '/' ) )
 	$THRAK_PHPTOOLS	.= '/' ;
 
 $GLOBALS [ 'THRAK_PHPTOOLS_INCLUDE' ] 	=  Thrak\IO\Path::ToUnix ( $THRAK_PHPTOOLS . "/Include" ) ;

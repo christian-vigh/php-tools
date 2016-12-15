@@ -1,0 +1,303 @@
+<?php
+	//!phpcmd(PHP, 1.0, production) : Runs a script using a specific PHP version.
+	/**************************************************************************************************************
+
+	    NAME
+		phprunner.phs
+
+	    DESCRIPTION
+		Runs a script using a specific PHP version.
+
+	    AUTHOR
+		Christian Vigh, 10/2016.
+
+	    HISTORY
+	    [Version : 1.0]	[Date : 2016-10-31]     [Author : CV]
+		Initial version.
+
+	 **************************************************************************************************************/
+	require ( 'tools.phpinclude' ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Types\String ;
+	use  Thrak\IO\Path ;
+	use  Thrak\IO\AsciiReport ;
+	use  Thrak\IO\Console ;
+	use  Thrak\Processors\IniFile ;
+	use  Thrak\Utilities\PhpRunner ;
+
+
+	/*==================================================================================================
+
+		Command line parameters.
+
+	  ==================================================================================================*/
+	$Definitions = <<<END
+<command>
+
+	<usage>
+		Runs a script using a specific PHP version.
+	</usage>
+
+	<command-line name="command, c">
+		Script to be executed. Output from each version execution will be stored in individual files whose 
+		name is given by a format string specified with the -output parameter.
+	</command-line>
+
+	<string name="configuration_file, cf" default="phprunner.ini">
+		File describing the script to be run, and the various runs associated with it.
+	</string>
+
+	<string name="define, d" arguments="1..*">
+		Defines a value for a setting. The format is :
+			setting=value
+		Use the form :
+			setting
+		to undefine the setting and leave it to its default value.
+	</string>
+
+	<string name="disable_extensions, disable_extension, de, dx" arguments="1..*">
+		Disables the specified extension(s) for all the versions matched by the -version parameter.
+	</string>
+
+	<string name="enable_extensions, enable_extension, ee, ex" arguments="1..*">
+		Enables the specified extension(s) for all the versions matched by the -version parameter.
+	</string>
+
+	<command-line name="group_command, gc">
+		Script to be executed. Output from each version execution will be grouped into the file specified
+		by the -output parameter.
+	</command-line>
+
+	<directory name="local_directory, ld" disposition="here" default="E:\PHP\SDK\Packages\Bin">
+		Local directory where the PHP redistributables are to be put.
+	</directory>
+	
+	<flag name="list_versions, lv, list, l">
+		Lists the versions matching the mask specified with the -versions parameter.
+	</flag>
+
+	<string name="output, o">
+		Output file name. When used with the -group_command parameter, specifies the name of an output file.
+		When used with the -command parameter, specifies a file name using special sprintf-like constructs 
+		to customize the name of the real output file ; format specifiers can be :
+		- %d : current date, long year, in the format "yyyymmdd".
+		- %D : current date, short year ("yymmdd").
+		- %t : current time ("hhmmss").
+		- %T : current time, short ("hhmm").
+		- %p : current PHP package (eg, "php-5.6.10-Win32-VC11-x64").
+		- %s : a format specifier that will be substituted with a unique integer id for 
+	</string>
+
+	<flag name="run_statistics, rs">
+		When the -command or -group_command parameter has been specified, displays a set of statistics
+		after the command has been executed for all the specified versions.
+	</flag>
+
+	<string name="versions, version, v" arguments="0..*">
+		Versions to be selected. Arguments can be :
+		- A version number of the form x.y.z (version major, minor and release numbers). Omitting 
+		  one of these components means "*", ie any major/minor/release number matching this place.
+		- The keyword "win32" or "w32" for Windows platforms. This is currently the only platform
+		  supported.
+		- "ts" or "nts", for "thread-safe" and "non-thread-safe", respectively. Omitting this
+		  value will match both builds.
+		- "vcx", where "x" is a number : version of the vcredist library. If not specified, all
+		  redists will be matched.
+		- "x86" or "x64", for the target architecture. If not specified, both architectures will be matched.
+	</string>
+</command>
+END;
+
+
+	/*==================================================================================================
+
+		Utility functions.
+
+	  ==================================================================================================*/
+
+
+	/*==================================================================================================
+
+	    DefineSetting -
+		Changes or add the specified setting(s) to the php.ini file of each version matching the
+		mask specified with the -versions parameter.
+
+	  ==================================================================================================*/
+	function  DefineSetting ( $runner, $define_list )
+	   {
+		global	$IsDirty ;
+
+		static	$define_re	=  '/^
+						(?P<name> [a-z0-9_\-]+)
+						(
+							\s* = \s*
+							(?P<value> .*)
+						 )?
+					     $/ix' ;
+
+		$defines	=  [] ;
+
+		foreach  ( $define_list  as  $define_setting )
+		   {
+			if  ( ! preg_match ( $define_re, $define_setting, $match ) )
+				error ( "Invalid setting definition : $define_setting" ) ;
+
+			$defines [ $match [ 'name' ] ]	=  ( isset ( $match [ 'value' ] ) ) ?  $match [ 'value' ] : null ;
+		    }
+
+		foreach  ( $defines  as  $name => $value )
+		   {
+			$runner -> IniSet ( $name, $value ) ;
+		    }
+
+		$IsDirty	=  true ;
+	    }
+
+
+	/*==================================================================================================
+
+	    DisableExtensions -
+		Disables the specified extensions.
+
+	  ==================================================================================================*/
+	function  DisableExtensions ( $runner, $extensions )
+	   {
+		global		$IsDirty ;
+
+		foreach  ( $extensions  as  $extension )
+		   {
+			$runner -> IniDisableExtension ( $extension ) ;
+		    }
+
+		$IsDirty	=  true ;
+	    }
+
+
+	/*==================================================================================================
+
+	    EnableExtensions -
+		Enables the specified extensions.
+
+	  ==================================================================================================*/
+	function  EnableExtensions ( $runner, $extensions )
+	   {
+		global		$IsDirty ;
+
+		foreach  ( $extensions  as  $extension )
+		   {
+			$runner -> IniEnableExtension ( $extension ) ;
+		    }
+
+		$IsDirty	=  true ;
+	    }
+
+
+	/*==================================================================================================
+
+	    ListVersions -
+		Lists the PHP versions matched by the specified arguments.
+
+	  ==================================================================================================*/
+	function  ListVersions ( $runner )
+	   {
+		output ( "Selected PHP versions :" ) ;
+
+		foreach  ( $runner -> Packages  as  $package )
+		   {
+			output ( "\t" . $package -> Package ) ;
+		    }
+
+		output ( count ( $runner -> Packages ) . " packages listed." ) ;
+	    }
+
+
+	/*==================================================================================================
+
+		Global constants and variables.
+
+	  ==================================================================================================*/
+	$CL 				=  new  CLParser ( $Definitions ) ;
+	$Define				=  $CL -> define ;
+	$DisableExtensions		=  $CL -> disable_extensions ;
+	$EnableExtensions		=  $CL -> enable_extensions ;
+	$ListVersions			=  $CL -> list_versions ;
+	$LocalDirectory			=  $CL -> local_directory ;
+	$Output				=  $CL -> output ;
+	$RunStatistics			=  $CL -> run_statistics ;
+	$Versions			=  $CL -> versions ;
+	$Command			=  $CL -> command ;
+
+	$IsDirty			=  false ;
+	$Runner				=  new PhpRunner ( $LocalDirectory, $Versions ) ;
+
+/*
+$command -> GetValue ( ) = array[5]
+   {
+        ["name"] => (string[9]) "pdftester"
+        ["path"] => (string[30]) "E:/PHP/Tools/Bin/pdftester.phs"
+        ["argv"] => array[2]
+           {
+                [0] => (string[2]) "-c"
+                [1] => (string[11]) "coucou titi"
+            }
+        ["command"] => (string[26]) "pdftester -c \"coucou titi\""
+        ["full-command"] => (string[47]) "E:/PHP/Tools/Bin/pdftester.phs -c \"coucou titi\""
+    }
+*/
+
+	$HadOption			=  false ;
+
+
+	/*==================================================================================================
+
+		Main program.
+
+	  ==================================================================================================*/
+
+	// -list_versions :
+	//	Lists the PHP versions matched by the specified arguments.
+	if  ( ! $HadOption  &&  $ListVersions )
+	   {
+		ListVersions ( $Runner ) ;
+		$HadOption		=  true ;
+	    }
+
+	// -define :
+	//	Defines setting(s) in the php.ini file of each matching version.
+	if  ( $CL -> IsSpecified ( 'define' ) )
+	   {
+		DefineSetting ( $Runner, $Define ) ;
+		$HadOption		=  true ;
+	    }
+
+	// -disable_extensions :
+	//	Disables the specified extensions.
+	if  ( $CL -> IsSpecified ( 'disable_extensions' ) )
+	   {
+		DisableExtensions ( $Runner, $DisableExtensions ) ;
+		$HadOption		=  true ;
+	    }
+
+	// -enable_extensions :
+	//	Enables the specified extensions.
+	if  ( $CL -> IsSpecified ( 'enable_extensions' ) )
+	   {
+		EnableExtensions ( $Runner, $EnableExtensions ) ;
+		$HadOption		=  true ;
+	    }
+
+	// Save the PHP .INI files if needed 
+	if  ( $IsDirty )
+	   {
+		foreach  ( $Runner -> Packages  as  $package )
+		   {
+			$package -> Settings -> Save ( ) ;
+			//output ( $package -> Package ) ;
+		    }
+	    }
+
+	// Defaults to -list_versions if no parameter specified
+	if  ( ! $HadOption )
+		ListVersions ( $Runner ) ;
+		

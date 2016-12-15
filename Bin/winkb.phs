@@ -19,7 +19,7 @@
 	require ( "tools.phpinclude" ) ;
 
 	use  Thrak\Processors\CL\CLParser ;
-	use  Thrak\Types\String ;
+	use  Thrak\Types\StringUtilities ;
 	use  Thrak\Types\ArrayHelpers ;
 	use  Thrak\IO\Path ;
 	use  Thrak\IO\AsciiReport ;
@@ -173,7 +173,7 @@ END;
 
 		if  ( ! $value ) 
 			$settings [ 'cache-rebuild-interval' ]	=  false ;
-		else if  ( ! String::IsDateString ( $value ) )
+		else if  ( ! StringUtilities::IsDateString ( $value ) )
 			error ( "The value \"$value\" for the \"RebuildCacheEvery\" key of the [Settings] section of configuration file \"" .
 				"$configuration_file\" is not a valid date/time specification." ) ;
 		else

@@ -37,7 +37,7 @@
 	require ( "tools.phpinclude" ) ;
 
 	use  Thrak\Processors\CL\CLParser ;
-	use  Thrak\Types\String ;
+	use  Thrak\Types\StringUtilities ;
 	use  Thrak\Types\String\Convert ;
 	use  Thrak\Types\ArrayHelpers ;
 	use  Thrak\IO\Console ;
@@ -866,7 +866,7 @@ ShootAgain:
 				$keep_this_file		=  $keepfiles ;
 
 				// Well, remote file mask is hardcoded ("whois.*.gz")...
-				if  ( $fs -> is_file ( $server_file )  &&  String::Matches ( $path, 'whois.*.gz' ) )
+				if  ( $fs -> is_file ( $server_file )  &&  StringUtilities::Matches ( $path, 'whois.*.gz' ) )
 				   {
 					output ( "\t\t$server_file..." ) ;
 				
@@ -1073,7 +1073,7 @@ ShootAgain:
 			if  ( ! $line )
 				continue ;
 
-			if  ( ! String::IsIPAddress ( $line ) )
+			if  ( ! StringUtilities::IsIPAddress ( $line ) )
 				error ( "File $file, line #$index : Invalid ip address \"$line\"." ) ;
 
 			$ips []		=  $line ;
@@ -1241,7 +1241,7 @@ ShootAgain:
 		$data		=  $Database -> Escape ( $whois_data -> Contents ) ;
 
 		// Add an IPV6 flag if needed 
-		if  ( String::IsIPV6Address ( $whois_data -> QueriedIp ) )
+		if  ( StringUtilities::IsIPV6Address ( $whois_data -> QueriedIp ) )
 			$whois_data -> Flags	|=  WhoisInformation::WHOIS_FLAGS_IS_IPV6 ;
 
 		// Loop through ip ranges

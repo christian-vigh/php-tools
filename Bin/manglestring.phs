@@ -17,7 +17,7 @@
 
 	 ***************************************************************************************************/
 	use  Thrak\Processors\CL\CLParser ;
-	use  Thrak\Types\String ;
+	use  Thrak\Types\StringUtilities ;
 	use  Thrak\IO\Path ;
 	use  Thrak\IO\AsciiReport ;
 
@@ -154,7 +154,7 @@ END;
 					else if  ( $ch  ==  '"' )
 					   {
 						$position ++ ;
-						$string		=  String::Unescape ( $string ) ;
+						$string		=  StringUtilities::Unescape ( $string ) ;
 						return ( $string ) ;
 					    }
 					else
@@ -288,8 +288,8 @@ END;
 				
 				output ( "[$EncodingErrors]\tInitial length : $input_length" ) ;
 				output ( "\tEncoded length : $output_length" ) ;
-				output ( "\tInput string   : " . String::Escape ( $string ) ) ;
-				output ( "\tEncoded string : " . String::Escape ( $output ) ) ;
+				output ( "\tInput string   : " . StringUtilities::Escape ( $string ) ) ;
+				output ( "\tEncoded string : " . StringUtilities::Escape ( $output ) ) ;
 			    }
 		    }
 

@@ -17,7 +17,7 @@
  **************************************************************************************************************/
 
 use  Thrak\System\Object ;
-use  Thrak\Types\String ;
+use  Thrak\Types\StringUtilities ;
 use  Thrak\Database\BufferedInsert ;
 use  Thrak\IO\LogFileContents ;
 
@@ -181,7 +181,7 @@ abstract class  RemoteLog		extends  Object
 	 *-------------------------------------------------------------------------------------------------------------*/
 	public static function  Matches ( $filename )
 	   {
-		return ( String::Matches ( $filename, '*.log' )  ||  String::Matches ( $filename, '*.log.gz' ) ) ;
+		return ( StringUtilities::Matches ( $filename, '*.log' )  ||  StringUtilities::Matches ( $filename, '*.log.gz' ) ) ;
 	    }
 
 
@@ -320,7 +320,7 @@ class	RemoteHttpLog		extends RemoteLog
 
 
 	public static function  Matches ( $logfile )
-	   { return ( String::Matches ( $logfile, 'access.*' ) ) ; }
+	   { return ( StringUtilities::Matches ( $logfile, 'access.*' ) ) ; }
     }
 
 
@@ -337,7 +337,7 @@ class	RemoteAuthLog		extends RemoteLog
 
 
 	public static function  Matches ( $logfile )
-	   { return ( String::Matches ( $logfile, 'auth.*' ) ) ; }
+	   { return ( StringUtilities::Matches ( $logfile, 'auth.*' ) ) ; }
     }
 
 
@@ -354,7 +354,7 @@ class	RemoteMailLog		extends RemoteLog
 
 
 	public static function  Matches ( $logfile )
-	   { return ( String::Matches ( $logfile, 'mail.*' ) ) ; }
+	   { return ( StringUtilities::Matches ( $logfile, 'mail.*' ) ) ; }
     }
 
 
@@ -371,7 +371,7 @@ class	RemoteHttpErrorLog		extends RemoteLog
 
 
 	public static function  Matches ( $logfile )
-	   { return ( String::Matches ( $logfile, 'error.log*' ) ) ; }
+	   { return ( StringUtilities::Matches ( $logfile, 'error.log*' ) ) ; }
     }
 
 
@@ -388,7 +388,7 @@ class	RemoteHttpError404Log		extends RemoteHttpErrorLog
 
 
 	public static function  Matches ( $logfile )
-	   { return ( String::Matches ( $logfile, 'error.404.*' ) ) ; }
+	   { return ( StringUtilities::Matches ( $logfile, 'error.404.*' ) ) ; }
     }
 
 
@@ -405,5 +405,5 @@ class	RemoteSshLog		extends RemoteLog
 
 
 	public static function  Matches ( $logfile )
-	   { return ( String::Matches ( $logfile, 'ssh.*' ) ) ; }
+	   { return ( StringUtilities::Matches ( $logfile, 'ssh.*' ) ) ; }
     }

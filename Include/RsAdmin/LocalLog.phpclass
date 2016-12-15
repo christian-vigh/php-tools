@@ -134,7 +134,10 @@ abstract class  LocalLog	extends  Object
 		   
 			// Derived class parser did not succeed in parsing data
 			if  ( ! $status ) 
-				error ( new \Thrak\System\RuntimeException ( "The {$this -> Title} log parser did not recognize the above line." ) ) ;
+			   {
+				warning ( new \Thrak\System\RuntimeException ( "\nThe {$this -> Title} log parser did not recognize the above line.\n" ) ) ;
+				continue ;
+			    }
 
 			// Update 'processed' flag and specific log subtype entry
 			$update_row	=

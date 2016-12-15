@@ -39,7 +39,7 @@
 
 	use  Thrak\Processors\CL\CLParser ;
 	use  Thrak\Processors\CL\CLException ;
-	use  Thrak\Types\String ;
+	use  Thrak\Types\StringUtilities ;
 	use  Thrak\IO\Console ;
 	use  Thrak\IO\Path ;
 	use  Thrak\IO\AsciiReport ;
@@ -778,9 +778,9 @@ END;
 		//	The same principle applies to the CleanMessages key with Messages.
 		//	CleanSshConnections does not have a counterpart in the [Cleaning Options] section. It cleans
 		//	the log entries that are marked as a private SSH connection (logfile type = 
-		$CleanIps		=  String::BooleanValue ( $RsLogs -> GetKey ( 'Settings', 'CleanIps', 'true' ) ) ;
-		$CleanMessages		=  String::BooleanValue ( $RsLogs -> GetKey ( 'Settings', 'CleanMessages', 'true' ) ) ;
-		$CleanSshConnections	=  String::BooleanValue ( $RsLogs -> GetKey ( 'Settings', 'CleanSshConnections', 'true' ) ) ;
+		$CleanIps		=  StringUtilities::BooleanValue ( $RsLogs -> GetKey ( 'Settings', 'CleanIps', 'true' ) ) ;
+		$CleanMessages		=  StringUtilities::BooleanValue ( $RsLogs -> GetKey ( 'Settings', 'CleanMessages', 'true' ) ) ;
+		$CleanSshConnections	=  StringUtilities::BooleanValue ( $RsLogs -> GetKey ( 'Settings', 'CleanSshConnections', 'true' ) ) ;
 			
 		// [Cleaning options] settings
 		$ips			=  $RsLogs -> GetKey ( 'Cleaning Options', 'Ips' ) ;

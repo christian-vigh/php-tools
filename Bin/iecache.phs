@@ -55,7 +55,7 @@
 	require ( "tools.phpinclude" ) ;
 
 	use  Thrak\Processors\CL\CLParser ;
-	use  Thrak\Types\String ;
+	use  Thrak\Types\StringUtilities ;
 	use  Thrak\IO\Path ;
 	use  Thrak\IO\AsciiReport ;
 	use  Thrak\Processors\IniFile ;
@@ -1229,9 +1229,9 @@ END;
 			   {
 				foreach  ( $patterns  as  $pattern )
 				   {
-					if  ( String::Matches ( $cookie [ 'variable' ], $pattern, true )  ||
-					      String::Matches ( $cookie [ 'domain'   ], $pattern, true )  ||
-					      String::Matches ( $cookie [ 'cookie'   ], $pattern, true ) )
+					if  ( StringUtilities::Matches ( $cookie [ 'variable' ], $pattern, true )  ||
+					      StringUtilities::Matches ( $cookie [ 'domain'   ], $pattern, true )  ||
+					      StringUtilities::Matches ( $cookie [ 'cookie'   ], $pattern, true ) )
 						$deleted_files [ $cookie [ 'cookie' ] ]	=  $cookie ;
 				    }
 			    }
@@ -1782,9 +1782,9 @@ END;
 		   {
 			if  ( is_non_empty ( $item ) )
 			   {
-				if  ( String::IsIpV6Address ( $item ) )
+				if  ( StringUtilities::IsIpV6Address ( $item ) )
 					warning ( "IP V6 addresses are not supported ($item)." ) ;
-				else if  ( String::IsIpV4Address ( $item ) )
+				else if  ( StringUtilities::IsIpV4Address ( $item ) )
 				   {
 					$cmd	=  "ROUTE ADD $item MASK 255.255.255.255 $route_to -p" ;
 					
@@ -1825,9 +1825,9 @@ END;
 		   {
 			if  ( is_non_empty ( $item ) )
 			   {
-				if  ( String::IsIpV6Address ( $item ) )
+				if  ( StringUtilities::IsIpV6Address ( $item ) )
 					warning ( "IP V6 addresses are not supported ($item)." ) ;
-				else if  ( String::IsIpV4Address ( $item ) )
+				else if  ( StringUtilities::IsIpV4Address ( $item ) )
 				   {
 					$cmd	=  "ROUTE DELETE $item" ;
 					
@@ -1992,7 +1992,7 @@ END;
 					$ip	=  $matches [ 'ipv4' ] [$i] ;
 						
 					// Check if valid IP address
-					if  ( ! String::IsIpV4Address ( $ip ) )
+					if  ( ! StringUtilities::IsIpV4Address ( $ip ) )
 						continue ;
 						
 					// Well, may also be a version number...

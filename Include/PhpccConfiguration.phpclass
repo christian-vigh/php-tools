@@ -21,7 +21,7 @@ use  Thrak\IO\Path ;
 use  Thrak\Processors\IniFile ;
 use  Thrak\Processors\VariableStore ;
 use  Thrak\Types\AssociativeArray ;
-use  Thrak\Types\String ;
+use  Thrak\Types\StringUtilities ;
 use  Thrak\Runtime\AsynchronousCommand ;
 
 
@@ -212,7 +212,7 @@ class  PhpccConfiguration	extends Object
 		$directories	=  preg_replace ( '/\s+/', ' ', $this -> GetKey ( 'Search', 'Exclude' ) ) ;		
 		
 		if  ( $directories )
-			$this -> ExcludedPaths	=  String::ExplodeAndTrim ( ' ', $directories ) ;
+			$this -> ExcludedPaths	=  StringUtilities::ExplodeAndTrim ( ' ', $directories ) ;
 		
 		// Reload module information if needed
 		if  ( ! $loaded )
@@ -452,7 +452,7 @@ class  PhpccConfiguration	extends Object
 	   {
 		// Get the Extensions value of the [Settings] section. This setting is catenated with a list of
 		$extensions_string	=  $this -> Configuration -> GetKey ( 'Settings', 'Extensions' ) ;
-		$extensions		=  String::ExplodeAndTrim ( ',', $extensions_string ) ;
+		$extensions		=  StringUtilities::ExplodeAndTrim ( ',', $extensions_string ) ;
 		
 		// Loop through declared extensions
 		$results	=  [] ;
@@ -1277,7 +1277,7 @@ class  PhpccConfiguration	extends Object
 		$name			=  str_replace ( '::', '.', $name ) ;		// For class name/member search
 
 		// Build search pattern
-		$wildcard_pattern	=  String::WildcardToRegex ( $name, '"' ) ;
+		$wildcard_pattern	=  StringUtilities::WildcardToRegex ( $name, '"' ) ;
 		
 		if  ( $wildcard_pattern  ===  false )
 			error ( "Invalid wildcard expression \"$name\"." ) ;

@@ -35,7 +35,7 @@
 	require ( "tools.phpinclude" ) ;
 
 	use  Thrak\Processors\CL\CLParser ;
-	use  Thrak\Types\String ;
+	use  Thrak\Types\StringUtilities ;
 	use  Thrak\Types\String\Convert ;
 	use  Thrak\Types\ArrayHelpers ;
 	use  Thrak\IO\Console ;
@@ -141,7 +141,7 @@ END;
 
 			foreach  ( $settings [ 'functions' ]  as  $entry )
 			   {
-				if  ( String::Matches ( $entry [ 'name' ], $name ) )
+				if  ( StringUtilities::Matches ( $entry [ 'name' ], $name ) )
 				    {
 					$found	=  true ;
 					break ;

@@ -19,7 +19,7 @@
 	require ( 'tools.phpinclude' ) ;
 
 	use  Thrak\Processors\CL\CLParser ;
-	use  Thrak\Types\String ;
+	use  Thrak\Types\StringUtilities ;
 	use  Thrak\IO\Path ;
 	use  Thrak\IO\AsciiReport ;
 	use  Thrak\IO\Console ;
@@ -728,7 +728,7 @@ END;
 		$wheres		=  [] ;
 
 		if  ( count ( $modules ) )
-			$wheres []	=  'pach_module IN ( ' . String::ImplodeWithQuotedStrings ( ', ', $modules, "'" ) . ' )' ;
+			$wheres []	=  'pach_module IN ( ' . StringUtilities::ImplodeWithQuotedStrings ( ', ', $modules, "'" ) . ' )' ;
 
 		if  ( count ( $wheres ) )
 			$where_clause	=  ' AND ' . implode ( ' AND ', $wheres ) ;

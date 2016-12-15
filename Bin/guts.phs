@@ -19,7 +19,7 @@
 
 	use  Thrak\Processors\CL\CLParser ;
 	use  Thrak\Processors\CL\CLException ;
-	use  Thrak\Types\String ;
+	use  Thrak\Types\StringUtilities ;
 	use  Thrak\IO\Console ;
 	use  Thrak\IO\Path ;
 	use  Thrak\IO\AsciiReport ;
@@ -86,7 +86,7 @@ END;
 	   {
 		$project_data	=  [] ;
 
-		if  ( ( $value = String::BooleanValue ( $key_value ) )  !==  null )
+		if  ( ( $value = StringUtilities::BooleanValue ( $key_value ) )  !==  null )
 		   {
 			if  ( ! $value )
 				return ( false ) ;

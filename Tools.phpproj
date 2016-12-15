@@ -581,6 +581,7 @@
     <Content Include="Benchmark\MySQL\Crc32 on big tables\stats.mysql" />
     <Content Include="Benchmark\MySQL\Select random record\randomtest.phs" />
     <Content Include="Bin\guts.phs" />
+    <Content Include="Bin\nlips.phs" />
     <Content Include="Bin\phpredist.phs" />
     <Content Include="Bin\phprunner.phs" />
     <Content Include="Bin\rnd2bin.phs" />

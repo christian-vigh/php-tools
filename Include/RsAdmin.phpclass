@@ -21,7 +21,7 @@ use  Thrak\Processors\IniFile ;
 use  Thrak\Processors\VariableStore ;
 use  Thrak\IO\Path ;
 use  Thrak\IO\AsciiReport ;
-use  Thrak\Types\String ;
+use  Thrak\Types\StringUtilities ;
 use  Thrak\Database\Tables\StringStore ;
 use  Thrak\Database\Tables\ResolvedIps ;
 use  Thrak\Database\Tables\ResolvedDomains ;
@@ -194,7 +194,7 @@ class  RsAdmin			extends  Object
 				$value	=  'false' ;
 
 			// Boolean value : the server entry is included (or not)
-			if  ( ( $bool = String::BooleanValue ( $value ) )  !==  null )
+			if  ( ( $bool = StringUtilities::BooleanValue ( $value ) )  !==  null )
 			   {
 				if  ( $bool )
 					$server_files [ $key ]	=  $path ;
@@ -203,7 +203,7 @@ class  RsAdmin			extends  Object
 			// Exclusions are processed first
 			else
 			   {
-				$list		=  String::ExplodeAndTrim ( ',', $value ) ;
+				$list		=  StringUtilities::ExplodeAndTrim ( ',', $value ) ;
 				$exclusions	=  [] ;
 				$inclusions	=  [] ;
 
@@ -219,7 +219,7 @@ class  RsAdmin			extends  Object
 				// Process exclusions first
 				foreach (  $exclusions  as  $exclusion )
 				   {
-					if  ( String::Matches ( $this_program, $exclusion ) )
+					if  ( StringUtilities::Matches ( $this_program, $exclusion ) )
 						continue 2 ;
 				    }
 
@@ -232,7 +232,7 @@ class  RsAdmin			extends  Object
 				   {
 					foreach  ( $inclusions  as  $inclusion )
 					   {
-						if  ( String::Matches ( $this_program, $inclusion ) )
+						if  ( StringUtilities::Matches ( $this_program, $inclusion ) )
 						   {
 							$include	=  true ;
 							continue ;

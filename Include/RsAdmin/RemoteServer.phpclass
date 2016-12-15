@@ -22,7 +22,7 @@ use  Thrak\System\Object ;
 use  Thrak\Windows\Windows ;
 use  Thrak\Processors\IniFile ;
 use  Thrak\Types\AssociativeArray ;
-use  Thrak\Types\String ;
+use  Thrak\Types\StringUtilities ;
 use  Thrak\Network\Ssh\SshSession ;
 use  Thrak\Network\Ssh\SshAuthentication ;
 use  Thrak\Network\Ssh\SshPublicKeyAuthentication ;
@@ -128,7 +128,7 @@ class  RemoteServer	extends  Object
 			error ( new \Thrak\System\RuntimeException ( "The \"Ip\" key in the [Settings] section of configuration file \"$configuration_file\" " .
 					"does not exist." ) ) ;
 	
-		if  ( ! String::IsIpAddress ( $value ) )
+		if  ( ! StringUtilities::IsIpAddress ( $value ) )
 			error ( new \Thrak\System\RuntimeException ( "The \"Ip\" key in the [Settings] section of configuration file \"$configuration_file\" " .
 					"is not a valid ip address." ) ) ;
 		
@@ -151,7 +151,7 @@ class  RemoteServer	extends  Object
 		
 		if  ( $value )
 		   {
-			$aliases	=  String::ExplodeAndTrim ( ',', $value ) ;
+			$aliases	=  StringUtilities::ExplodeAndTrim ( ',', $value ) ;
 			
 			foreach  ( $aliases  as  $alias )
 			   {
@@ -681,7 +681,7 @@ class  RemoteServer	extends  Object
 	   {
 		foreach  ( $this -> Names  as  $server_name )
 		   {
-			if  ( String::Matches ( $server_name, $name ) )
+			if  ( StringUtilities::Matches ( $server_name, $name ) )
 				return ( true ) ;
 		    }
 		

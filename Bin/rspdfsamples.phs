@@ -19,7 +19,7 @@
 	require ( "tools.phpinclude" ) ;
 
 	use  Thrak\Processors\CL\CLParser ;
-	use  Thrak\Types\String ;
+	use  Thrak\Types\StringUtilities ;
 	use  Thrak\IO\Path ;
 	use  Thrak\IO\AsciiReport ;
 	use  Thrak\IO\Console ;
@@ -105,7 +105,7 @@ END;
 
 		while  ( ( $file = $fs -> readdir ( $rs ) ) )
 		   {
-			if  ( $fs -> is_dir ( $file )  ||  ! String::EndsWith ( $file, ".pdf" ) )
+			if  ( $fs -> is_dir ( $file )  ||  ! StringUtilities::EndsWith ( $file, ".pdf" ) )
 				continue ;
 
 			$name		=  preg_replace ( '/^[a-z0-9]+-/i', '', $file ) ;
@@ -133,7 +133,7 @@ END;
 
 		while  ( ( $file = readdir ( $rs ) ) )
 		   {
-			if  ( is_dir ( $file )  ||  ! String::EndsWith ( $file, '.pdf' ) )
+			if  ( is_dir ( $file )  ||  ! StringUtilities::EndsWith ( $file, '.pdf' ) )
 				continue ;
 			
 			$path		=  "$LocalPath/$file" ;

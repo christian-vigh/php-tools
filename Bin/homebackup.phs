@@ -43,7 +43,7 @@
 
 	use  Thrak\Processors\CL\CLParser ;
 	use  Thrak\Types\DateTime ;
-	use  Thrak\Types\String ;
+	use  Thrak\Types\StringUtilities ;
 	use  Thrak\Types\String\Convert ;
 	use  Thrak\IO\Console ;
 	use  Thrak\IO\Path ;
@@ -200,8 +200,8 @@ END;
 			$message	=  '[' . $drive -> Name . $drive -> VolumeName . '] ' . $message ;
 		
 		$text	.=  $message ; 
-		fputs ( $fp, String::Untabify ( $text ) . "\n" ) ;
-		output ( String::Untabify ( "$tabstr$message" ) ) ;
+		fputs ( $fp, StringUtilities::Untabify ( $text ) . "\n" ) ;
+		output ( StringUtilities::Untabify ( "$tabstr$message" ) ) ;
 	    }
 	
 
@@ -1258,13 +1258,13 @@ END;
 		$value		=  $ConfigurationData -> GetKey ( 'Settings', 'StopServices' ) ;
 
 		if  ( $value )
-			$StopServices	=  String::ExplodeAndTrim ( ' ', $value ) ;
+			$StopServices	=  StringUtilities::ExplodeAndTrim ( ' ', $value ) ;
 
 		// Get the list of applications to be stopped
 		$value		=  $ConfigurationData -> GetKey ( 'Settings', 'StopApplications' ) ;
 
 		if  ( $value )
-			$StopApplications	=  String::ExplodeAndTrim ( ' ', $value ) ;
+			$StopApplications	=  StringUtilities::ExplodeAndTrim ( ' ', $value ) ;
 	    }
 	
 

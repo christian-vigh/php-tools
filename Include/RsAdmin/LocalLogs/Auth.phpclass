@@ -17,7 +17,7 @@
  **************************************************************************************************************/
 
 
-use		Thrak\Types\String ;
+use		Thrak\Types\StringUtilities ;
 
 
 /*==============================================================================================================
@@ -1126,7 +1126,7 @@ class  LocalAuthLog	extends  LocalLog
 
 				if  ( $domain_or_ip ) 
 				   {
-					if  ( String::IsIpAddress ( $domain_or_ip ) )
+					if  ( StringUtilities::IsIpAddress ( $domain_or_ip ) )
 					   {
 						$ip		=  $this -> PreprocessIp ( $domain_or_ip ) ;
 						$ip_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP, $domain_or_ip ) ;
@@ -1186,7 +1186,7 @@ class  LocalAuthLog	extends  LocalLog
 				$user_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_USER_NAME			, $regex_match [ 'user' ] ) ;
 				$ip			=  $this -> PreprocessIp ( $regex_match [ 'ip' ] ) ;
 
-				if  ( String::IsIpAddress ( $ip ) )
+				if  ( StringUtilities::IsIpAddress ( $ip ) )
 					$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP, $ip ) ;
 				else
 					$domain_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_DOMAIN_NAME, $ip ) ;
@@ -1200,7 +1200,7 @@ class  LocalAuthLog	extends  LocalLog
 			   {
 				$user_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_USER_NAME			, $regex_match [ 'user' ] ) ;
 
-				if  ( String::IsIpAddress ( $regex_match [ 'ip' ] ) )
+				if  ( StringUtilities::IsIpAddress ( $regex_match [ 'ip' ] ) )
 				   {
 					$ip			=  $this -> PreprocessIp ( $regex_match [ 'ip' ] ) ;
 					$ip_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_IP, $ip ) ;
@@ -1504,13 +1504,13 @@ class  LocalAuthLog	extends  LocalLog
 			    }
 			else
 			   {
-				/*
+				
 				preg_match ( self::$regex_auth_ignored, $message, $regex_match ) ;
 				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $regex_match [ 'message' ] ) ;
 				$log_code		=  self::AUTH_IGNORED ;
-				*/
+				/*
 				warning ( new \Thrak\System\ParseException ( "The following {$this -> Title} log entry message part could not be interpreted :\n\t$line" ) ) ;
-				return ( false ) ;
+				return ( false ) ;*/
 			    }
 
 			// Message has been processed ; assign individual column values
