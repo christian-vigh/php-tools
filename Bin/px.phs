@@ -56,7 +56,7 @@ END;
 	$Commands	=  $CL -> Files ;
 	$Use		=
 	   [
-		'use  Thrak\Types\String',
+		'use  Thrak\Types\StringUtilities',
 		'use  Thrak\IO\Path'
 	    ] ;
 
