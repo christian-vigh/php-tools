@@ -1353,6 +1353,9 @@ END;
 
 		output ( "---> " . number_format ( $global_new_records, 0, '.', ' ' ) . " entries extracted." ) ;
 
+		if  ( ! $ip_ids )
+			return ;
+
 		$ip_ids		=  array_unique ( $ip_ids ) ;
 
 		// Display the list of retrieved ips
@@ -1486,6 +1489,8 @@ END;
 		   {
 			$new_records	+=  $logfile -> Update ( ) ;
 		    }
+
+		$logfiles -> Server -> Disconnect ( ) ;
 
 		return ( $new_records ) ;
 	    }
