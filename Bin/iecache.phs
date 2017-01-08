@@ -1865,7 +1865,7 @@ END;
 		$iecache_contents	=  IECACHE_HOSTS_START . PHP_EOL ;
 		
 		foreach  ( $list  as  $item )
-			$iecache_contents	.=  "127.0.0.1 \t$item" . PHP_EOL ;
+			$iecache_contents	.=  "0.0.0.0 \t$item" . PHP_EOL ;
 		
 		$iecache_contents	.=  IECACHE_HOSTS_END . PHP_EOL ;
 		
