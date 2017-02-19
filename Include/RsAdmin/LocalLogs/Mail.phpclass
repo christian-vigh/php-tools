@@ -110,6 +110,7 @@ class  LocalMailLog	extends  LocalLog
 	const	MAIL_TABLE_LOOKUP_PROBLEM			=  79 ;
 	const	MAIL_VIRTUAL_MAILBOX_LOOKUP_FAILURE		=  80 ;
 	const	MAIL_SYSTEM_DOWN				=  81 ;
+	const	MAIL_UNKNOWN_CA					=  82 ;
 	const	MAIL_IGNORED					=  0x8000 ;
 
 	// Constructor -
@@ -1198,7 +1199,16 @@ class  LocalMailLog	extends  LocalLog
 										.*
 									)
 								    #imsx' ;
-
+	// Message of the form :
+	//	vps169910 imapd-ssl: couriertls: accept: error:14094418:SSL routines:SSL3_READ_BYTES:tlsv1 alert unknown ca
+	// Constant : MAIL_UNKNON_CA
+	private static	$regex_mail_unknown_ca			=  '#
+									(?P<message>
+										.* error: .*
+										alert \s+ unknown \s+ ca
+										.*
+									)
+								    #imsx' ;
 
 	// Other messages
 	// Constant : MAIL_IGNORED
@@ -1967,6 +1977,13 @@ class  LocalMailLog	extends  LocalLog
 			   {
 				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $regex_match [ 'message' ] ) ;
 				$log_code		=  self::MAIL_SYSTEM_DOWN ;
+			    }
+			// Message of the form :
+			//	vps169910 imapd-ssl: couriertls: accept: error:14094418:SSL routines:SSL3_READ_BYTES:tlsv1 alert unknown ca
+			else if  ( preg_match ( self::$regex_mail_unknown_ca, $message, $regex_match ) ) 
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE			, $regex_match [ 'message' ] ) ;
+				$log_code		=  self::MAIL_UNKNOWN_CA ;
 			    }
 			// Other unhandled messages : warn the developer
 			else
