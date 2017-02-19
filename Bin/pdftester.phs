@@ -31,6 +31,10 @@
 		Runs the PdfToText class on the specified file and compares the results of the thrak and phpclasses.org versions.
 	</usage>
 
+	<flag name="auto_extract_images, axi, ax">
+		Automatically extracts images from the pdf file, without storing them into the Images property.
+	</flag>
+
 	<string name="block_separator, bs" default="">
 		String used to separate chunks of text specified as an array.
 	</string>
@@ -48,6 +52,10 @@
 		that specify big values. This can produce a significant number of empty lines.
 		Specifying this parameter will cause the text leading instructions to be ignored.
 	</flag>
+
+	<integer name="max_pages, mp" default="0">
+		Maximum number of pages to extract.
+	</integer>
 
 	<string name="owner_password, op">
 		Owner password.
@@ -79,12 +87,14 @@ END;
 
 	$CL			=  new CLParser ( $Definitions ) ;
 	$verbose		=  $CL -> verbose ;
+	$auto_extract_images	=  $CL -> auto_extract_images ;
 	$debug			=  ( $verbose ) ?  100 : $CL -> debug ;
 	$extract_images		=  $CL -> extract_images ;
 	$filenames		=  $CL -> UnnamedParameters [0] -> Values ;
 	$single			=  ( count ( $filenames )  ==  1 ) ;
 	$block_separator	=  $CL -> block_separator ;
 	$ignore_text_leading	=  $CL -> ignore_text_leading ;
+	$max_pages		=  $CL -> max_pages ;
 	$remove_hyphens		=  $CL -> remove_hyphens ;
 	$separator		=  $CL -> separator ;
 	$user_password		=  ( $CL -> user_password ) ?  $CL -> user_password : false ;
@@ -104,6 +114,10 @@ END;
 		$thrak_pdf			=  new ThrakPdfToText ( ) ;
 		$thrak_pdf -> BlockSeparator	=  $block_separator ;
 		$thrak_pdf -> Separator		=  $separator ;
+		$thrak_pdf -> MaxSelectedPages	=  $max_pages ;
+
+		if  ( $auto_extract_images ) 
+			$thrak_pdf -> Options	|=  ThrakPdfToText::PDFOPT_AUTOSAVE_IMAGES ;
 
 		if  ( $extract_images ) 
 			$thrak_pdf -> Options	|=  ThrakPdfToText::PDFOPT_DECODE_IMAGE_DATA ;
