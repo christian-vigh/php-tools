@@ -25,6 +25,11 @@
 
 	require ( 'E:/PHP/phpclasses.org/PdfToText/PdfToText.phpclass' ) ;
 
+	/*==============================================================================================================
+	
+	        Command-line definitions.
+	
+	  ==============================================================================================================*/
 	$Definitions	= <<<END
 <command>
 	<usage>
@@ -43,6 +48,14 @@
 		Enables debug mode.
 	</flag>
 
+	<flag name="direct_output, do">
+		When specified, debug output will be directly sent to stdout. No debut.lst file will be created.
+	</flag>
+
+	<flag name="enhanced_statistics, es">
+		Displays statistics about the distribution of PDF instructions used for text drawing.
+	</flag>
+
 	<flag name="extract_images, xi, x">
 		Extracts images from the pdf file.
 	</flag>
@@ -51,6 +64,10 @@
 		Certain PDF files contain only relative positioning instructions, combined with text leading instructions
 		that specify big values. This can produce a significant number of empty lines.
 		Specifying this parameter will cause the text leading instructions to be ignored.
+	</flag>
+
+	<flag name="layout, l">
+		Renders page layout.
 	</flag>
 
 	<integer name="max_pages, mp" default="0">
@@ -69,6 +86,10 @@
 		String used to separate groups of character when the offset between them exceeds 1000 thousands of text unit.
 	</string>
 
+	<flag name="update_database, ud">
+		Update the run history in the database. This option automatically turns on the -enhanced_statistics option.
+	</flag>
+
 	<string name="user_password, up">
 		User password.
 	</string>
@@ -85,29 +106,116 @@
 </command>
 END;
 
+	/*==============================================================================================================
+	
+	        Utility functions.
+	
+	  ==============================================================================================================*/
+
+
+	// add_history_entry -
+	//	Adds an entry into the run history for the specified PDF file.
+	function  add_history_entry ( $pdf, $is_thrak, $elapsed )
+	   {
+		global		$Database ;
+
+		$filename		=  basename ( $pdf -> Filename ) ;
+		$fullpath		=  Path::ToUnix ( $pdf -> Filename ) ;
+		$escaped_filename	=  $Database -> Escape ( $filename ) ;
+		$escaped_fullpath	=  $Database -> Escape ( $fullpath ) ;
+
+		// Get or create a file entry 
+		$Database -> SetQuery ( "SELECT id FROM pdftester_files WHERE name = '$escaped_filename' AND fullpath = '$escaped_fullpath'" ) ;
+		$file_id		=  $Database -> LoadValue ( ) ;
+
+		if  ( ! $file_id )
+		   {
+			$Database -> Execute ( "INSERT INTO pdftester_files SET name='$escaped_filename', fullpath = '$escaped_fullpath'" ) ;
+			$file_id	=  $Database -> GetLastInsertId ( ) ;
+		    }
+
+		// Create the history run entry
+		$now		=  date ( 'Y-m-d H:i:s' ) ;
+		$version	=  $pdf::VERSION ;
+		$is_thrak	=  ( $is_thrak ) ?  '1' : '0' ;
+		$query		=  "
+					INSERT INTO pdftester_run_history
+					SET
+						file_id			=  $file_id,
+						run_time		=  '$now',
+						version			=  '$version',
+						is_thrak		=  $is_thrak,
+						elapsed_time		=  $elapsed,
+						text_size		=  {$pdf -> Statistics [ 'TextSize' ]},
+						optimized_text_size	=  {$pdf -> Statistics [ 'OptimizedTextSize' ]},
+						memory_usage		=  {$pdf -> MemoryUsage},
+						peak_memory_usage	=  {$pdf -> MemoryPeakUsage}
+
+				   " ;
+		$Database -> Execute ( $query ) ;
+		$history_id	=  $Database -> GetLastInsertId ( ) ;
+
+		// Finally, add the PDF instructions frequencies
+		foreach  ( $pdf -> Statistics [ 'Distributions' ]  as  $name => $item )
+		   {
+			$escaped_instruction	=  $Database -> Escape ( $item [ 'instruction' ] ) ;
+			$query			=  "
+							INSERT INTO pdftester_distribution_history
+							SET
+								run_id			=  $history_id,
+								instruction		=  '$escaped_instruction',
+								instruction_count	=  {$item [ 'count' ]},
+								instruction_percentage	=  {$item [ 'percent' ]}
+						   " ;
+
+			$Database -> Execute ( $query ) ;
+		    }
+	    }
+
+
+	/*==============================================================================================================
+	
+	        Retrieve command-line parameters.
+	
+	  ==============================================================================================================*/
 	$CL			=  new CLParser ( $Definitions ) ;
 	$verbose		=  $CL -> verbose ;
 	$auto_extract_images	=  $CL -> auto_extract_images ;
 	$debug			=  ( $verbose ) ?  100 : $CL -> debug ;
+	$direct_output		=  $CL -> direct_output ;
+	$enhanced_statistics	=  $CL -> enhanced_statistics ;
 	$extract_images		=  $CL -> extract_images ;
 	$filenames		=  $CL -> UnnamedParameters [0] -> Values ;
 	$single			=  ( count ( $filenames )  ==  1 ) ;
 	$block_separator	=  $CL -> block_separator ;
 	$ignore_text_leading	=  $CL -> ignore_text_leading ;
+	$layout			=  $CL -> layout ;
 	$max_pages		=  $CL -> max_pages ;
 	$remove_hyphens		=  $CL -> remove_hyphens ;
 	$separator		=  $CL -> separator ;
+	$update_database	=  $CL -> update_database ;
 	$user_password		=  ( $CL -> user_password ) ?  $CL -> user_password : false ;
 	$owner_password		=  ( $CL -> owner_password ) ?  $CL -> owner_password : false ;
 	ThrakPdfToText::$DEBUG	=  $debug ;
 
+	// Activate enhanced statistics if the -update_database has been specified
+	if  ( $update_database )
+		$enhanced_statistics	=  true ;
 
+
+	/*==============================================================================================================
+	
+	        Main program.
+	
+	  ==============================================================================================================*/
 	// Process filenames specified on the command line
 	foreach  ( $filenames  as  $filename )
 	   {
 		$name			=  pathinfo ( $filename, PATHINFO_FILENAME ) ;
 		$debug_output		=  "$name.debug.lst" ;
-		ob_start ( ) ;
+
+		if  ( ! $direct_output )
+			ob_start ( ) ;
 
 		// Generate the Thrak version
 		$thrak_start			=  microtime ( true ) ;
@@ -128,14 +236,26 @@ END;
 		if  ( $remove_hyphens )
 			$thrak_pdf -> Options	|=  ThrakPdfToText::PDFOPT_NO_HYPHENATED_WORDS ;
 
+		if  ( $layout )
+			$thrak_pdf -> Options	|=  ThrakPdfToText::PDFOPT_BASIC_LAYOUT ;
+
+		if  ( $enhanced_statistics )
+			$thrak_pdf -> Options   |=  ThrakPdfToText::PDFOPT_ENHANCED_STATISTICS ;
+
 		$thrak_pdf -> Load ( $filename, $user_password, $owner_password ) ;
 		$thrak_output			=  "$name.thrak.txt" ;
 		$thrak_end			=  microtime ( true ) ;
 		file_put_contents ( $thrak_output, $thrak_pdf -> Text ) ;
+		output ( "[Thrak] Done" ) ;
 
 		// Then the phpclasses.org version
 		$phpclasses_start	=  microtime ( true ) ;
-		$phpclasses_pdf		=  new PdfToText ( $filename, $user_password, $owner_password ) ;
+		$phpclasses_pdf		=  new PdfToText ( ) ;
+
+		if  ( $enhanced_statistics )
+			$phpclasses_pdf -> Options   |=  ThrakPdfToText::PDFOPT_ENHANCED_STATISTICS ;
+
+		$phpclasses_pdf -> Load ( $filename, $user_password, $owner_password ) ;
 		$phpclasses_output	=  "$name.phpclasses.txt" ;
 		$phpclasses_end	=  microtime ( true ) ;
 		file_put_contents ( $phpclasses_output, $phpclasses_pdf -> Text ) ;
@@ -146,17 +266,24 @@ END;
 		exec ( "diff \"$thrak_output\" \"$phpclasses_output\"", $output ) ;
 		$output_string		=  trim ( implode ( "\n", $output ) ) ;
 		file_put_contents ( $diff_output, $output_string ) ;
+		output ( "[Phpclasses] Done" ) ;
 
 		// Get debug information (if any)
-		$debug_data		=  ob_get_clean ( ) ;
-		file_put_contents ( $debug_output, $debug_data ) ;
+		if  ( ! $direct_output )
+		   {
+			$debug_data		=  ob_get_clean ( ) ;
+			file_put_contents ( $debug_output, $debug_data ) ;
+		    }
 
 		// Output some information ; differences will be printed if only one file has been specified
+		$basename		=  basename ( $filename ) ;
+
 		if  ( $single ) 
 		   {
 			output ( $debug_data ) ;
-			output ( "\nComparison results :" ) ;
-			output ( "~~~~~~~~~~~~~~~~~~" ) ;
+			$text		=  "Comparison results of $basename" ;
+			output ( "\n$text :" ) ;
+			output ( str_repeat ( '~', strlen ( $text ) ) ) ;
 			output ( $output_string ) ;
 		    }
 		else
@@ -186,11 +313,34 @@ END;
 			$image -> SaveAs ( $image_output ) ;
 		    }
 
-		output ( "\tElapsed (thrak)      : " . number_format ( $thrak_end - $thrak_start, 3, '.', ' ' ) ) ;
-		output ( "\tElapsed (phpclasses) : " . number_format ( $phpclasses_end - $phpclasses_start, 3, '.', ' ' ) ) ;
-		output ( "\tText size            : " . number_format ( $thrak_pdf -> Statistics [ 'TextSize' ], 0, '.', ' ' ) ) ;
-		output ( "\tOptimized text size  : " . number_format ( $thrak_pdf -> Statistics [ 'OptimizedTextSize' ], 0, '.', ' ' ) ) ;
-		output ( "\tGain in size         : " . number_format ( $thrak_pdf -> Statistics [ 'TextSize' ] - $thrak_pdf -> Statistics [ 'OptimizedTextSize' ], 0, '.', ' ' ) ) ;
-		output ( "\tMemory usage (peak)  : " . number_format ( $thrak_pdf -> MemoryPeakUsage, 0, '.', ' ' ) ) ;
-		output ( "\tMemory usage         : " . number_format ( $thrak_pdf -> MemoryUsage, 0, '.', ' ' ) ) ;
+		// Display statistics
+		output ( "\tElapsed (thrak)          : " . number_format ( $thrak_end - $thrak_start, 3, '.', ' ' ) ) ;
+		output ( "\tElapsed (phpclasses)     : " . number_format ( $phpclasses_end - $phpclasses_start, 3, '.', ' ' ) ) ;
+		output ( "\tText size                : " . number_format ( $thrak_pdf -> Statistics [ 'TextSize' ], 0, '.', ' ' ) ) ;
+		output ( "\tOptimized text size      : " . number_format ( $thrak_pdf -> Statistics [ 'OptimizedTextSize' ], 0, '.', ' ' ) ) ;
+		output ( "\tGain in size             : " . number_format ( $thrak_pdf -> Statistics [ 'TextSize' ] - $thrak_pdf -> Statistics [ 'OptimizedTextSize' ], 0, '.', ' ' ) ) ;
+		output ( "\tMemory usage (peak)      : " . number_format ( $thrak_pdf -> MemoryPeakUsage, 0, '.', ' ' ) ) ;
+		output ( "\tMemory usage             : " . number_format ( $thrak_pdf -> MemoryUsage, 0, '.', ' ' ) ) ;
+
+		// And optionally, enhanced statistics about the frequency of PDF instructions
+		if  ( $enhanced_statistics )
+		   {
+			output ( "\tInstruction distribution : " ) ;
+			
+			$report		=  new  AsciiReport
+			   (
+				[ 'member' => 'instruction', 'title' => 'Instruction' ],
+				[ 'member' => 'count', 'title' => 'Count' ],
+				[ 'member' => 'percent', 'title' => '%' ]
+			    ) ;
+
+			echo "\t\t" . str_replace ( "\n", "\n\t\t", $report -> Generate ( $thrak_pdf -> Statistics [ 'Distributions' ] ) ) ;
+		    }
+
+		// Add this run to the run history entry database if the -update_database option was specified
+		if  ( $update_database )
+		   {
+			add_history_entry ( $thrak_pdf     , true , $thrak_end - $thrak_start ) ;
+			add_history_entry ( $phpclasses_pdf, false, $phpclasses_end - $phpclasses_start ) ;
+		    }
 	    }
