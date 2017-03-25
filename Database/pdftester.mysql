@@ -1,0 +1,107 @@
+/***************************************************************************************************
+
+    NAME
+	pdftester.mysql
+
+    DESCRIPTION
+	Statistics tables used by pdftester.
+
+    AUTHOR
+	Christian Vigh, 03/2017.
+
+    HISTORY
+    [Version : 1.0]	[Date : 2017/03/24]	[Author : CV]
+	Initial version.
+
+  ***************************************************************************************************/
+
+USE  indiscipline ;
+
+/*==============================================================================================================
+
+    pdftester_files -
+        List of files run through the pdftester utility.
+
+  ==============================================================================================================*/
+DROP TABLE IF EXISTS  pdftester_files ;
+CREATE TABLE  pdftester_files
+   (
+	id 			INT UNSIGNED 		NOT NULL AUTO_INCREMENT
+							COMMENT 'Unique id for this file',
+	name 			VARCHAR(256) 		NOT NULL DEFAULT ''
+							COMMENT 'Filename, without the directory',
+	fullpath 		VARCHAR(1024)		NOT NULL DEFAULT ''
+							COMMENT 'Full filename, including unix-style path',
+							
+	PRIMARY KEY 		( id ),
+	KEY 			( name )
+    )  ENGINE = MyISAM CHARSET latin1 COMMENT 'List of files run through the pdftester utility' ;
+    
+    
+/*==============================================================================================================
+
+    pdftester_run_history -
+        Run history of the tested PDF files.
+
+  ==============================================================================================================*/
+DROP TABLE IF EXISTS  pdftester_run_history ;
+
+CREATE TABLE  pdftester_run_history
+   (
+	id 			INT UNSIGNED 		NOT NULL AUTO_INCREMENT
+							COMMENT 'Unique id for this run history entry',
+	file_id 		INT UNSIGNED 		DEFAULT 0
+							COMMENT 'Unique id of the PDF file in the pdftester_files table',
+	run_time 		DATETIME 		DEFAULT '0000-00-00 00:00:00'
+							COMMENT 'Time of run',
+	version 		CHAR(10) 		DEFAULT ''
+							COMMENT 'PdfToText class version',
+	is_thrak 		TINYINT 		DEFAULT 0
+							COMMENT '0 = phpclasses version, 1 = thrak version',
+	elapsed_time 		DOUBLE 			DEFAULT 0.0
+							COMMENT 'Elapsed time in seconds and milliseconds',
+	text_size 		INT UNSIGNED 		NOT NULL DEFAULT 0
+							COMMENT 'Original size of the PDF drawing instructions',
+	optimized_text_size 	INT UNSIGNED 		NOT NULL DEFAULT 0
+							COMMENT 'Optimized text size, before processing by the PdfToText class',
+	memory_usage 		INT UNSIGNED 		NOT NULL DEFAULT 0
+							COMMENT 'Memory usage',
+	peak_memory_usage 	INT UNSIGNED 		NOT NULL DEFAULT 0
+							COMMENT 'Peak memory usage',
+							
+	PRIMARY KEY 		( id ),
+	KEY 			( file_id ),
+	KEY 			( is_thrak, file_id ),
+	KEY 			( run_time )
+    )  ENGINE = MyISAM CHARSET latin1 COMMENT 'Run history per PDF file' ;
+
+ 
+/*==============================================================================================================
+
+    pdftester_distribution_history -
+        History of PDF instruction distribution per file.
+
+  ==============================================================================================================*/
+DROP TABLE IF EXISTS  pdftester_distribution_history ;
+
+CREATE TABLE  pdftester_distribution_history
+   (
+	id 			INT UNSIGNED 		NOT NULL AUTO_INCREMENT
+							COMMENT 'Unique id for this run history distribution entry',
+	run_id 			INT UNSIGNED 		DEFAULT 0
+							COMMENT 'Unique id of this run',
+	instruction 		CHAR(10)		DEFAULT 0
+							COMMENT 'Instruction type',
+	instruction_count 	INT UNSIGNED 		DEFAULT 0
+							COMMENT 'Number of instructions found in this run',
+	instruction_percentage	DOUBLE 			DEFAULT 0.0
+							COMMENT 'Overall percentage of frequency for this instruction',
+							
+	PRIMARY KEY 		( id ),
+	KEY 			( run_id )
+    )  ENGINE = MyISAM CHARSET latin1 COMMENT 'Run history of PDF instructions distribution per PDF file' ;
+
+ 
+ 
+ 
+ 
