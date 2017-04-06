@@ -252,8 +252,11 @@ END;
 		$phpclasses_start	=  microtime ( true ) ;
 		$phpclasses_pdf		=  new PdfToText ( ) ;
 
+		if  ( $layout )
+			$phpclasses_pdf -> Options	|=  ThrakPdfToText::PDFOPT_BASIC_LAYOUT ;
+
 		if  ( $enhanced_statistics )
-			$phpclasses_pdf -> Options   |=  ThrakPdfToText::PDFOPT_ENHANCED_STATISTICS ;
+			$phpclasses_pdf -> Options	|=  ThrakPdfToText::PDFOPT_ENHANCED_STATISTICS ;
 
 		$phpclasses_pdf -> Load ( $filename, $user_password, $owner_password ) ;
 		$phpclasses_output	=  "$name.phpclasses.txt" ;
