@@ -1,4 +1,5 @@
 <?php
+	//!phpcmd(Administration, 1.0, production) : Manages the new log ips gathered by the rslogs utility used with the -sync option.
 	/**************************************************************************************************************
 	
 	    NAME
