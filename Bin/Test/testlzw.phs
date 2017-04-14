@@ -1,0 +1,218 @@
+<?php
+	require ( dirname ( __FILE__ ) . "/../tools.phpinclude" ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Types\StringUtilities ;
+	use  Thrak\IO\Path ;
+	use  Thrak\IO\AsciiReport ;
+
+
+	function   __decode_lzw_1 ($data) {
+		// initialize string to return
+		$decoded = '';
+		// data length
+		$data_length = strlen($data);
+		// convert string to binary string
+		$bitstring = '';
+		for ($i = 0; $i < $data_length; ++$i) {
+			$bitstring .= sprintf('%08b', ord($data{$i}));
+		}
+		// get the number of bits
+		$data_length = strlen($bitstring);
+		// initialize code length in bits
+		$bitlen = 9;
+		// initialize dictionary index
+		$dix = 258;
+		// initialize the dictionary (with the first 256 entries).
+		$dictionary = array();
+		for ($i = 0; $i < 256; ++$i) {
+			$dictionary[$i] = chr($i);
+		}
+		// previous val
+		$prev_index = 0;
+		// while we encounter EOD marker (257), read code_length bits
+		while (($data_length > 0) AND (($index = bindec(substr($bitstring, 0, $bitlen))) != 257)) {
+			// remove read bits from string
+			$bitstring = substr($bitstring, $bitlen);
+			// update number of bits
+			$data_length -= $bitlen;
+
+			if ($index == 256) { // clear-table marker
+				// reset code length in bits
+				$bitlen = 9;
+				// reset dictionary index
+				$dix = 258;
+				$prev_index = 256;
+				// reset the dictionary (with the first 256 entries).
+				$dictionary = array();
+				for ($i = 0; $i < 256; ++$i) {
+					$dictionary[$i] = chr($i);
+				}
+			} elseif ($prev_index == 256) {
+				// first entry
+				$decoded .= $dictionary[$index];
+				$prev_index = $index;
+			} else {
+				// check if index exist in the dictionary
+				if ($index < $dix) {
+					// index exist on dictionary
+					$decoded .= $dictionary[$index];
+					$dic_val = $dictionary[$prev_index].$dictionary[$index][0];
+					// store current index
+					$prev_index = $index;
+				} else {
+					// index do not exist on dictionary
+					$dic_val = $dictionary[$prev_index].$dictionary[$prev_index][0];
+					$decoded .= $dic_val;
+				}
+				// update dictionary
+				$dictionary[$dix] = $dic_val;
+				++$dix;
+				// change bit length by case
+				if ($dix == 2047) {
+					$bitlen = 12;
+				} elseif ($dix == 1023) {
+					$bitlen = 11;
+				} elseif ($dix == 511) {
+					$bitlen = 10;
+				}
+			}
+		}
+		return $decoded;
+	}
+
+	function   __decode_lzw_2  ( $data ) 
+	   {
+		// The initial dictionary contains 256 entries where each index is equal to its character representation
+		static $InitialDictionary      =  array
+		   (
+			"\x00", "\x01", "\x02", "\x03", "\x04", "\x05", "\x06", "\x07", "\x08", "\x09", "\x0A", "\x0B", "\x0C", "\x0D", "\x0E", "\x0F",
+			"\x10", "\x11", "\x12", "\x13", "\x14", "\x15", "\x16", "\x17", "\x18", "\x19", "\x1A", "\x1B", "\x1C", "\x1D", "\x1E", "\x1F",
+			"\x20", "\x21", "\x22", "\x23", "\x24", "\x25", "\x26", "\x27", "\x28", "\x29", "\x2A", "\x2B", "\x2C", "\x2D", "\x2E", "\x2F",
+			"\x30", "\x31", "\x32", "\x33", "\x34", "\x35", "\x36", "\x37", "\x38", "\x39", "\x3A", "\x3B", "\x3C", "\x3D", "\x3E", "\x3F",
+			"\x40", "\x41", "\x42", "\x43", "\x44", "\x45", "\x46", "\x47", "\x48", "\x49", "\x4A", "\x4B", "\x4C", "\x4D", "\x4E", "\x4F",
+			"\x50", "\x51", "\x52", "\x53", "\x54", "\x55", "\x56", "\x57", "\x58", "\x59", "\x5A", "\x5B", "\x5C", "\x5D", "\x5E", "\x5F",
+			"\x60", "\x61", "\x62", "\x63", "\x64", "\x65", "\x66", "\x67", "\x68", "\x69", "\x6A", "\x6B", "\x6C", "\x6D", "\x6E", "\x6F",
+			"\x70", "\x71", "\x72", "\x73", "\x74", "\x75", "\x76", "\x77", "\x78", "\x79", "\x7A", "\x7B", "\x7C", "\x7D", "\x7E", "\x7F",
+			"\x80", "\x81", "\x82", "\x83", "\x84", "\x85", "\x86", "\x87", "\x88", "\x89", "\x8A", "\x8B", "\x8C", "\x8D", "\x8E", "\x8F",
+			"\x90", "\x91", "\x92", "\x93", "\x94", "\x95", "\x96", "\x97", "\x98", "\x99", "\x9A", "\x9B", "\x9C", "\x9D", "\x9E", "\x9F",
+			"\xA0", "\xA1", "\xA2", "\xA3", "\xA4", "\xA5", "\xA6", "\xA7", "\xA8", "\xA9", "\xAA", "\xAB", "\xAC", "\xAD", "\xAE", "\xAF",
+			"\xB0", "\xB1", "\xB2", "\xB3", "\xB4", "\xB5", "\xB6", "\xB7", "\xB8", "\xB9", "\xBA", "\xBB", "\xBC", "\xBD", "\xBE", "\xBF",
+			"\xC0", "\xC1", "\xC2", "\xC3", "\xC4", "\xC5", "\xC6", "\xC7", "\xC8", "\xC9", "\xCA", "\xCB", "\xCC", "\xCD", "\xCE", "\xCF",
+			"\xD0", "\xD1", "\xD2", "\xD3", "\xD4", "\xD5", "\xD6", "\xD7", "\xD8", "\xD9", "\xDA", "\xDB", "\xDC", "\xDD", "\xDE", "\xDF",
+			"\xE0", "\xE1", "\xE2", "\xE3", "\xE4", "\xE5", "\xE6", "\xE7", "\xE8", "\xE9", "\xEA", "\xEB", "\xEC", "\xED", "\xEE", "\xEF",
+			"\xF0", "\xF1", "\xF2", "\xF3", "\xF4", "\xF5", "\xF6", "\xF7", "\xF8", "\xF9", "\xFA", "\xFB", "\xFC", "\xFD", "\xFE", "\xFF"
+		    ) ;
+
+		// Dictionary lengths - when we reach one of the values specified as the key, we have to set the bit length to the corresponding value
+		static  $DictionaryLengths	=  array 
+		   (
+			511		=>  10,
+			1023		=>  11,
+			2047		=>  12
+		    ) ;
+
+		// Decoded string to be returned
+		$result		=  '' ;
+
+		// Convert string to binary string
+		$bit_string	=  '' ;
+		$data_length	=  strlen ( $data ) ;
+
+		for  ( $i = 0 ; $i  <  $data_length ; $i ++ ) 
+			$bit_string	.=  sprintf ( '%08b', ord ( $data[$i] ) ) ;
+
+		$data_length	*=  8 ;
+		
+		// Initialize dictionary
+		$bit_length		=  9 ;
+		$dictionary_index	=  258 ;
+		$dictionary		=  $InitialDictionary ;
+
+		// Previous value
+		$previous_index		=  0 ;
+
+		// Start index in bit string
+		$start_index		=  0 ;
+
+		// Until we encounter the EOD marker (257), read $bit_length bits
+		while  ( ( $start_index  <  $data_length )  &&  ( ( $index = bindec ( substr ( $bit_string, $start_index, $bit_length ) ) )  !==  257 ) ) 
+		   {
+			// Move to next bit position
+			$start_index	+=  $bit_length ;
+
+			if  ( $index  !==  256  &&  $previous_index  !==  256 )
+			    {
+				// Check if index exists in the dictionary and remember it
+				if  ( $index  <  $dictionary_index ) 
+				   {
+					$result			.=  $dictionary [ $index ] ;
+					$dictionary_value	 =  $dictionary [ $previous_index ] . $dictionary [ $index ] [0] ;
+					$previous_index		 =  $index ;
+				    } 
+				// Index does not exist - add it to the dictionary
+				else 
+				   {
+					$dictionary_value	 =  $dictionary [ $previous_index ] . $dictionary [ $previous_index ] [0] ;
+					$result			.=  $dictionary_value ;
+				    }
+
+				// Update dictionary
+				$dictionary [ $dictionary_index ++ ]	=  $dictionary_value ;
+				
+				// Change bit length whenever we reach an index limit
+				if  ( isset ( $DictionaryLengths [ $dictionary_index ] ) )
+					$bit_length	=  $DictionaryLengths [ $dictionary_index ] ;
+			    }
+			// Clear table marker
+			else if  ( $index  ===  256) 
+			   { 
+				// Reset dictionary and bit length
+				// Reset dictionary and bit length
+				$bit_length		=  9 ;
+				$dictionary_index	=  258 ;
+				$previous_index		=  256 ;
+				$dictionary		=  $InitialDictionary ;
+			     }
+			// First entry
+			else	// $previous_index  === 256 
+			   {
+				// first entry
+				$result		.=  $dictionary [ $index ] ;
+				$previous_index  =  $index ;
+			    } 
+		    }
+
+		// All done, return
+		return ( $result ) ;
+	    }
+
+
+	define ( 'LOOP_COUNT', 1000 ) ;
+
+	$contents	=  file_get_contents ( $argv [1] ) ;
+
+
+	$tm1	=  microtime ( true ) ;
+
+	for  ( $i = 0 ; $i  <  LOOP_COUNT ; $i ++ )
+		$decoded_1	=  __decode_lzw_1 ( $contents )  ;
+
+	$tm2	=  microtime ( true ) ;
+	$delta1 =  round ( $tm2 - $tm1, 3 ) ;
+
+
+	$tm1	=  microtime ( true ) ;
+
+	for  ( $i = 0 ; $i  <  LOOP_COUNT ; $i ++ )
+		$decoded_2	=  __decode_lzw_2 ( $contents )  ;
+
+	$tm2	=  microtime ( true ) ;
+	$delta2 =  round ( $tm2 - $tm1, 3 ) ;
+
+
+	output ( "OLD : $delta1" ) ;
+	output ( "NEW : $delta2" ) ;
+	dump ( strcmp ( $decoded_1, $decoded_2 ) ) ;
+
+	
