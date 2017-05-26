@@ -175,6 +175,21 @@ abstract class  RemoteLog		extends  Object
 
 	/*--------------------------------------------------------------------------------------------------------------
 	 
+	    GetTimestamp -
+	        Returns the timestamp part of a line.
+	 
+	 *-------------------------------------------------------------------------------------------------------------*/
+	protected function  GetTimestamp ( $line )
+	   {
+		$date		=  substr ( $line, $this -> TimestampStart, $this -> TimestampLength ) ;
+		$timestamp	=  strtotime ( $date ) ;
+
+		return ( [ $date, $timestamp ] ) ;
+	    }
+
+
+	/*--------------------------------------------------------------------------------------------------------------
+	 
 	    Matches -
 	        Returns true if the specified pattern matches a log file name(to be implemented by derived classes).
 	 
@@ -239,16 +254,15 @@ abstract class  RemoteLog		extends  Object
 					continue ;
 
 				// Get timestamp and message parts
-				$date		=  substr ( $line, $this -> TimestampStart, $this -> TimestampLength ) ;
-				$timestamp	=  strtotime ( $date ) ;
-				$message	=  substr ( $line, $this -> MessageStart ) ;
+				list ( $date, $timestamp )	=  $this -> GetTimestamp ( $line ) ;
+				$message			=  substr ( $line, $this -> MessageStart ) ;
 
 				// No mercy for invalid timestamps
 				if  ( $timestamp  ===  false )
 					error ( new \Thrak\System\ParseException ( "Invalid timestamp value '$date' found in the following log line :\n\t$line" ) ) ;
 				
 				// Ignore lines that are older than the last update				
-				if  ( /*$line_index  <  $last_line_number  ||*/  $timestamp  <  $last_update )
+				if  ( $timestamp  <  $last_update )
 				   {
 					if  ( $verbose )
 						echo 'x' ;
@@ -372,6 +386,27 @@ class	RemoteHttpErrorLog		extends RemoteLog
 
 	public static function  Matches ( $logfile )
 	   { return ( StringUtilities::Matches ( $logfile, 'error.log*' ) ) ; }
+
+
+	// GetTimestamp -
+	//	New PHP error logs include microseconds in the time. We have to remove them since strtotime() does not
+	//	recognize them.
+	protected function  GetTimestamp ( $line )
+	   {
+		list ( $date, $timestamp )	=  parent::GetTimestamp ( $line ) ;
+
+		if  ( $timestamp  ===  false )
+		   {
+			$end_index	=  strpos ( $line, ']', $this -> TimestampStart ) ;
+			$tspart		=  substr ( $line, $this -> TimestampStart, $end_index - $this -> TimestampStart ) ;
+			$tspart		=  preg_replace ( '/(\d+) \. \d+/x', '$1', $tspart ) ;
+
+			$date		=  $tspart ;
+			$timestamp	=  strtotime ( $date ) ;
+		    }
+		
+		return ( [ $date, $timestamp ] ) ;
+	    }
     }
 
 
