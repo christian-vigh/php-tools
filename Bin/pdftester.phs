@@ -61,6 +61,11 @@
 		Extracts images from the pdf file.
 	</flag>
 
+	<file name="extra_mappings, em" disposition="existing">
+		Name of a PHP file that contain extra Adobe charset mappings .
+		The file must declare an array variable called \$adobe_extra_mappings.
+	</file>
+
 	<flag name="ignore_text_leading, itl">
 		Certain PDF files contain only relative positioning instructions, combined with text leading instructions
 		that specify big values. This can produce a significant number of empty lines.
@@ -75,6 +80,10 @@
 		Maximum number of pages to extract.
 	</integer>
 
+	<flag name="no_debug_output, ndo">
+		Do not display debug output on the standard output.
+	</flag>
+
 	<string name="owner_password, op">
 		Owner password.
 	</string>
@@ -86,6 +95,10 @@
 	<string name="separator, s" default= " ">
 		String used to separate groups of character when the offset between them exceeds 1000 thousands of text unit.
 	</string>
+
+	<flag name="show_coordinates, sc">
+		Shows the coordinates before each block of text.
+	</flag>
 
 	<flag name="update_database, ud">
 		Update the run history in the database. This option automatically turns on the -enhanced_statistics option.
@@ -100,7 +113,7 @@
 	</flag>
 
 	<unnamed>
-		<file arguments="1..*" glob="true">
+		<file arguments="1..*" glob="true" required="true">
 			Pdf file(s) to be processed.
 		</file>
 	</unnamed>
@@ -189,11 +202,14 @@ END;
 	$filenames		=  $CL -> UnnamedParameters [0] -> Values ;
 	$single			=  ( count ( $filenames )  ==  1 ) ;
 	$block_separator	=  $CL -> block_separator ;
+	$extra_mappings		=  $CL -> extra_mappings ;
 	$ignore_text_leading	=  $CL -> ignore_text_leading ;
 	$layout			=  $CL -> layout ;
 	$max_pages		=  $CL -> max_pages ;
+	$no_debug_output	=  $CL -> no_debug_output ;
 	$remove_hyphens		=  $CL -> remove_hyphens ;
 	$separator		=  $CL -> separator ;
+	$show_coordinates	=  $CL -> show_coordinates ;
 	$update_database	=  $CL -> update_database ;
 	$user_password		=  ( $CL -> user_password ) ?  $CL -> user_password : false ;
 	$owner_password		=  ( $CL -> owner_password ) ?  $CL -> owner_password : false ;
@@ -203,12 +219,19 @@ END;
 	if  ( $update_database )
 		$enhanced_statistics	=  true ;
 
+	// Load extra mappings if specified
+	if  ( $extra_mappings )
+		require ( $extra_mappings ) ;
+	else
+		$adobe_extra_mappings	=  false ;
+
 
 	/*==============================================================================================================
 	
 	        Main program.
 	
 	  ==============================================================================================================*/
+
 	// Process filenames specified on the command line
 	foreach  ( $filenames  as  $filename )
 	   {
@@ -243,6 +266,12 @@ END;
 		if  ( $enhanced_statistics )
 			$thrak_pdf -> Options   |=  ThrakPdfToText::PDFOPT_ENHANCED_STATISTICS ;
 
+		if  ( $show_coordinates )
+			$thrak_pdf -> Options   |=  ThrakPdfToText::PDFOPT_DEBUG_SHOW_COORDINATES ;
+
+		if  ( $adobe_extra_mappings )
+			$thrak_pdf -> AddAdobeExtraMappings ( $adobe_extra_mappings ) ;
+
 		$thrak_pdf -> Load ( $filename, $user_password, $owner_password ) ;
 		$thrak_output			=  "$name.thrak.txt" ;
 		$thrak_end			=  microtime ( true ) ;
@@ -258,6 +287,9 @@ END;
 
 		if  ( $enhanced_statistics )
 			$phpclasses_pdf -> Options	|=  ThrakPdfToText::PDFOPT_ENHANCED_STATISTICS ;
+
+		if  ( $adobe_extra_mappings )
+			$phpclasses_pdf -> AddAdobeExtraMappings ( $adobe_extra_mappings ) ;
 
 		$phpclasses_pdf -> Load ( $filename, $user_password, $owner_password ) ;
 		$phpclasses_output	=  "$name.phpclasses.txt" ;
@@ -286,7 +318,9 @@ END;
 
 		if  ( $single ) 
 		   {
-			output ( $debug_data ) ;
+			if  ( ! $no_debug_output ) 
+				output ( $debug_data ) ;
+
 			$text		=  "Comparison results of $basename" ;
 			output ( "\n$text :" ) ;
 			output ( str_repeat ( '~', strlen ( $text ) ) ) ;
