@@ -1,0 +1,21 @@
+<?php
+	require ( dirname ( __FILE__ ) . "/../tools.phpinclude" ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Graphics\TiffMerger ;
+
+	$Definitions	= <<<END
+<command allow-files="true" min-files="1" max-files="*">
+	<usage>
+		Tests the TiffMerger class.
+	</usage>
+</command>
+END;
+
+	$CL		=  new CLParser ( $Definitions ) ;
+	$files		=  $CL -> Files ;
+
+	$merger		=  new TiffMerger ( ) ;
+	$merger -> Add ( $files ) ;
+	$merger -> SaveTo ( 'merge.file.tif' ) ;
+	file_put_contents ( 'merge.string.tif', $merger -> AsString ( ) ) ;

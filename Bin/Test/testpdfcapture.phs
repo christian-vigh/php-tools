@@ -1,0 +1,65 @@
+#!/usr/bin/php
+<?php
+	require ( dirname ( __FILE__ ) . "/../tools.phpinclude" ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Types\StringUtilities ;
+	use  Thrak\IO\Path ;
+	use  Thrak\IO\AsciiReport ;
+	use  Thrak\Windows\WShell ;
+	use  Thrak\Processors\PdfToText ;
+	use  Thrak\Types\ArrayHelpers ;
+	use  Thrak\System\Object ;
+	use  Thrak\Processors\PdfToTextCaptureTemplateException ;
+
+
+	$captures	=  <<<END
+<captures>
+	<rectangle name="Title">
+		<page number="1" left="350" right="970" top="580" bottom="550"/>
+		<page number="2..$" left="350" right="970" top="700" bottom="660"/>
+	</rectangle>
+	<lines name="ReportLines" default="***%c***" separator="\n">
+		<page number="1"	top="516" height="22" bottom="0"/>
+		<page number="2..$"	top="543" height="22" bottom="0"/>
+
+		<column name="Asesor"		left="35"	width="35"/>
+		<column name="Emisor"		left="76"	width="42"/>
+		<column name="Carpeta"		left="120"	width="50"/>
+		<column name="Cis"		left="168"	width="48"/>
+		<column name="Emision"		left="214"	width="62"/>
+		<column name="Vence"		left="276"	width="54"/>
+		<column name="Efecto"		left="330"	width="51"/>
+		<column name="Producto"		left="379"	width="81"/>
+		<column name="Recibo"		left="460"	width="119"/>
+		<column name="EmisionRecibo"	left="577"	width="58"/>
+		<column name="EfectoRecibo"	left="635"	width="57"/>
+		<column name="VenceRecibo"	left="692"	width="64"/>
+		<column name="EstadoRecibo"	left="756"	width="36"/>
+		<column name="CausaRecibo"	left="792"	width="28"/>
+		<column name="Grupo"		left="816"	width="57"/>
+		<column name="Empresa"		left="868"	width="57"/>
+		<column name="Sucursal"		left="925"	width="59"/>
+	</lines>
+</captures>
+END;
+
+
+	$pdf		=  new PdfToText ( $argv[1], PdfToText::PDFOPT_CAPTURE ) ;
+	$pdf -> SetCapturesFromString ( $captures ) ;
+	$captures	=  $pdf -> GetCaptures ( ) ;
+
+	foreach ( $captures -> ReportLines  as  $line )
+	   {
+		$columns	=  array ( ) ;
+
+		foreach  ( $line  as  $column )
+		{
+			$columns []	=  $column ;
+		}
+
+		output ( trim ( implode ( ' *** ', $columns ) ) ) ;
+	    }
+
+	output ( "TITLE = " . $captures -> Title [1] ) ;
+	print_r ( $captures ) ;

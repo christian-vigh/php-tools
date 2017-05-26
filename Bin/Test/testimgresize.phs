@@ -1,0 +1,404 @@
+<?php
+	require ( dirname ( __FILE__ ) . "/../tools.phpinclude" ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\System\Object ;
+
+	$Definitions	= <<<END
+<command allow-files="true" min-files="1" max-files="1">
+	<usage>
+		Image resizing test.
+	</usage>
+</command>
+END;
+
+
+
+/*--------------------------------------------------------------------------------------------------------------
+
+    NAME 
+	crop_image, adapt_image - Redimensions an image.
+
+    PROTOTYPE 
+	function  crop_image  ( $image_file, $input_dir, $output_dir, $new_width, $new_height, $suffix = false, 
+				$background_color = false ) ;
+	function  adapt_image ( $image_file, $input_dir, $output_dir, $new_width, $new_height, $suffix = false, 
+				$background_color = array ( 255, 255, 255 ) ) ;
+
+    DESCRIPTION
+	crop_image() provides a way to redimension an image at a smaller size. If the width/height ratio of the 
+	source image is different from that of the destination image, the extra source pixel will be cropped, 
+	and the redimensioned source image will look as if only the center area was retained.
+
+	adapt_image() resizes the input image so that it fits into a rectangle of $new_width * $new_height.
+	It does not distort the initial image, but rather adds margins to the resized image.
+
+	In both cases, the target image will be a rectangle of $new_width * $new_height pixels.
+
+    PARAMETERS
+	$image_file (string) -
+		Name of the image file, without any directory part.
+
+	$input_dir (string) -
+		Directory that contains the image file.
+
+	$output_dir (string) -
+		Output directory.
+
+	$new_width (integer) -
+		Destination image width.
+
+	$new_height (integer) -
+		Destination image height.
+
+	$suffix (string) -
+		If the input and output directories are different, the output image will have the same name, 
+		in the output directory. You can however specify a suffix (without leading dot) to be added
+		before the image file extension.
+		If both directories are the same, then a suffix will be needed not to override the original
+		image file. The default suffix is : "thumb".
+
+	$background_color (array) -
+		Array of three RGB values used to paint the background of the destination image. Normally,
+		this background should never be visible since the destination image will be covered with pixels
+		coming from the source image.
+
+    RETURN VALUE
+	Returns true if the operation completed successfully ; returns false if :
+	- The input file does not exist
+	- The input file is not in a supported image format. Supported formats are JPEG, PNG and GIF
+	- There was an error when writing back the redimensioned image to disk
+
+    NOTES
+	This function has not been tested for source images smaller than the destination image.	
+
+ *-------------------------------------------------------------------------------------------------------------*/
+function  crop_image ( $input_path, $output_path, $new_width, $new_height, $suffix = false, $background_color = false )
+   {
+	// Check if we need to add some suffix to the output file name, either because the input/output directories are
+	// identical, or because a suffix has been specified
+	if  ( $suffix )
+	   {
+		$ext		=  pathinfo ( $input_path, PATHINFO_EXTENSION ) ;
+		$output_path	=  str_replace ( ".$ext", ".$suffix.$ext", $output_path ) ;
+	    }
+
+	// Check that the supplied input file exists
+	if  ( ! file_exists ( $input_path ) )
+		return ( false ) ;
+
+	// Retrieve image size and EXIF data.
+	// The only valuable EXIF information in our case is the image orientation : it will determine if we need to flip/rotate the image
+	$exif_data		=  @exif_read_data ( $input_path ) ;	// The IFD structures of some images may look corrupted - so ignore warnings
+	$image_info		=  getimagesize ( $input_path ) ;
+	$orientation		=  ( isset ( $exif_data [ 'Orientation' ] ) ) ?  $exif_data [ 'Orientation' ] : 1 ;
+
+	// Determine the image type
+	switch ( strtolower ( $image_info [ 'mime' ] ) )
+	   {
+		case	'image/jpeg' :
+			$source_image	=  imagecreatefromjpeg ( $input_path ) ;
+			break ;
+
+		case	'image/png' :
+			$source_image	=  imagecreatefrompng ( $input_path ) ;
+			break ;
+
+		case	'image/gif' :
+			$source_image	=  imagecreatefromgif ($input_path ) ;
+			break ;
+
+		// Unsupported image type
+		default :
+			return ( false ) ;
+	    }
+
+	// Re-orientate the image
+	$source_image	=  orientate_image ( $source_image, $orientation ) ;
+
+	// At this point, we have an image with the correct orientation in $source_image, so it's time to resize it
+	// (and crop it if needed)
+	// First, create the output image
+	$output_image		=  imagecreatetruecolor ( $new_width, $new_height ) ;
+
+	// Fill the background with the specified RGB background color 
+	if  ( $background_color  ===  false )
+		$background_color	=  array ( 255, 255, 255 ) ;
+
+	$background	=  imagecolorallocate ( $output_image, $background_color [0], $background_color [1], $background_color [2] ) ;
+	imagefill ( $output_image, 0, 0, $background ) ;
+
+	// Get source image width & height 
+	$image_width	=  imagesx ( $source_image ) ;
+	$image_height	=  imagesy ( $source_image ) ;
+
+	// We will take the smallest ratio between source image width and height. It will be used to compute an intermediate image size.
+	// Example : source image is 1932x2576. Destination image is 140x140.
+	// We take the lowest value between source width and height (here, 1932) then divide it by the destination width. This gives
+	// 13 as the (integer) result.
+	// To get the resized image width, we divide the source image width (1932) with the computed ratio (13). This gives a target width
+	// of 148.
+	// We do the same with source image height : 2576 / 13 = 198.
+	// Our new image is now 148x198. Since it is a little larger than our target dimensions, we will have to crop the image
+	// (extract only the 140x140 centered part).
+	if  ( $image_width  >  $image_height )
+	   {
+		$ratio			=  ( integer ) ( $image_height / $new_height ) ;
+		$recomputed_width	=  ( integer ) ( $image_width  / $ratio ) ;
+		$recomputed_height	=  ( integer ) ( $image_height / $ratio ) ;
+	    }
+	else if  ( $image_width  <  $image_height )
+	   {
+		$ratio			=  ( integer ) ( $image_width  / $new_width ) ;
+		$recomputed_width	=  ( integer ) ( $image_width  / $ratio ) ;
+		$recomputed_height	=  ( integer ) ( $image_height / $ratio ) ;
+	    }
+	else
+	   {
+		$recomputed_width	=  $image_width ;
+		$recomputed_height	=  $image_height ;
+	    }
+
+	// Step 1 : Create a resized version of the original image ; this image may be a little bit greater
+	//          than $new_width * $new_height, if the original width and height are different
+	$output_image		=  imagecreatetruecolor ( $recomputed_width, $recomputed_height ) ;
+
+	imagecopyresampled ( $output_image, $source_image, 0, 0, 0, 0, $recomputed_width, $recomputed_height, $image_width, $image_height ) ;
+	imagedestroy ( $source_image ) ;
+
+	// Step 2 : If the image is a little bit bigger than the destination size, then only copy the center of it to fit
+	//	    $new_width / $new_height.
+	if  ( $recomputed_width  !=  $new_width  ||  $recomputed_height  !=  $new_height )
+	   {
+		$delta_width	=  $recomputed_width  - $new_width ;
+		$delta_height	=  $recomputed_height - $new_height ;
+
+		$x		=  ( integer ) ( $delta_width  / 2 ) ;
+		$y		=  ( integer ) ( $delta_height / 2 ) ;
+
+		$new_image	=  imagecreatetruecolor ( $new_width, $new_height ) ;
+		imagecopy ( $new_image, $output_image, 0, 0, $x, $y, $new_width, $new_height ) ;
+		imagedestroy ( $output_image ) ;
+		$output_image	=  $new_image ;
+	    }
+
+	// Everything is ok, we just need to create the output image file
+	$status		=  @imagejpeg ( $output_image, $output_path, 100 ) ;
+
+	// All done, return
+	return ( $status ) ;
+    }
+
+
+function  adapt_image ( $input_path, $output_path, $new_width, $new_height, $suffix = false, $background_color = array ( 255, 255, 255 ) )
+   {
+	// Check if we need to add some suffix to the output file name, either because the input/output directories are
+	// identical, or because a suffix has been specified
+	if  ( $suffix )
+	   {
+		$ext		=  pathinfo ( $input_path, PATHINFO_EXTENSION ) ;
+		$output_path	=  str_replace ( ".$ext", ".$suffix.$ext", $output_path ) ;
+	    }
+
+	// Check that the supplied input file exists
+	if  ( ! file_exists ( $input_path ) )
+		return ( false ) ;
+
+	// Create the output image and fill it with the background color
+	$output_image		=  imagecreatetruecolor ( $new_width, $new_height ) ;
+	$background		=  imagecolorallocate ( $output_image, $background_color [0], $background_color [1], $background_color [2] ) ;
+
+	imagefill ( $output_image, 0, 0, $background ) ;
+
+	// Retrieve image size and EXIF data.
+	// The only valuable EXIF information in our case is the image orientation : it will determine if we need to flip/rotate the image
+	$exif_data		=  @exif_read_data ( $input_path ) ;	// The IFD structures of some images may look corrupted - so ignore warnings
+	$image_info		=  getimagesize ( $input_path ) ;
+	$orientation		=  ( isset ( $exif_data [ 'Orientation' ] ) ) ?  $exif_data [ 'Orientation' ] : 1 ;
+
+	// Determine image type and load it
+	switch ( strtolower ( $image_info [ 'mime' ] ) )
+	   {
+		case	'image/jpeg' :
+			$source_image	=  imagecreatefromjpeg ( $input_path ) ;
+			break ;
+
+		case	'image/png' :
+			$source_image	=  imagecreatefrompng ( $input_path ) ;
+			break ;
+
+		case	'image/gif' :
+			$source_image	=  imagecreatefromgif ($input_path ) ;
+			break ;
+
+		// Unsupported image type
+		default :
+			return ( false ) ;
+	    }
+
+	// Re-orientate the image
+	$source_image	=  orientate_image ( $source_image, $orientation ) ;
+
+	// Get image size
+	$source_width		= imagesx ( $source_image ) ;
+	$source_height		= imagesy ( $source_image ) ;
+
+	$width_ratio		=  $source_width / $new_width ;
+	$height_ratio		=  $source_height / $new_height ;
+		
+	// Compute new source image width/height
+	if  ( $width_ratio  >  $height_ratio )
+	   {
+		$destination_width	=  $new_width ;
+		$destination_height	=  $source_height / $width_ratio ;
+	    }
+	else if  ( $height_ratio  >  $width_ratio )
+	   {
+		$destination_height	=  $new_height ;
+		$destination_width	=  $source_width / $height_ratio ;
+	    }
+	else
+	   {
+		$destination_width	=  $new_width ;
+		$destination_height	=  $new_height ;
+	   }		
+
+	$x	=  abs ( $destination_width  - $new_width  ) / 2 ;
+	$y	=  abs ( $destination_height - $new_height ) / 2 ;
+		
+	// Perform the resizing
+	imagecopyresampled ( $output_image, $source_image, $x, $y, 0, 0,
+				$destination_width, $destination_height, 
+				$source_width, $source_height ) ;
+
+	// Save the image
+	$status			=  imagejpeg ( $output_image, $output_path, 100 ) ;
+
+	// All done, return 
+	return ( $status ) ;
+    }
+
+
+/*--------------------------------------------------------------------------------------------------------------
+
+    orientate_image -
+	Takes a source image, and rotates/flips it according to its orientation.
+	Comment inline.
+
+ *-------------------------------------------------------------------------------------------------------------*/
+function  orientate_image ( $source_image, $orientation )
+   {
+ 	// Perform some operations on the original image with regards to its orientation.
+	// Examples show the letter "F". Orientation 1 for this example letter is :
+	/*
+			+----
+			|
+			+--
+			|
+			|
+	 */
+	switch ( $orientation ) 
+	   {
+		// Orientation 2 :
+		//	Vertical symmetry.
+		/*
+			----+
+			    |
+			  --+
+			    |
+			    |
+		 */
+		case	2 :
+			imageflip ( $source_image, IMG_FLIP_VERTICAL ) ;
+			break ;
+
+		// Orientation 3 :
+		//	Horizontal + vertical symmetry.
+		/*
+			    |
+			    |
+			  --+
+			    |
+			----+
+		 */
+		case	3 :
+			imageflip ( $source_image, IMG_FLIP_BOTH ) ;
+			break ;
+
+		// Orientation 4 :
+		//	Horizontal symmetry.
+		/*
+			|
+			|
+			+--
+			|
+			+----
+		 */
+		case   4 :
+			imageflip ( $source_image, IMG_FLIP_HORIZONTAL ) ;
+			break ;
+
+		// Orientation 5 :
+		//	Horizontal symmetry + 270° counter-clockwise rotation
+		/*
+			+--+----
+			|  |
+			|
+		 */
+		case	5 :
+			imageflip ( $source_image, IMG_FLIP_HORIZONTAL ) ;
+			/* Intentionally fall through the case below */
+
+		// Orientation 6 :
+		//	
+		case	6 :
+			$new_image	=  imagerotate ( $source_image, 270, false ) ;
+			imagedestroy ( $source_image ) ;
+			$source_image	=  $new_image ;
+			break ;
+
+		// Orientation 7 :
+		//	Horizontal symmetry + 90° counter-clockwise rotation	
+		/*
+			       |
+			    |  |
+			----+--+
+		 */
+		case	7 :
+			imageflip ( $source_image, IMG_FLIP_HORIZONTAL ) ;
+			/* Intentionally fall through the case below */
+
+		// Orientation 8 :
+		//	90° counter-clockwise rotation
+		/*
+			----+--+
+			    |  |
+			       |
+		 */
+		case	8 :
+			$new_image	=  imagerotate ( $source_image, 270, false ) ;
+			imagedestroy ( $source_image ) ;
+			$source_image	=  $new_image ;
+			break ;
+
+		// Orientation 1 (and possibly other unknown orientations) :
+		//	Leave the initial image as is.
+		case	1 :
+		default	  :
+			break ;
+	    }
+
+	return ( $source_image ) ;
+   }
+
+
+
+	$CL		=  new CLParser ( $Definitions ) ;
+	$input		=  $CL -> Files [0] ;
+
+	adapt_image ( $input, "test/$input", 140, 140, 'adapt140x140' ) ;
+	crop_image  ( $input, "test/$input", 140, 140, 'crop140x140' ) ;
+
+	adapt_image ( $input, "test/$input", 500, 350, 'adapt350x500' ) ;
+	crop_image  ( $input, "test/$input", 500, 350, 'crop350x500' ) ;
+

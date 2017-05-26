@@ -18,13 +18,12 @@ END;
 	TiffSplitter::$DEBUG	=  true ;
 
 	$tff1		=  TiffSplitter::Load ( $file ) ;
-	$pic1		=  $tff1 [0] -> AsString ( ) ;
 
 	foreach  ( $tff1  as  $page )
 		$page -> SaveTo ( 'out.file.' . $page -> PageNumber . '.tiff' ) ;
 
+	TiffSplitter::$DEBUG	=  false ;
 	$tff2		=  TiffSplitter::LoadFromString ( file_get_contents ( $file ) ) ;
-	$pic2		=  $tff2 [0] -> AsString ( ) ;
 
 	foreach  ( $tff2  as  $page )
 		$page -> SaveTo ( 'out.string.' . $page -> PageNumber . '.tiff' ) ;
