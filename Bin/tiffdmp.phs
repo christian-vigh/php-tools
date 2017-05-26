@@ -1,0 +1,234 @@
+<?php
+	//!phpcmd(Tiff, 1.0, production) : Dumps the IFD entries from a TIFF file.
+	/**************************************************************************************************************
+	
+	    NAME
+	        tiffdmp.phs
+	
+	    DESCRIPTION
+		Dumps the IFD entries of a TIFF file.
+	
+	    AUTHOR
+	        Christian Vigh, 04/2017.
+	
+	    HISTORY
+	    [Version : 1.0]	[Date : 2017/04/14]     [Author : CV]
+		Initial version.
+	
+	 **************************************************************************************************************/
+	require ( "tools.phpinclude" ) ;
+
+	use  Thrak\Processors\CL\CLParser ;
+	use  Thrak\Types\StringUtilities ;
+	use  Thrak\IO\Path ;
+	use  Thrak\IO\AsciiReport ;
+	use  Thrak\Types\ArrayHelpers ;
+	use  Thrak\Graphics\TiffImage ;
+
+
+	/*==============================================================================================================
+	
+	        Command-line definitions.
+	
+	  ==============================================================================================================*/
+	$Definitions	= <<<END
+<command>
+	<usage>
+		Dumps various information from a TIFF file.
+	</usage>
+
+	<flag name="debug, d">
+		Displays debug information.
+	</flag>
+
+	<integer name="dump_page, dp" default="-1">
+		Dumps the IFD entries of the specified page. The default values dumps the IFD of the first page.
+	</integer>
+
+	<flag name="list_page_numbers, lpn">
+		Lists the page numbers.
+	</flag>
+
+	<flag name="list_page_information, lpi">
+		Lists various information about each page.
+	</flag>
+	
+	<unnamed>
+		<file arguments="1..1" glob="false" required="true" disposition="existing">
+			Input TIFF filename.
+		</file>
+	</unnamed>
+</command>
+END;
+
+
+	/*==============================================================================================================
+	
+	        Display functions.
+	
+	  ==============================================================================================================*/
+
+	// DumpPage -
+	//	Dumps the IFD entries of the specified page.
+	function  DumpPage ( $tiff, $page_number )
+	   {
+		$tiff_page		=  false ;
+
+		if  ( $page_number  ==  -1 )
+			$tiff_page	=  $tiff [0] ;
+		else
+		   {
+			foreach  ( $tiff  as  $page )
+			   {
+				if  ( $page -> PageNumber  ==  $page_number )
+				   {
+					$tiff_page	=  $page ;
+					break ;
+				    }
+			    }
+		    }
+
+		if  ( $tiff_page  ===  false )
+			error ( "Page #$page_number is not defined in the supplied TIFF file." ) ;
+
+		$data		=  [] ;
+		$report		=  new  AsciiReport 
+		   (
+			[ 'member' => 'index'	, 'title' => 'Index'					],
+			[ 'member' => 'offset'  , 'title' => 'Offset'					],
+			[ 'member' => 'tagname' , 'title' => 'Tag'					],
+			[ 'member' => 'tag'	, 'title' => 'Tag#'		, 'align' => 'right'	],
+			[ 'member' => 'typename', 'title' => 'Type'					],
+			[ 'member' => 'type'	, 'title' => 'Type#'					],
+			[ 'member' => 'count'	, 'title' => 'Count'					],
+			[ 'member' => 'value'	, 'title' => 'Value (hex)'				],
+			[ 'member' => 'valuedec', 'title' => 'Value (dec)'				],
+			[ 'member' => 'ptr'     , 'title' => 'Ptr'		, 'align' => 'center'   ],
+			[ 'member' => 'size'	, 'title' => 'Actual size'				],
+			[ 'member' => 'string'	, 'title' => 'String'					]
+		    ) ;
+
+		$index	=  0 ;
+
+		foreach  ( $tiff_page -> IFD  as  $ifd_entry )
+		   {
+			if  ( $ifd_entry -> Type  ===  TiffImage::TYPE_ASCII )
+				$strval		=  $ifd_entry -> UnderlyingValue ;
+			else
+				$strval		=  'N/A' ;
+
+			$data []	=
+			   [
+				'index'			=>  $index,
+				'offset'		=>  sprintf ( "0x%08X", $ifd_entry -> Offset ),
+				'tagname'		=>  $ifd_entry -> Tagname,
+				'tag'			=>  sprintf ( "0x%04X", $ifd_entry -> Tag ),
+				'typename'		=>  $ifd_entry -> Typename,
+				'type'			=>  $ifd_entry -> Type,
+				'count'			=>  $ifd_entry -> Count,
+				'value'			=>  sprintf ( "0x%08X", $ifd_entry -> Value ),
+				'valuedec'		=>  $ifd_entry -> Value,
+				'ptr'			=>  ( $ifd_entry -> IsOffset ) ?  '*' : '',
+				'size'			=>  $ifd_entry -> ActualSize,
+				'string'		=>  $strval 
+			    ] ;
+
+			$index ++ ;
+		    }
+
+		output ( "IFD entries for page #" . $tiff_page -> PageNumber . ' :' ) ;
+		echo $report -> Generate ( $data ) ;
+		echo $report -> Summary ( 'IFD entry' ) ;
+	    }
+
+
+	// ListPageNumber -
+	//	Lists the page numbers defined in the specified tiff file.
+	function  ListPageNumbers ( $tiff )
+	   {
+		$pages		=  [] ;
+
+		foreach  ( $tiff  as  $page )
+		   {
+			$pages []	=  $page -> PageNumber ;
+		    }
+
+		output ( "Pages : " . ArrayHelpers::ToRangeString ( $pages ) ) ;
+	    }
+
+
+	// ListPageInformation -
+	//	Lists page information, such as page number, dimensions, etc.
+	function  ListPageInformation ( $tiff )
+	   {
+		$data		=  [] ;
+
+		foreach  ( $tiff  as  $page )
+		   {
+			$data []	=
+			   [
+				'page'		=>  $page -> PageNumber,
+				'width'		=>  $page -> PageWidth,
+				'height'	=>  $page -> PageHeight,
+				'attributes'	=>  count ( $page -> IFD )
+			    ] ;
+		    }
+
+
+		$report		=  new AsciiReport 
+		   (
+			[ 'member' => 'page'		, 'title' => 'Page'		],
+			[ 'member' => 'width'		, 'title' => 'Width'		],
+			[ 'member' => 'height'		, 'title' => 'Height'		],
+			[ 'member' => 'attributes'	, 'title' => '#IFD entries'	]
+		    ) ;
+
+		echo $report -> Generate ( $data ) ;
+		echo $report -> Summary ( 'page' ) ;
+	    }
+
+
+	/*==============================================================================================================
+	
+	        Retrieve command-line parameters.
+	
+	  ==============================================================================================================*/
+	$CL			=  new CLParser ( $Definitions ) ;
+	$Debug			=  $CL -> debug ;
+	$DumpPage		=  $CL -> dump_page ;
+	$InputFile		=  $CL -> UnnamedParameters [0] -> Values [0] ;
+	$ListPageNumbers	=  $CL -> list_page_numbers ;
+	$ListPageInformation	=  $CL -> list_page_information ;
+
+	$HadOption		=  false ;
+
+	if  ( $Debug )
+		TiffImage::$DEBUG	=  true ;
+
+	$tiff			=  TiffImage::Load ( $InputFile ) ;
+
+	// -dump_page :
+	//	Dumps the IFD entries defined for the specified page.
+	if  ( ! $HadOption  &&  $CL -> IsSpecified ( 'dump_page' ) )
+	   {
+		DumpPage ( $tiff, $DumpPage ) ;
+		$HadOption		=  true ;
+	    }
+
+	// -list_page_numbers :
+	//	Lists the page numbers defined in the TIFF file.
+	if  ( ! $HadOption  &&  $ListPageNumbers )
+	   {
+		ListPageNumbers ( $tiff ) ;
+		$HadOption		=  true ;
+	    }
+
+	// -list_page_information :
+	//	Lists various information about individual pages.
+	if  ( ! $HadOption  &&  $ListPageInformation )
+	   {
+		ListPageInformation ( $tiff ) ;
+		$HadOption		=  true ;
+	    }
+
+
