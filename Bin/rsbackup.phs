@@ -186,7 +186,7 @@ END;
 			if  ( ! $item ) 
 				continue ;
 
-			list ( $mtime, $size, $type, $file )	=  explode ( ';', trim ( $item ) ) ;
+			list ( $mtime, $size, $type, $file )	=  explode ( ';', trim ( $item ), 4 ) ;
 
 			if  ( $type  !=  'd'  &&  $type  !=  'f' )
 				continue ;
