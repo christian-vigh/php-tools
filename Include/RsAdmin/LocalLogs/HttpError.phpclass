@@ -108,6 +108,7 @@ class  LocalHttpErrorLogBase	extends  LocalLog
 	const	HTTP_MAX_CONTENTS_LENGTH_EXCEEDED	=  26 ;
 	const	HTTP_OPEN_PERMISSION_DENIED		=  27 ;
 	const   HTTP_REQUIRED_FILE_OPEN_FAILED		=  28 ;
+	const	HTTP_CERTFIFICATE_MISMATCH		=  29 ;
 
 
 	// Constructor -
@@ -469,12 +470,22 @@ class  LocalHttpErrorLogBase	extends  LocalLog
 									 )
 								    #imsx' ;
 
+	// Message of the form :
+	//	[ssl:warn] [pid 9868] AH01909: vps131906.vps.ovh.ca:443:0 server certificate does NOT include an ID which matches the server name
+	// Constant : HTTP_CERTIFICATE_MISMATCH
+	private static	$regex_certificate_mismatch	=  '#
+									(?P<message>
+										(?<url> [\w.:]+) \s+ server \s+ certificate \s+ does \s+ not \s+ include \s+ an  \s+ ID
+										 \s+ which \s+ matches \s+ the \s+ server \s+ name
+									 )
+								    #imsx' ;
+
 
 	protected function  Parse ( $line, &$parsed_data, $string_store )
 	   {
 		static	$re	=  "#
 					\[
-						(?P<severity> [^\]]+)
+						([^\]:]* :)? (?P<severity> [^\]]+)
 					\]
 					\s+
 					(
@@ -748,6 +759,14 @@ class  LocalHttpErrorLogBase	extends  LocalLog
 			   {
 				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE, $regex_match [ 'message' ] ) ;
 				$file_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_HTTP_REQUEST_FILE, $regex_match [ 'file' ] ) ;
+			    }
+			// Message of the form :
+			//	[ssl:warn] [pid 9868] AH01909: vps131906.vps.ovh.ca:443:0 server certificate does NOT include an ID which matches the server name
+			else if  ( preg_match ( self::$regex_certificate_mismatch, $message, $regex_match ) )
+			   {
+				$message_id		=  $string_store -> Insert ( LogStringStore::LOGSTORE_MESSAGE, $regex_match [ 'message' ] ) ;
+				
+				$url_id			=  $string_store -> Insert ( LogStringStore::LOGSTORE_HTTP_REQUEST_URL, $regex_match [ 'url' ] ) ;
 			    }
 			else
 			   {
